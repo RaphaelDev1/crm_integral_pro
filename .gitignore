@@ -1,0 +1,25 @@
+# Environnement virtuel
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+
+# Base de données (données prospects/clients réelles, ne pas publier)
+src/ia_conseil_crm.db
+src/ia_conseil_crm.db-wal
+src/ia_conseil_crm.db-shm
+
+# Secrets
+.env
+src/.env
+
+# Ancienne version conservée localement, pas versionnée
+/old
+
+# Paramètres Claude Code locaux à la machine
+.claude/settings.local.json
+
+# Logs / artefacts de test
+*.log
+*.pid

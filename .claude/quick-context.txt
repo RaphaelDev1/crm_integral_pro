@@ -1,0 +1,48 @@
+IA CONSEIL — CRM INTÉGRAL PRO — contexte rapide
+================================================
+
+QUOI : Application Streamlit mono-fichier (src/app.py) pour conseillers
+Télécom/Énergie/Abonnements. SQLite local (src/ia_conseil_crm.db).
+
+LANCER :
+    cd src
+    pip install -r requirements.txt
+    streamlit run app.py
+
+Login par défaut au premier lancement : admin / Admin2026!
+(à changer immédiatement dans Admin > Utilisateurs)
+
+STRUCTURE DU CODE (src/app.py, ~2100 lignes, sections numérotées en commentaires) :
+  1.  Connexion BDD + WAL + migrations incrémentales
+  2.  Authentification (PBKDF2-SHA256)
+  3.  Gestion des utilisateurs
+  4.  Prospects (CRUD)
+  5.  Clients (CRUD)
+  6.  Contrats (CRUD)
+  7.  Offres / catalogue
+  8.  Analyse PDF facture + speedtest
+  9.  Moteur de comparaison & recommandations
+  10. Génération PDF de restitution
+  11. Email (SMTP)
+  12. Session state & valeurs par défaut
+  13. Barre latérale (login + navigation)
+  14. Nouveau diagnostic (wizard)
+  15. Tableau de bord (page d'atterrissage après connexion)
+  16. Prospects (UI)
+  17. Clients & contrats (UI)
+  18. Admin (UI)
+  19. Offres de démonstration
+
+NAVIGATION : après connexion, l'utilisateur arrive directement sur le
+Tableau de bord (plus de page d'accueil séparée). Le menu vit dans
+st.session_state.menu, piloté par un st.radio dans la sidebar.
+
+RÔLES : Admin, Conseiller, Lecture (voir peut_modifier() / est_admin()).
+Chaque conseiller ne voit que ses propres prospects/clients (colonne
+cree_par) ; un Admin peut activer une vue globale sur le Tableau de bord.
+
+TABLES SQLITE : utilisateurs, prospects, clients, contrats, offres.
+Détail complet → docs/DATABASE.md
+
+CONVENTIONS : voir .claude/project.rules.md
+AVANT DE COMMIT : voir .claude/checklist-commits.md

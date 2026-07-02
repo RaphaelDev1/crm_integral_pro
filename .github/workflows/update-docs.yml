@@ -1,0 +1,15 @@
+# Placeholder — pas encore activé.
+# Idée : sur push vers main, vérifier que docs/CHANGELOG.md a été mis à
+# jour quand src/app.py change, ou régénérer un résumé de structure.
+# À implémenter quand le dépôt sera poussé sur GitHub (voir docs/CONTRIBUTING.md).
+
+name: update-docs
+
+on:
+  workflow_dispatch:
+
+jobs:
+  placeholder:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Rien à automatiser pour l'instant."
