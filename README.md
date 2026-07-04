@@ -4,11 +4,32 @@ Application interne (Streamlit + SQLite) pour conseillers Télécom /
 Énergie / Abonnements : diagnostic client guidé, comparaison d'offres,
 restitution PDF + email, suivi des prospects et clients.
 
+## Fonctionnalités clés
+
+- **Wizard de diagnostic** en 4 étapes (univers → besoins → comparaison →
+  recommandations) avec calcul d'économie automatique.
+- **Offres favorites du client** : chaque offre proposée (principale, box,
+  pack) peut être cochée « ⭐ Intéresse le client » ; toutes les offres
+  cochées sont reprises intégralement dans le PDF de restitution et l'email
+  envoyé, et affichées sous forme de cartes sur la fiche prospect.
+- **Fiche prospect** : édition en un seul clic (« 💾 Enregistrer » global,
+  pas un bouton par champ), conversion en client, suppression.
+- **Relances** : planification automatique à +7 jours ou choix d'une date
+  précise (utile pour les offres avec engagement), avec vue « en retard /
+  aujourd'hui / à venir » sur le tableau de bord.
+- **Suivi & reporting** : export Excel des listes, historique des actions
+  par client, performance par conseiller (vue Admin).
+- **Souscription assistée** : bouton « 🖊️ Pré-remplir la souscription » (fiche
+  prospect et contrats client, opérateurs Free/Bouygues) — ouvre le formulaire
+  de souscription réel dans un navigateur, pré-rempli avec les données du CRM ;
+  le conseiller vérifie et valide lui-même, aucune soumission automatique.
+
 ## Démarrer
 
 ```
 cd src
 pip install -r requirements.txt
+playwright install chromium
 streamlit run app.py
 ```
 

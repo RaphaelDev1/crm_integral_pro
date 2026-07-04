@@ -2,3 +2,10 @@ streamlit
 pandas
 PyPDF2
 fpdf2
+openpyxl
+anthropic
+playwright
+fastapi
+uvicorn
+pyjwt
+requests

@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<title>Test du widget chatbot IA Conseil</title>
+</head>
+<body style="font-family:system-ui,sans-serif;max-width:640px;margin:60px auto;padding:0 20px;">
+  <h1>Page de test — widget chatbot</h1>
+  <p>Cette page simule un site tiers sur lequel le widget est intégré. La bulle de chat
+     doit apparaître en bas à droite.</p>
+  <p>Si le message « Le chatbot n'est pas configuré » apparaît, c'est que la clé API
+     Anthropic n'est pas encore renseignée dans Admin &gt; 🔍 OCR Vision.</p>
+
+  <!-- Le data-api-url pointe ici sur le même serveur (page servie par chatbot_api.py lui-même) -->
+  <script src="/widget/chatbot_widget.js" data-api-url="http://127.0.0.1:8001"></script>
+</body>
+</html>

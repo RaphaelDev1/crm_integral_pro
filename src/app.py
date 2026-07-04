@@ -17,1064 +17,99 @@
 #    ✅ Affichage propre quand la recherche client ne retourne rien
 #    ✅ Notes auto enrichies à la création
 #
+#  ÉTAPE 3 — Améliorations fonctionnelles :
+#    ✅ Tableau de bord — relances triées par vraie date (retard/jour/à venir)
+#    ✅ Export Excel des listes Prospects et Clients
+#    ✅ Historique des actions sur la fiche client (qui a fait quoi, quand)
+#
+#  ÉTAPE 4 — Découpage en modules (maintenabilité) :
+#    ✅ constants.py       — options/listes métier
+#    ✅ utils.py           — helpers génériques (validation, export Excel, refs)
+#    ✅ db.py              — connexion SQLite, schéma, migrations, audit trail
+#    ✅ auth.py            — hash de mots de passe, comptes utilisateurs
+#    ✅ prospects_engine.py, clients_engine.py, contrats_engine.py, offres_engine.py
+#    ✅ pdf_engine.py      — lecture facture/speedtest + génération PDF de restitution
+#    ✅ email_engine.py    — envoi SMTP + gabarit HTML du bilan
+#    → app.py ne contient plus que la session Streamlit, la navigation et les pages.
+#
 #  Lancement :
-#     pip install streamlit pandas PyPDF2 fpdf2
-#     streamlit run crm_integral_pro.py
+#     pip install streamlit pandas PyPDF2 fpdf2 openpyxl
+#     streamlit run app.py
 #
 #  Identifiants par défaut (premier lancement) :
 #     Login : admin   /   Mot de passe : Admin2026!
 #     → À changer immédiatement dans Admin > Utilisateurs
 # ==============================================================================
 
-import streamlit as st
-import sqlite3
-import pandas as pd
-import re
 import json
-import hashlib
-import secrets
-import smtplib
-import urllib.request
-import os
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.application import MIMEApplication
 from datetime import datetime
-from PyPDF2 import PdfReader
 
-try:
-    from fpdf import FPDF
-    FPDF_OK = True
-except Exception:
-    FPDF_OK = False
+import pandas as pd
+import streamlit as st
+
+from constants import (
+    DEBITS_OPTIONS, LISTE_OPERATEURS_TEL, LISTE_FOURNISSEURS_ENERGIE,
+    LISTE_TECHNO, LISTE_TECHNO_MOBILE, SATISFACTION_RESEAU,
+    UNIVERS, CATEGORIES_TELECOM, CATEGORIES_ENERGIE, CATEGORIES_ABO,
+    SERVICE_PRINCIPAL, ROLES, STATUTS_FACTURE,
+)
+from utils import (
+    safe_float, valider_email, valider_telephone, parser_date_relance, exporter_excel,
+    generer_ref, construire_lien_affilie, OPENPYXL_OK,
+)
+from db import (
+    initialiser_bdd, enregistrer_action, lire_historique, lire_parametre, ecrire_parametre,
+    recherche_fts,
+)
+from auth import (
+    hash_password, creer_utilisateur, creer_admin_par_defaut,
+    authentifier_utilisateur, lire_utilisateurs, maj_utilisateur, supprimer_utilisateur,
+)
+import jwt_auth
+# CRUD prospects/clients/contrats/offres + diagnostic : passe par l'API CRM interne
+# (crm_api.py, Roadmap 4.3) avec repli automatique et transparent sur un accès direct
+# à la base si l'API n'est pas démarrée — cf. api_client.py pour le détail du repli.
+from api_client import (
+    ajouter_prospect, lire_prospects, maj_prospect, supprimer_prospect,
+    ajouter_client, lire_clients, maj_client, supprimer_client,
+    ajouter_contrat, lire_contrats_client, maj_contrat, supprimer_contrat,
+    ajouter_offre, lire_offres, maj_offre, supprimer_offre,
+    comparer_offres, construire_recommandations,
+)
+from prospects_engine import widget_relance, recalculer_scores_prospects, indicateur_score
+from clients_engine import note_couverture_par_zone, meilleur_debit_par_zone, widget_relance_client
+from contrats_engine import lire_contrats_echeance
+from offres_engine import inserer_offres_demo
+from pdf_engine import (
+    lire_pdf, analyser_facture, analyser_facture_vision, analyser_speedtest_pdf,
+    generer_pdf_restitution, generer_pdf_teaser, generer_pdf_devis, generer_pdf_mandat,
+    FPDF_OK, ANTHROPIC_OK,
+)
+from email_engine import (
+    envoyer_email, construire_corps_email, construire_corps_email_teaser,
+    construire_corps_email_fin_engagement,
+)
+from souscription_engine import (
+    OPERATEURS_SUPPORTES, construire_donnees_client, lancer_souscription,
+)
+from facturation_engine import (
+    creer_facture, lire_factures, changer_statut, marquer_mandat_signe, lier_facture_a_client,
+)
+from veille_prix_engine import (
+    ajouter_source, lire_sources, maj_source, supprimer_source, lancer_veille,
+    lire_historique_prix, lire_alertes, valider_alerte, rejeter_alerte, PLAYWRIGHT_OK,
+)
 
 st.set_page_config(page_title="IA Conseil - CRM Intégral Pro", layout="wide")
 
 # ==============================================================================
-#  UTILITAIRES GLOBAUX
+#  INITIALISATION BDD + COMPTE ADMIN PAR DÉFAUT (premier lancement)
 # ==============================================================================
-def safe_float(val, default: float = 0.0) -> float:
-    """Conversion float robuste — jamais de crash sur valeur vide ou invalide."""
-    try:
-        return float(val)
-    except (TypeError, ValueError):
-        return default
-
-
-def valider_email(email: str) -> bool:
-    """Vérifie qu'un email a une forme valide (non bloquant, juste un avertissement)."""
-    return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$", email.strip())) if email.strip() else True
-
-
-def valider_telephone(tel: str) -> bool:
-    """Vérifie qu'un numéro FR a 10 chiffres (autorise espaces/tirets)."""
-    digits = re.sub(r"[\s.\-]", "", tel.strip())
-    return bool(re.match(r"^(0|\+33)[1-9]\d{8}$", digits)) if digits else True
-
-
-# ==============================================================================
-#  OPTIONS GLOBALES
-# ==============================================================================
-DEBITS_OPTIONS       = ["100 Mbps", "400 Mbps", "1 Gbps", "2 Gbps", "5 Gbps", "8 Gbps"]
-LISTE_OPERATEURS_TEL = ["Orange", "YouPrice (Réseau Orange)", "SFR", "Bouygues", "Free", "Autre / Aucun"]
-LISTE_FOURNISSEURS_ENERGIE = ["EDF", "Engie", "TotalEnergies", "Eni", "Vattenfall", "Ekwateur", "OHM Énergie", "Autre / Aucun"]
-LISTE_TECHNO         = ["FIBRE", "ADSL", "5G", "4G"]
-SATISFACTION_RESEAU  = ["😀 Très content", "😐 Ça va", "😡 Pas du tout"]
-
-UNIVERS              = ["Télécom", "Énergie", "Abonnements"]
-CATEGORIES_TELECOM   = ["Mobile", "Box / Fibre", "Pack Box + Mobile", "Multi-lignes"]
-CATEGORIES_ENERGIE   = ["Électricité", "Gaz", "Électricité Pro", "Gaz Pro"]
-CATEGORIES_ABO       = ["Streaming Vidéo", "Musique", "Salle de sport", "SaaS / Logiciel", "Assurance", "Autre"]
-SERVICE_PRINCIPAL    = ["Mobile uniquement", "Box / Fibre uniquement", "Pack Box + Mobile", "Multi-lignes"]
-
-ROLES = ["Admin", "Conseiller", "Lecture"]
-
-DB_NAME = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ia_conseil_crm.db")
-
-# Colonnes autorisées pour les mises à jour (protection injection SQL)
-CHAMPS_PROSPECT = {
-    "telephone", "email", "operateur_actuel", "offre_actuelle", "cout_mensuel_actuel",
-    "notes", "statut", "date_relance", "satisfaction_reseau", "veut_rester",
-    "ville", "code_postal", "prenom", "nom", "fournisseur_energie",
-    "techno", "data_go", "speed_down", "speed_up", "type_client",
-}
-CHAMPS_CLIENT = {
-    "telephone", "email", "ville", "code_postal", "operateur_actuel", "offre_actuelle",
-    "cout_mensuel_actuel", "satisfaction_reseau", "veut_rester", "notes",
-    "fournisseur_energie", "techno", "data_go", "speed_down", "speed_up",
-    "economie_estimee_an",
-}
-CHAMPS_CONTRAT = {
-    "nom_offre", "cout_mensuel", "economie_mensuelle", "statut_contrat",
-    "reference_contrat", "fournisseur", "notes", "date_souscription",
-}
-CHAMPS_OFFRE = {
-    "prix_mensuel", "frais_activation", "engagement_mois", "caracteristiques",
-    "commission_affiliation", "actif", "nom_offre", "fournisseur", "categorie",
-}
-CHAMPS_UTILISATEUR = {"nom_complet", "role", "actif", "password_hash"}
-
-# ==============================================================================
-#  1. BASE DE DONNÉES — CONNEXION + WAL
-# ==============================================================================
-def get_conn():
-    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL")      # ← Écriture concurrente sécurisée
-    conn.execute("PRAGMA foreign_keys=ON")
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def initialiser_bdd():
-    conn = get_conn()
-    c = conn.cursor()
-
-    # Table utilisateurs (NOUVELLE en Étape 1)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS utilisateurs (
-            id             INTEGER PRIMARY KEY AUTOINCREMENT,
-            username       TEXT    UNIQUE NOT NULL,
-            nom_complet    TEXT    NOT NULL,
-            password_hash  TEXT    NOT NULL,
-            role           TEXT    DEFAULT 'Conseiller',
-            actif          INTEGER DEFAULT 1,
-            date_creation  TEXT
-        )
-    """)
-
-    # Table prospects
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS prospects (
-            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
-            ref                   TEXT,
-            prenom                TEXT,
-            nom                   TEXT,
-            telephone             TEXT,
-            email                 TEXT,
-            code_postal           TEXT,
-            ville                 TEXT,
-            type_client           TEXT,
-            univers_interesse     TEXT,
-            service_principal     TEXT,
-            operateur_actuel      TEXT,
-            techno                TEXT,
-            data_go               TEXT,
-            cout_mensuel_actuel   REAL,
-            offre_actuelle        TEXT,
-            satisfaction_reseau   TEXT,
-            veut_rester           TEXT,
-            speed_down            REAL,
-            speed_up              REAL,
-            cout_elec             REAL,
-            cout_gaz              REAL,
-            fournisseur_energie   TEXT,
-            abonnements           TEXT,
-            lignes_multi          TEXT,
-            economie_estimee_an   REAL,
-            notes                 TEXT,
-            statut                TEXT,
-            date_creation         TEXT,
-            date_relance          TEXT,
-            cree_par              TEXT
-        )
-    """)
-
-    # Table clients
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS clients (
-            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
-            ref                   TEXT,
-            prenom                TEXT,
-            nom                   TEXT,
-            telephone             TEXT,
-            email                 TEXT,
-            code_postal           TEXT,
-            ville                 TEXT,
-            type_client           TEXT,
-            operateur_actuel      TEXT,
-            techno                TEXT,
-            data_go               TEXT,
-            offre_actuelle        TEXT,
-            cout_mensuel_actuel   REAL,
-            satisfaction_reseau   TEXT,
-            veut_rester           TEXT,
-            speed_down            REAL,
-            speed_up              REAL,
-            fournisseur_energie   TEXT,
-            cout_elec             REAL,
-            cout_gaz              REAL,
-            economie_estimee_an   REAL,
-            notes                 TEXT,
-            date_creation         TEXT,
-            cree_par              TEXT
-        )
-    """)
-
-    # Table contrats
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS contrats (
-            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-            client_id           INTEGER,
-            univers             TEXT,
-            categorie           TEXT,
-            fournisseur         TEXT,
-            nom_offre           TEXT,
-            cout_mensuel        REAL,
-            economie_mensuelle  REAL,
-            reference_contrat   TEXT,
-            statut_contrat      TEXT,
-            date_souscription   TEXT,
-            notes               TEXT,
-            cree_par            TEXT,
-            FOREIGN KEY (client_id) REFERENCES clients(id)
-        )
-    """)
-
-    # Table offres (catalogue)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS offres (
-            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
-            univers               TEXT,
-            categorie             TEXT,
-            fournisseur           TEXT,
-            nom_offre             TEXT,
-            prix_mensuel          REAL,
-            frais_activation      REAL,
-            engagement_mois       INTEGER,
-            caracteristiques      TEXT,
-            commission_affiliation REAL,
-            actif                 INTEGER DEFAULT 1,
-            date_maj              TEXT
-        )
-    """)
-
-    conn.commit()
-    conn.close()
-    _migrer_bdd()   # ← Ajoute les colonnes manquantes aux BDD existantes
-
-
-def _migrer_bdd():
-    """
-    Migration incrémentale : ajoute toutes les colonnes potentiellement
-    absentes (base créée avec une version antérieure du code).
-    Chaque ALTER TABLE est ignoré si la colonne existe déjà.
-    """
-    # (table, colonne, type SQLite)
-    migrations = [
-        # ── prospects ──────────────────────────────────────────────────
-        ("prospects", "type_client",          "TEXT"),
-        ("prospects", "univers_interesse",    "TEXT"),
-        ("prospects", "service_principal",    "TEXT"),
-        ("prospects", "operateur_actuel",     "TEXT"),
-        ("prospects", "techno",               "TEXT"),
-        ("prospects", "data_go",              "TEXT"),
-        ("prospects", "offre_actuelle",       "TEXT"),
-        ("prospects", "cout_mensuel_actuel",  "REAL DEFAULT 0"),
-        ("prospects", "satisfaction_reseau",  "TEXT"),
-        ("prospects", "veut_rester",          "TEXT"),
-        ("prospects", "speed_down",           "REAL DEFAULT 0"),
-        ("prospects", "speed_up",             "REAL DEFAULT 0"),
-        ("prospects", "cout_elec",            "REAL DEFAULT 0"),
-        ("prospects", "cout_gaz",             "REAL DEFAULT 0"),
-        ("prospects", "fournisseur_energie",  "TEXT"),
-        ("prospects", "abonnements",          "TEXT"),
-        ("prospects", "lignes_multi",         "TEXT"),
-        ("prospects", "economie_estimee_an",  "REAL DEFAULT 0"),
-        ("prospects", "statut",               "TEXT DEFAULT 'À relancer'"),
-        ("prospects", "date_relance",         "TEXT"),
-        ("prospects", "cree_par",             "TEXT"),
-        # ── clients ────────────────────────────────────────────────────
-        ("clients",   "type_client",          "TEXT"),
-        ("clients",   "operateur_actuel",     "TEXT"),
-        ("clients",   "techno",               "TEXT"),
-        ("clients",   "data_go",              "TEXT"),
-        ("clients",   "offre_actuelle",       "TEXT"),
-        ("clients",   "cout_mensuel_actuel",  "REAL DEFAULT 0"),
-        ("clients",   "satisfaction_reseau",  "TEXT"),
-        ("clients",   "veut_rester",          "TEXT"),
-        ("clients",   "speed_down",           "REAL DEFAULT 0"),
-        ("clients",   "speed_up",             "REAL DEFAULT 0"),
-        ("clients",   "fournisseur_energie",  "TEXT"),
-        ("clients",   "cout_elec",            "REAL DEFAULT 0"),
-        ("clients",   "cout_gaz",             "REAL DEFAULT 0"),
-        ("clients",   "economie_estimee_an",  "REAL DEFAULT 0"),
-        ("clients",   "cree_par",             "TEXT"),
-        # ── contrats ───────────────────────────────────────────────────
-        ("contrats",  "cree_par",             "TEXT"),
-    ]
-    conn = get_conn()
-    c    = conn.cursor()
-    for table, col, typ in migrations:
-        try:
-            c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
-        except Exception:
-            pass   # Colonne déjà présente → on ignore silencieusement
-    conn.commit()
-    conn.close()
-
-
 initialiser_bdd()
-
-# ==============================================================================
-#  2. AUTHENTIFICATION — HASH PBKDF2-SHA256
-# ==============================================================================
-_ITERATIONS = 260_000   # OWASP 2024 recommandation pour PBKDF2-SHA256
-
-def hash_password(password: str) -> str:
-    """Retourne 'salt:hash' stockable en base."""
-    salt = secrets.token_hex(16)
-    h    = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), _ITERATIONS)
-    return f"{salt}:{h.hex()}"
-
-
-def verify_password(password: str, stored: str) -> bool:
-    """Vérifie un mot de passe contre le hash stocké. Résistant aux attaques de timing."""
-    try:
-        salt, h = stored.split(":", 1)
-        new_h = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), _ITERATIONS)
-        return secrets.compare_digest(new_h.hex(), h)
-    except Exception:
-        return False
-
-
-# ==============================================================================
-#  3. GESTION DES UTILISATEURS
-# ==============================================================================
-def creer_utilisateur(username: str, nom_complet: str, password: str, role: str = "Conseiller"):
-    conn = get_conn()
-    c    = conn.cursor()
-    try:
-        c.execute(
-            """INSERT INTO utilisateurs (username, nom_complet, password_hash, role, date_creation)
-               VALUES (?,?,?,?,?)""",
-            (username.strip().lower(), nom_complet.strip(), hash_password(password), role,
-             datetime.now().strftime("%d/%m/%Y %H:%M"))
-        )
-        conn.commit()
-        return True, "Utilisateur créé avec succès."
-    except sqlite3.IntegrityError:
-        return False, f"L'identifiant « {username} » est déjà utilisé."
-    finally:
-        conn.close()
-
-
-def creer_admin_par_defaut():
-    """Crée un compte admin si la table est vide (premier lancement)."""
-    conn = get_conn()
-    c    = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM utilisateurs")
-    n = c.fetchone()[0]
-    conn.close()
-    if n == 0:
-        creer_utilisateur("admin", "Administrateur", "Admin2026!", "Admin")
-        return True
-    return False
-
-
-def authentifier_utilisateur(username: str, password: str):
-    """Retourne le dict utilisateur si les identifiants sont corrects, sinon None."""
-    conn = get_conn()
-    c    = conn.cursor()
-    c.execute(
-        "SELECT id, username, nom_complet, password_hash, role FROM utilisateurs WHERE username=? AND actif=1",
-        (username.strip().lower(),)
-    )
-    row = c.fetchone()
-    conn.close()
-    if row is None:
-        return None
-    user = dict(row)
-    if verify_password(password, user["password_hash"]):
-        return user
-    return None
-
-
-def lire_utilisateurs():
-    conn = get_conn()
-    df   = pd.read_sql_query(
-        "SELECT id, username, nom_complet, role, actif, date_creation FROM utilisateurs ORDER BY id",
-        conn
-    )
-    conn.close()
-    return df
-
-
-def maj_utilisateur(uid: int, champ: str, valeur):
-    if champ not in CHAMPS_UTILISATEUR:
-        raise ValueError(f"Champ non autorisé : {champ}")
-    conn = get_conn()
-    c    = conn.cursor()
-    c.execute(f"UPDATE utilisateurs SET {champ}=? WHERE id=?", (valeur, uid))
-    conn.commit()
-    conn.close()
-
-
-def supprimer_utilisateur(uid: int):
-    conn = get_conn()
-    c    = conn.cursor()
-    c.execute("DELETE FROM utilisateurs WHERE id=?", (uid,))
-    conn.commit()
-    conn.close()
-
-
-# Crée l'admin par défaut si besoin (premier lancement)
 _admin_cree = creer_admin_par_defaut()
 
 # ==============================================================================
-#  4. PROSPECTS
-# ==============================================================================
-def ajouter_prospect(d: dict):
-    conn = get_conn()
-    c    = conn.cursor()
-    c.execute("""
-        INSERT INTO prospects
-        (ref, prenom, nom, telephone, email, code_postal, ville, type_client,
-         univers_interesse, service_principal, operateur_actuel, techno, data_go,
-         cout_mensuel_actuel, offre_actuelle, satisfaction_reseau, veut_rester,
-         speed_down, speed_up, cout_elec, cout_gaz, fournisseur_energie,
-         abonnements, lignes_multi, economie_estimee_an, notes, statut,
-         date_creation, date_relance, cree_par)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    """, (
-        d.get("ref"),             d.get("prenom"),          d.get("nom"),
-        d.get("telephone"),       d.get("email"),           d.get("code_postal"),
-        d.get("ville"),           d.get("type_client"),     d.get("univers_interesse"),
-        d.get("service_principal"),d.get("operateur_actuel"),d.get("techno"),
-        d.get("data_go"),         d.get("cout_mensuel_actuel", 0.0),
-        d.get("offre_actuelle"),  d.get("satisfaction_reseau"),d.get("veut_rester"),
-        d.get("speed_down", 0.0), d.get("speed_up", 0.0),  d.get("cout_elec", 0.0),
-        d.get("cout_gaz", 0.0),   d.get("fournisseur_energie"),d.get("abonnements"),
-        d.get("lignes_multi"),    d.get("economie_estimee_an", 0.0),d.get("notes"),
-        d.get("statut", "À relancer"),
-        datetime.now().strftime("%d/%m/%Y %H:%M"),
-        d.get("date_relance", ""),
-        d.get("cree_par", ""),
-    ))
-    conn.commit()
-    conn.close()
-
-
-def lire_prospects():
-    conn = get_conn()
-    df   = pd.read_sql_query("SELECT * FROM prospects ORDER BY id DESC", conn)
-    conn.close()
-    return df
-
-
-def maj_prospect(pid: int, champ: str, valeur):
-    if champ not in CHAMPS_PROSPECT:
-        raise ValueError(f"Champ non autorisé : {champ}")
-    conn = get_conn()
-    c    = conn.cursor()
-    c.execute(f"UPDATE prospects SET {champ}=? WHERE id=?", (valeur, pid))
-    conn.commit()
-    conn.close()
-
-
-def supprimer_prospect(pid: int):
-    conn = get_conn()
-    c    = conn.cursor()
-    c.execute("DELETE FROM prospects WHERE id=?", (pid,))
-    conn.commit()
-    conn.close()
-
-
-# ==============================================================================
-#  5. CLIENTS
-# ==============================================================================
-def ajouter_client(d: dict) -> int:
-    conn = get_conn()
-    c    = conn.cursor()
-    c.execute("""
-        INSERT INTO clients
-        (ref, prenom, nom, telephone, email, code_postal, ville, type_client,
-         operateur_actuel, techno, data_go, offre_actuelle, cout_mensuel_actuel,
-         satisfaction_reseau, veut_rester, speed_down, speed_up,
-         fournisseur_energie, cout_elec, cout_gaz, economie_estimee_an,
-         notes, date_creation, cree_par)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    """, (
-        d.get("ref"),             d.get("prenom"),          d.get("nom"),
-        d.get("telephone"),       d.get("email"),           d.get("code_postal"),
-        d.get("ville"),           d.get("type_client"),     d.get("operateur_actuel"),
-        d.get("techno"),          d.get("data_go"),         d.get("offre_actuelle"),
-        d.get("cout_mensuel_actuel", 0.0),
-        d.get("satisfaction_reseau"),d.get("veut_rester"),
-        d.get("speed_down", 0.0), d.get("speed_up", 0.0),  d.get("fournisseur_energie"),
-        d.get("cout_elec", 0.0),  d.get("cout_gaz", 0.0),  d.get("economie_estimee_an", 0.0),
-        d.get("notes"),
-        datetime.now().strftime("%d/%m/%Y %H:%M"),
-        d.get("cree_par", ""),
-    ))
-    cid = c.lastrowid
-    conn.commit()
-    conn.close()
-    return cid
-
-
-def lire_clients():
-    conn = get_conn()
-    df   = pd.read_sql_query("SELECT * FROM clients ORDER BY id DESC", conn)
-    conn.close()
-    return df
-
-
-def maj_client(cid: int, champ: str, valeur):
-    if champ not in CHAMPS_CLIENT:
-        raise ValueError(f"Champ non autorisé : {champ}")
-    conn = get_conn()
-    c    = conn.cursor()
-    c.execute(f"UPDATE clients SET {champ}=? WHERE id=?", (valeur, cid))
-    conn.commit()
-    conn.close()
-
-
-def supprimer_client(cid: int):
-    conn = get_conn()
-    c    = conn.cursor()
-    c.execute("DELETE FROM contrats WHERE client_id=?", (cid,))
-    c.execute("DELETE FROM clients WHERE id=?", (cid,))
-    conn.commit()
-    conn.close()
-
-
-# ==============================================================================
-#  6. CONTRATS
-# ==============================================================================
-def ajouter_contrat(d: dict):
-    conn = get_conn()
-    c    = conn.cursor()
-    c.execute("""
-        INSERT INTO contrats
-        (client_id, univers, categorie, fournisseur, nom_offre, cout_mensuel,
-         economie_mensuelle, reference_contrat, statut_contrat, date_souscription,
-         notes, cree_par)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-    """, (
-        d.get("client_id"),       d.get("univers"),         d.get("categorie"),
-        d.get("fournisseur"),     d.get("nom_offre"),       d.get("cout_mensuel", 0.0),
-        d.get("economie_mensuelle", 0.0),d.get("reference_contrat"),
-        d.get("statut_contrat", "En cours d'ouverture"),
-        datetime.now().strftime("%d/%m/%Y"),
-        d.get("notes"),           d.get("cree_par", ""),
-    ))
-    conn.commit()
-    conn.close()
-
-
-def lire_contrats_client(cid: int):
-    conn = get_conn()
-    df   = pd.read_sql_query(
-        "SELECT * FROM contrats WHERE client_id=? ORDER BY id DESC", conn, params=(cid,)
-    )
-    conn.close()
-    return df
-
-
-def maj_contrat(ctid: int, champ: str, valeur):
-    if champ not in CHAMPS_CONTRAT:
-        raise ValueError(f"Champ non autorisé : {champ}")
-    conn = get_conn()
-    c    = conn.cursor()
-    c.execute(f"UPDATE contrats SET {champ}=? WHERE id=?", (valeur, ctid))
-    conn.commit()
-    conn.close()
-
-
-def supprimer_contrat(ctid: int):
-    conn = get_conn()
-    c    = conn.cursor()
-    c.execute("DELETE FROM contrats WHERE id=?", (ctid,))
-    conn.commit()
-    conn.close()
-
-
-# ==============================================================================
-#  7. OFFRES (CATALOGUE)
-# ==============================================================================
-def ajouter_offre(d: dict):
-    conn = get_conn()
-    c    = conn.cursor()
-    c.execute("""
-        INSERT INTO offres
-        (univers, categorie, fournisseur, nom_offre, prix_mensuel, frais_activation,
-         engagement_mois, caracteristiques, commission_affiliation, actif, date_maj)
-        VALUES (?,?,?,?,?,?,?,?,?,1,?)
-    """, (
-        d.get("univers"),         d.get("categorie"),       d.get("fournisseur"),
-        d.get("nom_offre"),       d.get("prix_mensuel", 0.0),d.get("frais_activation", 0.0),
-        d.get("engagement_mois", 0),d.get("caracteristiques"),d.get("commission_affiliation", 0.0),
-        datetime.now().strftime("%d/%m/%Y"),
-    ))
-    conn.commit()
-    conn.close()
-
-
-def lire_offres(univers=None, categorie=None, actif_seulement=True):
-    conn   = get_conn()
-    q      = "SELECT * FROM offres WHERE 1=1"
-    params = []
-    if actif_seulement:
-        q += " AND actif=1"
-    if univers:
-        q += " AND univers=?";    params.append(univers)
-    if categorie:
-        q += " AND categorie=?";  params.append(categorie)
-    q += " ORDER BY prix_mensuel ASC"
-    df = pd.read_sql_query(q, conn, params=params)
-    conn.close()
-    return df
-
-
-def maj_offre(oid: int, champ: str, valeur):
-    if champ not in CHAMPS_OFFRE:
-        raise ValueError(f"Champ non autorisé : {champ}")
-    conn = get_conn()
-    c    = conn.cursor()
-    c.execute(f"UPDATE offres SET {champ}=?, date_maj=? WHERE id=?",
-              (valeur, datetime.now().strftime("%d/%m/%Y"), oid))
-    conn.commit()
-    conn.close()
-
-
-def supprimer_offre(oid: int):
-    conn = get_conn()
-    c    = conn.cursor()
-    c.execute("DELETE FROM offres WHERE id=?", (oid,))
-    conn.commit()
-    conn.close()
-
-
-def compter_offres() -> int:
-    conn = get_conn()
-    c    = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM offres WHERE actif=1")
-    n = c.fetchone()[0]
-    conn.close()
-    return n
-
-
-def inserer_offres_demo():
-    """Catalogue de démonstration — à charger depuis Admin > Pré-remplir."""
-    demo = [
-        # ---- TÉLÉCOM : Mobile ----
-        ("Télécom","Mobile","Free","Forfait Free 5G 350 Go",19.99,10,0,"350 Go - 5G - Appels/SMS illimités - Europe incluse",30),
-        ("Télécom","Mobile","Bouygues","B&You 200 Go",13.99,0,0,"200 Go - 5G - Illimité - 35 Go Europe",25),
-        ("Télécom","Mobile","SFR","RED 130 Go",12.99,0,0,"130 Go - 5G - Illimité - 25 Go Europe",22),
-        ("Télécom","Mobile","YouPrice (Réseau Orange)","Le Series 100 Go",9.99,0,0,"100 Go - Réseau Orange - Illimité",20),
-        ("Télécom","Mobile","Orange","Forfait 5G 150 Go",24.99,0,0,"150 Go - 5G+ - Meilleure couverture",35),
-        ("Télécom","Mobile","Free","Forfait Free 2€",2.00,0,0,"2h appels - SMS illimités - 50 Mo",5),
-        # ---- TÉLÉCOM : Box / Fibre ----
-        ("Télécom","Box / Fibre","Free","Freebox Pop Fibre",29.99,0,0,"Jusqu'à 5 Gbps - WiFi 7 - TV incluse",50),
-        ("Télécom","Box / Fibre","Bouygues","Bbox Fibre Must",31.99,0,0,"2 Gbps - WiFi 6 - 180 chaînes",45),
-        ("Télécom","Box / Fibre","SFR","SFR Fibre Power",34.99,0,0,"2 Gbps - décodeur 4K",42),
-        ("Télécom","Box / Fibre","Orange","Livebox Fibre",39.99,0,0,"2 Gbps - WiFi 6 - réseau Orange",55),
-        ("Télécom","Box / Fibre","Free","Freebox Ultra",49.99,0,0,"8 Gbps - WiFi 7 - Netflix/Disney+ inclus",60),
-        # ---- TÉLÉCOM : Pack Box + Mobile ----
-        ("Télécom","Pack Box + Mobile","Bouygues","Pack Bbox + Forfait 200 Go",42.99,0,0,"Fibre 2 Gbps + 200 Go 5G",60),
-        ("Télécom","Pack Box + Mobile","SFR","Pack Fibre + RED 130 Go",44.99,0,0,"Fibre 2 Gbps + 130 Go",55),
-        ("Télécom","Pack Box + Mobile","Free","Freebox Pop + Forfait 350 Go",39.98,0,0,"Fibre 5 Gbps + 350 Go 5G",70),
-        ("Télécom","Pack Box + Mobile","Orange","Livebox + Forfait 150 Go",54.99,0,0,"Fibre 2 Gbps + 150 Go 5G",75),
-        # ---- TÉLÉCOM : Multi-lignes ----
-        ("Télécom","Multi-lignes","Free","2 lignes Free 350 Go",35.98,0,0,"2 forfaits 350 Go (-10% 2e ligne)",50),
-        ("Télécom","Multi-lignes","Bouygues","Pack famille 4 lignes",49.99,0,0,"4 forfaits 100 Go - réduction famille",70),
-        # ---- ÉNERGIE ----
-        ("Énergie","Électricité","TotalEnergies","Offre Verte Fixe Élec",89.00,0,12,"Prix kWh bloqué 1 an - 100% renouvelable",40),
-        ("Énergie","Électricité","Ekwateur","Élec 100% renouvelable",92.00,0,0,"Sans engagement - électricité verte",35),
-        ("Énergie","Électricité","Engie","Élec Référence",95.00,0,12,"Prix indexé - service client FR",38),
-        ("Énergie","Électricité","EDF","Tarif Bleu",99.00,0,0,"Tarif réglementé - sans engagement",25),
-        ("Énergie","Gaz","TotalEnergies","Gaz Fixe",78.00,0,12,"Prix bloqué 1 an",35),
-        ("Énergie","Gaz","Eni","Astucio Gaz",82.00,0,12,"Prix fixe - compensation carbone",33),
-        ("Énergie","Gaz","Engie","Gaz Référence",85.00,0,0,"Indexé - sans engagement",30),
-        # ---- ABONNEMENTS ----
-        ("Abonnements","Streaming Vidéo","Netflix","Netflix Standard avec pub",5.99,0,0,"1080p - 2 écrans",0),
-        ("Abonnements","Streaming Vidéo","Disney+","Disney+ Standard pub",5.99,0,0,"1080p",0),
-        ("Abonnements","Streaming Vidéo","Prime Video","Amazon Prime Video",6.99,0,0,"Inclus dans Prime",0),
-        ("Abonnements","Musique","Spotify","Spotify Premium",11.12,0,0,"Sans pub - hors ligne",0),
-        ("Abonnements","Musique","Deezer","Deezer Premium",11.99,0,0,"Sans pub - HiFi option",0),
-        ("Abonnements","Salle de sport","Basic-Fit","Abonnement Confort",29.99,30,12,"Accès illimité tous clubs",0),
-        ("Abonnements","SaaS / Logiciel","Microsoft","Microsoft 365 Famille",10.00,0,0,"Office + 1 To OneDrive - 6 pers.",0),
-    ]
-    for u, cat, fourn, nom, prix, frais, eng, carac, comm in demo:
-        ajouter_offre({"univers": u, "categorie": cat, "fournisseur": fourn, "nom_offre": nom,
-                       "prix_mensuel": prix, "frais_activation": frais, "engagement_mois": eng,
-                       "caracteristiques": carac, "commission_affiliation": comm})
-
-
-def generer_ref() -> str:
-    """Référence unique basée sur timestamp + 3 chiffres aléatoires.
-    Évite les doublons en accès concurrent (deux conseillers simultanés)."""
-    now    = datetime.now()
-    suffix = secrets.randbelow(900) + 100   # 100–999
-    return f"REF-{now.year}-{now.strftime('%m%d')}-{suffix}"
-
-
-# ==============================================================================
-#  8. ANALYSE PDF — FACTURE + SPEEDTEST
-# ==============================================================================
-def lire_pdf(fichier) -> str:
-    try:
-        reader = PdfReader(fichier)
-        return "\n".join((p.extract_text() or "") for p in reader.pages)
-    except Exception:
-        return ""
-
-
-def analyser_facture(texte: str) -> dict:
-    res = {"operateur": "Autre / Aucun", "fournisseur": "Autre / Aucun", "prix": 0.0,
-           "cp": "", "ville": "", "prenom": "", "nom": "", "tel": "", "email": "", "data_go": ""}
-    if not texte:
-        return res
-    t_low = texte.lower()
-    t_up  = texte.upper()
-    lignes = [l.strip() for l in texte.split("\n") if l.strip()]
-
-    if re.search(r"you\s*price", t_low):              res["operateur"] = "YouPrice (Réseau Orange)"
-    elif re.search(r"orange|sosh", t_low):             res["operateur"] = "Orange"
-    elif re.search(r"sfr|red\s+by|red\s*sfr", t_low): res["operateur"] = "SFR"
-    elif re.search(r"bouygues|b&you|b\s*&\s*you", t_low): res["operateur"] = "Bouygues"
-    elif re.search(r"free|proxymity", t_low):          res["operateur"] = "Free"
-
-    if re.search(r"\bedf\b", t_low):                  res["fournisseur"] = "EDF"
-    elif re.search(r"engie|gdf", t_low):               res["fournisseur"] = "Engie"
-    elif re.search(r"total\s*energies|total\s*direct", t_low): res["fournisseur"] = "TotalEnergies"
-    elif re.search(r"\beni\b", t_low):                 res["fournisseur"] = "Eni"
-    elif re.search(r"vattenfall", t_low):              res["fournisseur"] = "Vattenfall"
-    elif re.search(r"ekwateur|ekwatour", t_low):       res["fournisseur"] = "Ekwateur"
-
-    def to_float(v): return float(v.replace(" ", "").replace(",", "."))
-    mots_prix = ["abonnement","forfait","mensuel","prélèvement","prelevement",
-                 "facturé","total","ttc","à payer","a payer","montant","somme"]
-    for ligne in lignes:
-        ll = ligne.lower()
-        if any(m in ll for m in mots_prix):
-            mts = re.findall(r"(\d+(?:[\s,.]\d{1,2})?)\s*(?:€|eur)", ll)
-            if mts:
-                res["prix"] = to_float(mts[-1])
-                break
-    if res["prix"] == 0.0:
-        allp = re.findall(r"(\d+(?:[\s,.]\d{1,2})?)\s*(?:€|eur)", t_low)
-        if allp:
-            res["prix"] = to_float(allp[-1])
-
-    blacklist = ["RUE","AVENUE","BOULEVARD","BD","CHEMIN","ROUTE","ZA","ZI","BP","CEDEX",
-                 "SIRET","SIREN","RCS","APE","TSA","CS","SERVICE","CLIENT","SOCIETE","BOUTIQUE"]
-    for m in re.finditer(r"\b(\d{5})\b", t_up):
-        cp = m.group(1)
-        for ligne in lignes:
-            if cp in ligne:
-                lu = ligne.upper()
-                if any(w in lu for w in ["TSA","CS","RCS","SIRET","SERVICE CLIENT","SOCIETE","BOUTIQUE"]):
-                    continue
-                sub  = re.sub(r"\bCEDEX\b.*", "", lu.replace(cp, "")).strip()
-                cand = re.sub(r"[^A-ZÀ-ÿ\s\-]", "", sub).strip()
-                cand = re.sub(r"\s+", " ", cand)
-                if len(cand) > 2 and not any(w in cand.split() for w in blacklist):
-                    res["cp"] = cp; res["ville"] = cand; break
-        if res["ville"]:
-            break
-
-    for ligne in lignes[:25]:
-        if any(w in ligne.upper() for w in ["SOCIETE","SERVICE","TSA","CS","BOUTIQUE","RCS","APE"]):
-            continue
-        mc = re.search(r"\b(M\.|MME|MR|MLLE|MONSIEUR|MADAME)\b\s+([A-ZÀ-ÿ\-]+)\s+([A-ZÀ-ÿ\-]+)", ligne.upper())
-        if mc:
-            res["prenom"] = mc.group(2).capitalize()
-            res["nom"]    = mc.group(3).upper()
-            break
-
-    mt = re.search(r"\b(0[1-9])(?:[\s.-]?\d{2}){4}\b", texte)
-    if mt: res["tel"] = mt.group(0)
-    me = re.search(r"[a-zA-Z0-9-_\.]+@[a-zA-Z0-9-_\.]+\.[a-zA-Z]{2,5}", texte)
-    if me: res["email"] = me.group(0)
-    md = re.search(r"(\d+(?:[\.,]\d+)?)\s*(?:GO|GB)", t_up)
-    if md: res["data_go"] = md.group(1).replace(",", ".")
-    return res
-
-
-def analyser_speedtest_pdf(texte: str):
-    down, up = 0.0, 0.0
-    if not texte:
-        return down, up
-    t = texte.lower()
-    md = re.search(r"(\d+(?:[\.,]\d+)?)\s*(?:mbit/s|mbps)?\s*(?:téléchargement|download|descendant|réception)", t)
-    if not md:
-        md = re.search(r"(?:téléchargement|download|descendant|réception)\s*[:\s-]*\s*(\d+(?:[\.,]\d+)?)", t)
-    if md: down = float(md.group(1).replace(",", "."))
-    mu = re.search(r"(\d+(?:[\.,]\d+)?)\s*(?:mbit/s|mbps)?\s*(?:transfert|upload|montant|envoi)", t)
-    if not mu:
-        mu = re.search(r"(?:transfert|upload|montant|envoi)\s*[:\s-]*\s*(\d+(?:[\.,]\d+)?)", t)
-    if mu: up = float(mu.group(1).replace(",", "."))
-    return down, up
-
-
-# ==============================================================================
-#  9. MOTEUR DE COMPARAISON & RECOMMANDATIONS
-# ==============================================================================
-def comparer_offres(univers, categorie, cout_actuel_mensuel, fournisseurs_autorises=None):
-    df = lire_offres(univers=univers, categorie=categorie)
-    if df.empty:
-        return []
-    resultats = []
-    for _, o in df.iterrows():
-        if fournisseurs_autorises and o["fournisseur"] not in fournisseurs_autorises:
-            continue
-        prix     = float(o["prix_mensuel"] or 0)
-        frais    = float(o["frais_activation"] or 0)
-        eco_mens = round(cout_actuel_mensuel - prix, 2)
-        resultats.append({
-            "id": int(o["id"]), "nom": o["nom_offre"], "fournisseur": o["fournisseur"],
-            "categorie": categorie, "univers": univers,
-            "prix_mensuel": prix, "frais_activation": frais,
-            "engagement": int(o["engagement_mois"] or 0),
-            "caracteristiques": o["caracteristiques"] or "",
-            "commission": float(o["commission_affiliation"] or 0),
-            "economie_mensuelle": eco_mens, "economie_annuelle": round(eco_mens * 12, 2),
-            "cout_1_an": round(prix * 12 + frais, 2),
-        })
-    resultats.sort(key=lambda x: x["economie_annuelle"], reverse=True)
-    return resultats
-
-
-def construire_recommandations(service_principal, cout_tel, fournisseurs_autorises=None):
-    f   = fournisseurs_autorises
-    top = lambda cat: comparer_offres("Télécom", cat, cout_tel, f)[:3]
-
-    if service_principal == "Mobile uniquement":
-        principal = ("📱 Vos meilleures offres Mobile", top("Mobile"))
-        cross     = [("🏠 Et si vous regardiez aussi la Box / Fibre ?", top("Box / Fibre")),
-                     ("📦 Nos packs Box + Mobile (pour aller plus loin)", top("Pack Box + Mobile"))]
-    elif service_principal == "Box / Fibre uniquement":
-        principal = ("🏠 Vos meilleures offres Box / Fibre", top("Box / Fibre"))
-        cross     = [("📦 Top 3 de nos packs Box + Mobile", top("Pack Box + Mobile")),
-                     ("📱 Nos 3 meilleurs forfaits Mobile", top("Mobile"))]
-    elif service_principal == "Pack Box + Mobile":
-        principal = ("📦 Vos meilleurs packs Box + Mobile", top("Pack Box + Mobile"))
-        cross     = [("📱 Nos 3 meilleurs forfaits Mobile", top("Mobile")),
-                     ("🏠 Nos 3 meilleures offres Box / Fibre", top("Box / Fibre"))]
-    else:
-        ml        = top("Multi-lignes") or top("Mobile")
-        principal = ("📲 Vos meilleures offres Multi-lignes", ml)
-        cross     = [("📦 Top 3 de nos packs Box + Mobile", top("Pack Box + Mobile")),
-                     ("🏠 Nos 3 meilleures offres Box / Fibre", top("Box / Fibre"))]
-
-    return {"principal": principal, "cross_sell": cross}
-
-
-# ==============================================================================
-#  10. GÉNÉRATION PDF DE RESTITUTION
-# ==============================================================================
-COULEUR_PRIMAIRE   = (26, 60, 110)
-COULEUR_ACCENT     = (0, 150, 80)
-COULEUR_GRIS       = (110, 110, 110)
-COULEUR_FOND_CARTE = (244, 247, 251)
-
-
-def _pdf_txt(txt):
-    if txt is None:
-        return ""
-    rep = {"€":"EUR","'":"'","–":"-","—":"-","•":"-","œ":"oe",
-           "🎯":"","📱":"","🏠":"","📦":"","📲":"","⚡":"","🎬":"",
-           "😀":"","😐":"","😡":"","💰":"","💶":""}
-    s = str(txt)
-    for k, v in rep.items():
-        s = s.replace(k, v)
-    return s.encode("latin-1", "ignore").decode("latin-1")
-
-
-class PDFPro(FPDF):
-    def __init__(self, nom_societe="IA CONSEIL"):
-        super().__init__()
-        self.nom_societe = nom_societe
-
-    def header(self):
-        self.set_fill_color(*COULEUR_PRIMAIRE)
-        self.rect(0, 0, 210, 26, "F")
-        self.set_y(7)
-        self.set_font("Helvetica", "B", 18)
-        self.set_text_color(255, 255, 255)
-        self.cell(0, 10, _pdf_txt(self.nom_societe), ln=False)
-        self.set_font("Helvetica", "", 10)
-        self.set_xy(0, 10)
-        self.cell(200, 8, _pdf_txt("Bilan d'economies personnalise   "), align="R")
-        self.set_text_color(0, 0, 0)
-        self.set_y(34)
-
-    def footer(self):
-        self.set_y(-18)
-        self.set_draw_color(*COULEUR_PRIMAIRE)
-        self.set_line_width(0.4)
-        self.line(10, self.get_y(), 200, self.get_y())
-        self.set_y(-15)
-        self.set_font("Helvetica", "I", 8)
-        self.set_text_color(*COULEUR_GRIS)
-        self.multi_cell(0, 4, _pdf_txt(
-            f"{self.nom_societe} - Document genere le {datetime.now().strftime('%d/%m/%Y')}. "
-            "Estimations indicatives basees sur les informations communiquees et les offres "
-            "disponibles a ce jour. Sans valeur contractuelle."), align="C")
-        self.set_text_color(0, 0, 0)
-        self.set_y(-10)
-        self.set_font("Helvetica", "", 8)
-        self.cell(0, 5, f"Page {self.page_no()}", align="C")
-
-
-def _carte_offre(pdf, titre_section, offre, cout_actuel):
-    y0 = pdf.get_y()
-    if y0 > 245:
-        pdf.add_page(); y0 = pdf.get_y()
-    pdf.set_fill_color(*COULEUR_FOND_CARTE)
-    pdf.set_draw_color(220, 226, 235)
-    pdf.rect(10, y0, 190, 34, "DF")
-    pdf.set_xy(13, y0 + 2)
-    pdf.set_font("Helvetica", "B", 11)
-    pdf.set_text_color(*COULEUR_PRIMAIRE)
-    pdf.cell(120, 6, _pdf_txt(titre_section), ln=True)
-    pdf.set_xy(13, y0 + 9)
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.set_text_color(0, 0, 0)
-    pdf.cell(120, 6, _pdf_txt(f"{offre.get('nom','')}"), ln=False)
-    pdf.set_font("Helvetica", "", 9)
-    pdf.set_text_color(*COULEUR_GRIS)
-    pdf.set_xy(13, y0 + 15)
-    pdf.cell(120, 5, _pdf_txt(f"{offre.get('fournisseur','')}  -  {offre.get('caracteristiques','')[:70]}"), ln=False)
-    pdf.set_xy(13, y0 + 22)
-    pdf.set_font("Helvetica", "", 9)
-    pdf.set_text_color(0, 0, 0)
-    pdf.cell(120, 5, _pdf_txt(
-        f"Avant : {cout_actuel} EUR/mois   ->   Apres : {offre.get('prix_mensuel',0)} EUR/mois"), ln=False)
-    eco_an = offre.get("economie_annuelle", 0) or 0
-    pdf.set_fill_color(*COULEUR_ACCENT)
-    pdf.rect(150, y0 + 6, 47, 22, "F")
-    pdf.set_xy(150, y0 + 9)
-    pdf.set_font("Helvetica", "", 8)
-    pdf.set_text_color(255, 255, 255)
-    pdf.cell(47, 4, _pdf_txt("Economie estimee"), align="C", ln=True)
-    pdf.set_x(150)
-    pdf.set_font("Helvetica", "B", 14)
-    pdf.cell(47, 8, _pdf_txt(f"{eco_an} EUR"), align="C", ln=True)
-    pdf.set_x(150)
-    pdf.set_font("Helvetica", "", 8)
-    pdf.cell(47, 4, _pdf_txt("par an"), align="C")
-    pdf.set_text_color(0, 0, 0)
-    pdf.set_y(y0 + 38)
-
-
-def generer_pdf_restitution(client, recommandations, nom_societe="IA CONSEIL"):
-    if not FPDF_OK:
-        return None
-    pdf = PDFPro(nom_societe)
-    pdf.set_auto_page_break(auto=True, margin=20)
-    pdf.add_page()
-    nom_complet = f"{client.get('prenom','')} {client.get('nom','')}".strip()
-    pdf.set_font("Helvetica", "B", 14)
-    pdf.set_text_color(*COULEUR_PRIMAIRE)
-    pdf.cell(0, 9, _pdf_txt(f"Etude preparee pour {nom_complet}"), ln=True)
-    pdf.set_font("Helvetica", "", 10)
-    pdf.set_text_color(*COULEUR_GRIS)
-    ligne_loc = []
-    if client.get("ville"):     ligne_loc.append(f"{client.get('ville')} ({client.get('code_postal','')})")
-    if client.get("telephone"): ligne_loc.append(f"Tel : {client.get('telephone')}")
-    if client.get("email"):     ligne_loc.append(client.get("email"))
-    pdf.cell(0, 6, _pdf_txt("  -  ".join(ligne_loc)), ln=True)
-    pdf.ln(2)
-    pdf.set_text_color(0, 0, 0)
-    pdf.set_font("Helvetica", "", 10)
-    pdf.multi_cell(0, 5, _pdf_txt(
-        "Voici la synthese des offres que nous avons selectionnees pour votre situation, "
-        "avec les economies estimees sur 12 mois. Notre equipe s'occupe de toutes les demarches."))
-    pdf.ln(3)
-    total_eco_an = 0.0
-    for r in recommandations:
-        offre = r.get("offre", {})
-        total_eco_an += offre.get("economie_annuelle", 0) or 0
-        _carte_offre(pdf, f"{r.get('univers','')} - {r.get('categorie','')}", offre, r.get("cout_actuel", 0))
-    if pdf.get_y() > 240:
-        pdf.add_page()
-    pdf.ln(2)
-    y = pdf.get_y()
-    pdf.set_fill_color(*COULEUR_ACCENT)
-    pdf.rect(10, y, 190, 18, "F")
-    pdf.set_xy(10, y + 4)
-    pdf.set_font("Helvetica", "B", 15)
-    pdf.set_text_color(255, 255, 255)
-    pdf.cell(190, 10, _pdf_txt(f"ECONOMIE TOTALE ESTIMEE : {round(total_eco_an,2)} EUR / AN"), align="C")
-    pdf.set_text_color(0, 0, 0)
-    return bytes(pdf.output())
-
-
-# ==============================================================================
-#  11. EMAIL
-# ==============================================================================
-def envoyer_email(destinataire, sujet, corps_html, pdf_bytes=None, nom_pdf="bilan.pdf"):
-    cfg      = st.session_state.get("smtp_config", {})
-    serveur  = cfg.get("serveur", "")
-    port     = int(cfg.get("port", 587))
-    user     = cfg.get("user", "")
-    mdp      = cfg.get("mdp", "")
-    expediteur = cfg.get("expediteur", user)
-    if not (serveur and user and mdp):
-        return False, "Configuration SMTP incomplète (voir Admin > Paramètres email)."
-    try:
-        msg = MIMEMultipart()
-        msg["From"], msg["To"], msg["Subject"] = expediteur, destinataire, sujet
-        msg.attach(MIMEText(corps_html, "html", "utf-8"))
-        if pdf_bytes:
-            piece = MIMEApplication(pdf_bytes, _subtype="pdf")
-            piece.add_header("Content-Disposition", "attachment", filename=nom_pdf)
-            msg.attach(piece)
-        with smtplib.SMTP(serveur, port, timeout=15) as s:
-            s.starttls(); s.login(user, mdp); s.send_message(msg)
-        return True, "Email envoyé avec succès."
-    except Exception as e:
-        return False, f"Échec de l'envoi : {e}"
-
-
-def construire_corps_email(client, recommandations, total_eco_an):
-    nom   = client.get("prenom", "")
-    lignes = ""
-    for r in recommandations:
-        o = r.get("offre", {})
-        lignes += f"""<tr>
-          <td style="padding:10px;border-bottom:1px solid #eee;">
-            <b>{r.get('univers','')} – {r.get('categorie','')}</b></td>
-          <td style="padding:10px;border-bottom:1px solid #eee;">
-            {o.get('nom','')}<br>
-            <span style="color:#888;font-size:12px;">{o.get('fournisseur','')}</span></td>
-          <td style="padding:10px;border-bottom:1px solid #eee;">{o.get('prix_mensuel',0)} €/mois</td>
-          <td style="padding:10px;border-bottom:1px solid #eee;color:#009650;">
-            <b>+{o.get('economie_annuelle',0)} €/an</b></td>
-        </tr>"""
-    return f"""
-    <div style="font-family:Arial,sans-serif;max-width:660px;margin:auto;
-                border:1px solid #eee;border-radius:8px;overflow:hidden;">
-      <div style="background:#1a3c6e;color:#fff;padding:24px;">
-        <h1 style="margin:0;font-size:22px;">Votre bilan d'économies</h1>
-        <p style="margin:6px 0 0;opacity:.85;">Préparé spécialement pour vous</p>
-      </div>
-      <div style="padding:24px;">
-        <p style="font-size:15px;">Bonjour {nom},</p>
-        <p>Suite à notre échange, voici les offres que nous avons sélectionnées :</p>
-        <table style="width:100%;border-collapse:collapse;font-size:14px;">
-          <thead><tr style="background:#f4f7fb;text-align:left;">
-            <th style="padding:10px;">Univers</th><th style="padding:10px;">Offre</th>
-            <th style="padding:10px;">Tarif</th><th style="padding:10px;">Économie</th>
-          </tr></thead>
-          <tbody>{lignes}</tbody>
-        </table>
-        <div style="background:#009650;color:#fff;padding:16px;border-radius:6px;
-                    text-align:center;margin-top:20px;font-size:18px;">
-          <b>Économie totale estimée : {round(total_eco_an,2)} € / an</b>
-        </div>
-        <p style="margin-top:20px;">Le détail complet est en pièce jointe.
-           Nous nous occupons de toutes les démarches de changement.</p>
-        <p style="color:#aaa;font-size:11px;margin-top:24px;">
-          Estimations indicatives, sans valeur contractuelle.</p>
-      </div>
-    </div>"""
-
-
-# ==============================================================================
-#  12. SESSION STATE & VALEURS PAR DÉFAUT
+#  SESSION STATE & VALEURS PAR DÉFAUT
 # ==============================================================================
 DEFAUTS = {
     # Authentification (NOUVEAU Étape 1)
@@ -1083,6 +118,7 @@ DEFAUTS = {
     "auth_username":    "",
     "auth_nom_complet": "",
     "auth_role":        "Lecture",
+    "api_token":        None,   # JWT pour l'API CRM interne (crm_api.py), cf. api_client.py
     # Navigation
     "menu": "📊 Tableau de bord",
     # Config
@@ -1093,7 +129,7 @@ DEFAUTS = {
     "w_univers": ["Télécom"],
     "w_service_principal": "Mobile uniquement",
     "w_type_client": "Particulier",
-    "w_prenom": "", "w_nom": "", "w_tel": "", "w_email": "", "w_cp": "", "w_ville": "",
+    "w_prenom": "", "w_nom": "", "w_tel": "", "w_email": "", "w_cp": "", "w_ville": "", "w_adresse": "",
     "w_tel_operateur": "Autre / Aucun", "w_tel_cout": 0.0, "w_tel_data": "50",
     "w_tel_techno": "FIBRE", "w_tel_offre": "", "w_tel_debit": DEBITS_OPTIONS[0],
     "w_sat_reseau": SATISFACTION_RESEAU[0], "w_veut_rester": False,
@@ -1107,6 +143,19 @@ for k, v in DEFAUTS.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
+# Recharge la config SMTP/société depuis la base (persistée par Admin > Email) — sans quoi
+# elle serait perdue à chaque redémarrage et inutilisable par le script notifications.py.
+if "smtp_config_loaded" not in st.session_state:
+    st.session_state.smtp_config = {
+        "serveur":    lire_parametre("smtp_serveur",    ""),
+        "port":       int(safe_float(lire_parametre("smtp_port", "587"), 587)),
+        "user":       lire_parametre("smtp_user",       ""),
+        "mdp":        lire_parametre("smtp_mdp",        ""),
+        "expediteur": lire_parametre("smtp_expediteur", ""),
+    }
+    st.session_state.nom_societe = lire_parametre("nom_societe", st.session_state.nom_societe)
+    st.session_state.smtp_config_loaded = True
+
 
 def peut_modifier() -> bool:
     return st.session_state.get("auth_role") in ("Conseiller", "Admin")
@@ -1116,8 +165,103 @@ def est_admin() -> bool:
     return st.session_state.get("auth_role") == "Admin"
 
 
+def convertir_prospect_ui(p_row, key_prefix: str, moi: str) -> bool:
+    """Affiche la sélection des offres « intéresse le client » à reprendre comme
+    contrats, puis crée le client + les contrats sélectionnés. Utilisé partout où
+    un prospect déjà enregistré est converti (fiche Prospects, tableau de bord).
+    Renvoie True quand la conversion est finalisée (à l'appelant de faire le
+    st.rerun())."""
+    pid = int(p_row["id"])
+    try:
+        offres_int = json.loads(p_row.get("offres_interet") or "[]")
+    except Exception:
+        offres_int = []
+
+    st.markdown("**Sélectionnez les offres réellement souscrites :**")
+    contrats_a_creer = []
+    if not offres_int:
+        st.caption("Aucune offre cochée « Intéresse le client » sur ce prospect — "
+                    "le client sera créé sans contrat (ajoutez-en ensuite depuis sa fiche).")
+    for i, o in enumerate(offres_int):
+        with st.container(border=True):
+            ch = st.checkbox(
+                f"{o.get('univers','')} – {o.get('categorie','')} : {o.get('nom','')} ({o.get('fournisseur','')})",
+                value=True, key=f"{key_prefix}_ch_{pid}_{i}")
+            cc1, cc2 = st.columns(2)
+            prix = cc1.number_input(
+                "Coût mensuel (€)", min_value=0.0,
+                value=float(o.get("prix_mensuel", 0) or 0), step=1.0,
+                key=f"{key_prefix}_prix_{pid}_{i}")
+            eco = cc2.number_input(
+                "Économie mensuelle (€)", min_value=0.0,
+                value=float(round((o.get("economie_annuelle", 0) or 0) / 12, 2)), step=1.0,
+                key=f"{key_prefix}_eco_{pid}_{i}")
+            if ch:
+                contrats_a_creer.append({
+                    "univers": o.get("univers"), "categorie": o.get("categorie"),
+                    "fournisseur": o.get("fournisseur"), "nom_offre": o.get("nom"),
+                    "cout_mensuel": prix, "economie_mensuelle": eco,
+                    "cree_par": moi,
+                })
+
+    if st.button("💾 Créer le client + contrats sélectionnés",
+                  key=f"{key_prefix}_confirm_{pid}", type="primary"):
+        d = {k: p_row.get(k, "") for k in (
+            "ref","prenom","nom","telephone","email","code_postal","ville","adresse","type_client",
+            "operateur_actuel","techno","data_go","offre_actuelle","cout_mensuel_actuel",
+            "satisfaction_reseau","veut_rester","speed_down","speed_up",
+            "fournisseur_energie","cout_elec","cout_gaz","economie_estimee_an","notes")}
+        d["cree_par"] = moi
+        cid_nv = ajouter_client(d)
+        for ct in contrats_a_creer:
+            ajouter_contrat({**ct, "client_id": cid_nv, "statut_contrat": "En cours d'ouverture",
+                              "notes": "Créé via conversion prospect"})
+        enregistrer_action("client", cid_nv, "Conversion prospect→client",
+                            f"Depuis prospect #{pid} ({p_row.get('prenom','')} {p_row.get('nom','')}) "
+                            f"— {len(contrats_a_creer)} contrat(s)")
+        lier_facture_a_client(pid, cid_nv)
+        supprimer_prospect(pid)
+        return True
+    return False
+
+
+def _recos_post_paiement(facture: dict):
+    """Reconstruit les recommandations à restituer une fois le devis payé : depuis les
+    offres « intéresse le client » du prospect s'il existe encore, sinon depuis les
+    contrats du client (cas où le prospect a déjà été converti). Renvoie
+    (personne_dict, recommandations) ou (None, []) si rien à restituer."""
+    if facture.get("prospect_id"):
+        dfp   = lire_prospects()
+        match = dfp[dfp["id"] == facture["prospect_id"]]
+        if not match.empty:
+            p = match.iloc[0]
+            try:
+                offres_int = json.loads(p.get("offres_interet") or "[]")
+            except Exception:
+                offres_int = []
+            if offres_int:
+                recos = [{"univers": o.get("univers"), "categorie": o.get("categorie"),
+                          "cout_actuel": p.get("cout_mensuel_actuel", 0), "offre": o}
+                         for o in offres_int]
+                return p.to_dict(), recos
+    if facture.get("client_id"):
+        dfc   = lire_clients()
+        match = dfc[dfc["id"] == facture["client_id"]]
+        if not match.empty:
+            cl       = match.iloc[0]
+            contrats = lire_contrats_client(int(facture["client_id"]))
+            recos = [{"univers": ct["univers"], "categorie": ct["categorie"],
+                      "cout_actuel": cl.get("cout_mensuel_actuel", 0),
+                      "offre": {"nom": ct["nom_offre"], "fournisseur": ct["fournisseur"],
+                                "caracteristiques": "", "prix_mensuel": ct["cout_mensuel"],
+                                "economie_annuelle": round((ct["economie_mensuelle"] or 0) * 12, 2)}}
+                     for _, ct in contrats.iterrows()]
+            return cl.to_dict(), recos
+    return None, []
+
+
 # ==============================================================================
-#  13. BARRE LATÉRALE — LOGIN NOMINATIF
+#  BARRE LATÉRALE — LOGIN NOMINATIF
 # ==============================================================================
 with st.sidebar:
     st.title("📡 IA Conseil")
@@ -1136,6 +280,9 @@ with st.sidebar:
                 st.session_state.auth_username    = user["username"]
                 st.session_state.auth_nom_complet = user["nom_complet"]
                 st.session_state.auth_role        = user["role"]
+                # Jeton JWT émis localement (sans appel réseau) pour authentifier les
+                # appels api_client.py vers l'API CRM interne au nom de cet utilisateur.
+                st.session_state.api_token        = jwt_auth.creer_token(user)
                 st.rerun()
             else:
                 st.error("Identifiant ou mot de passe incorrect.")
@@ -1144,14 +291,14 @@ with st.sidebar:
         st.markdown(f"**👤 {st.session_state.auth_nom_complet}**")
         st.caption(f"Rôle : {st.session_state.auth_role}")
         if st.button("🚪 Se déconnecter", use_container_width=True):
-            for k in ["auth_logged_in","auth_user_id","auth_username","auth_nom_complet","auth_role"]:
+            for k in ["auth_logged_in","auth_user_id","auth_username","auth_nom_complet","auth_role","api_token"]:
                 st.session_state[k] = DEFAUTS[k]
             st.session_state.menu = "📊 Tableau de bord"
             st.rerun()
 
         st.divider()
         options_menu = ["📊 Tableau de bord", "🧭 Nouveau diagnostic",
-                        "📇 Prospects", "👥 Clients & contrats", "🛠️ Admin"]
+                        "📇 Prospects", "👥 Clients & contrats", "🧾 Facturation", "🛠️ Admin"]
         st.session_state.menu = st.radio(
             "Navigation", options_menu,
             index=options_menu.index(st.session_state.menu)
@@ -1187,7 +334,7 @@ menu = st.session_state.menu
 
 
 # ==============================================================================
-#  14. NOUVEAU DIAGNOSTIC
+#  NOUVEAU DIAGNOSTIC
 # ==============================================================================
 if menu == "🧭 Nouveau diagnostic":
     st.title("🧭 Diagnostic client guidé")
@@ -1206,19 +353,35 @@ if menu == "🧭 Nouveau diagnostic":
                 index=SERVICE_PRINCIPAL.index(st.session_state.w_service_principal),
                 horizontal=True)
 
-        st.markdown("##### 📄 Facture PDF (optionnel — pré-remplit la fiche)")
-        pdf_f = st.file_uploader("Facture Télécom ou Énergie", type=["pdf"], key="pdf_facture")
+        st.markdown("##### 📄 Facture — PDF, photo ou scan (optionnel — pré-remplit la fiche)")
+        pdf_f = st.file_uploader("Facture Télécom ou Énergie", type=["pdf", "jpg", "jpeg", "png"],
+                                  key="pdf_facture")
         if pdf_f is not None:
-            data = analyser_facture(lire_pdf(pdf_f))
-            st.session_state.facture_data = data
-            for src, dst in [("prenom","w_prenom"),("nom","w_nom"),("tel","w_tel"),
-                             ("email","w_email"),("cp","w_cp"),("ville","w_ville")]:
-                if data[src]: st.session_state[dst] = data[src]
-            if data["operateur"] != "Autre / Aucun": st.session_state.w_tel_operateur = data["operateur"]
-            if data["fournisseur"] != "Autre / Aucun": st.session_state.w_ener_fournisseur = data["fournisseur"]
-            if data["prix"] > 0: st.session_state.w_tel_cout = data["prix"]
-            if data["data_go"]: st.session_state.w_tel_data = data["data_go"]
-            st.success("Facture analysée — champs pré-remplis.")
+            api_key   = lire_parametre("anthropic_api_key", "")
+            ext       = pdf_f.name.rsplit(".", 1)[-1].lower() if "." in pdf_f.name else ""
+            est_image = ext in ("jpg", "jpeg", "png")
+            with st.spinner("Analyse de la facture en cours…"):
+                data = analyser_facture_vision(pdf_f.getvalue(), pdf_f.name, api_key) if api_key else None
+                via_vision = data is not None
+                if data is None and not est_image:
+                    data = analyser_facture(lire_pdf(pdf_f))
+
+            if data is None:
+                st.error("Analyse impossible pour une image — configurez la clé API Claude "
+                          "dans **Admin > 🔍 OCR Vision** pour lire les photos/scans de facture.")
+            else:
+                st.session_state.facture_data = data
+                for src, dst in [("prenom","w_prenom"),("nom","w_nom"),("tel","w_tel"),
+                                 ("email","w_email"),("cp","w_cp"),("ville","w_ville")]:
+                    if data[src]: st.session_state[dst] = data[src]
+                if data["operateur"] != "Autre / Aucun": st.session_state.w_tel_operateur = data["operateur"]
+                if data["fournisseur"] != "Autre / Aucun": st.session_state.w_ener_fournisseur = data["fournisseur"]
+                if data["prix"] > 0: st.session_state.w_tel_cout = data["prix"]
+                if data["data_go"]: st.session_state.w_tel_data = data["data_go"]
+                if via_vision:
+                    st.success("📸 Facture analysée par IA Vision — champs pré-remplis.")
+                else:
+                    st.success("Facture analysée — champs pré-remplis.")
 
         st.markdown("##### 📶 Speedtest PDF (optionnel)")
         pdf_s = st.file_uploader("PDF de test de débit (nPerf, Speedtest…)", type=["pdf"], key="pdf_speed")
@@ -1248,6 +411,8 @@ if menu == "🧭 Nouveau diagnostic":
         st.session_state.w_email  = c2.text_input("Email",     st.session_state.w_email)
         st.session_state.w_cp     = c1.text_input("Code postal", st.session_state.w_cp)
         st.session_state.w_ville  = c2.text_input("Ville",       st.session_state.w_ville)
+        st.session_state.w_adresse = st.text_input(
+            "Adresse (n°, rue, complément — bis, ter…)", st.session_state.w_adresse)
         # Validation en temps réel (non bloquante, juste indicative)
         if st.session_state.w_email and not valider_email(st.session_state.w_email):
             st.warning("⚠️ Format email invalide — vérifiez avant de continuer.")
@@ -1266,17 +431,19 @@ if menu == "🧭 Nouveau diagnostic":
         if "Télécom" in st.session_state.w_univers:
             with st.container(border=True):
                 st.markdown("#### 📱 Télécom")
-                box_seule = st.session_state.w_service_principal == "Box / Fibre uniquement"
+                box_seule    = st.session_state.w_service_principal == "Box / Fibre uniquement"
+                mobile_seul  = st.session_state.w_service_principal == "Mobile uniquement"
                 c1, c2 = st.columns(2)
                 st.session_state.w_tel_operateur = c1.selectbox(
                     "Opérateur actuel", LISTE_OPERATEURS_TEL,
                     index=LISTE_OPERATEURS_TEL.index(st.session_state.w_tel_operateur)
                           if st.session_state.w_tel_operateur in LISTE_OPERATEURS_TEL
                           else len(LISTE_OPERATEURS_TEL)-1)
+                techno_options = LISTE_TECHNO_MOBILE if mobile_seul else LISTE_TECHNO
                 st.session_state.w_tel_techno = c2.selectbox(
-                    "Technologie", LISTE_TECHNO,
-                    index=LISTE_TECHNO.index(st.session_state.w_tel_techno)
-                          if st.session_state.w_tel_techno in LISTE_TECHNO else 0)
+                    "Technologie", techno_options,
+                    index=techno_options.index(st.session_state.w_tel_techno)
+                          if st.session_state.w_tel_techno in techno_options else 0)
                 st.session_state.w_tel_offre = c1.text_input("Offre / forfait actuel", st.session_state.w_tel_offre)
                 st.session_state.w_tel_cout  = c2.number_input(
                     "Coût mensuel actuel (€)", min_value=0.0,
@@ -1299,13 +466,34 @@ if menu == "🧭 Nouveau diagnostic":
                     "⚠️ Veut rester chez son opérateur actuel",
                     value=st.session_state.w_veut_rester)
 
+                if st.session_state.w_sat_reseau != SATISFACTION_RESEAU[0] and st.session_state.w_ville:
+                    couverture = note_couverture_par_zone(st.session_state.w_ville)
+                    if not couverture.empty:
+                        meilleur = couverture.iloc[0]
+                        if meilleur["operateur"] != st.session_state.w_tel_operateur and meilleur["nb_avis"] >= 2:
+                            st.info(
+                                f"📍 À {st.session_state.w_ville}, **{meilleur['operateur']}** obtient la "
+                                f"meilleure satisfaction réseau chez nos clients/prospects "
+                                f"({meilleur['note_moyenne']:.1f}/3 sur {int(meilleur['nb_avis'])} avis) — "
+                                f"à proposer si le client envisage de changer d'opérateur.")
+
+                    debits_zone = meilleur_debit_par_zone(st.session_state.w_ville)
+                    if not debits_zone.empty:
+                        meilleur_d = debits_zone.iloc[0]
+                        if meilleur_d["operateur"] != st.session_state.w_tel_operateur and meilleur_d["nb_mesures"] >= 2:
+                            st.info(
+                                f"📶 À {st.session_state.w_ville}, **{meilleur_d['operateur']}** obtient le "
+                                f"meilleur débit mesuré chez nos clients/prospects "
+                                f"(⬇️ {meilleur_d['debit_down_moyen']} Mbps / ⬆️ {meilleur_d['debit_up_moyen']} Mbps "
+                                f"sur {int(meilleur_d['nb_mesures'])} mesures) — "
+                                f"à proposer si le client envisage de changer d'opérateur.")
+
+                # Débits : key= (sans value=) pour éviter le bug Streamlit qui oblige
+                # à cliquer deux fois sur +/- quand value= et la ré-affectation à la
+                # même clé de session_state coexistent.
                 d1, d2 = st.columns(2)
-                st.session_state.w_speed_down = d1.number_input(
-                    "Débit descendant (Mbps)", min_value=0.0,
-                    value=float(st.session_state.w_speed_down), step=1.0)
-                st.session_state.w_speed_up = d2.number_input(
-                    "Débit montant (Mbps)", min_value=0.0,
-                    value=float(st.session_state.w_speed_up), step=1.0)
+                d1.number_input("Débit descendant (Mbps)", min_value=0.0, step=1.0, key="w_speed_down")
+                d2.number_input("Débit montant (Mbps)", min_value=0.0, step=1.0, key="w_speed_up")
                 if st.session_state.w_speed_down or st.session_state.w_speed_up:
                     st.caption(f"📶 Mesurés : ⬇️ {st.session_state.w_speed_down} Mbps  /  ⬆️ {st.session_state.w_speed_up} Mbps")
 
@@ -1382,17 +570,60 @@ if menu == "🧭 Nouveau diagnostic":
             st.warning(f"⚠️ Le client souhaite rester chez **{st.session_state.w_tel_operateur}** — adaptez votre argumentaire.")
 
         recommandations = []
+        offres_interet_list = []
+
+        def _bouton_souscrire(o, contexte):
+            """Bouton « Souscrire » : ouvre le lien affilié de l'offre (avec code d'affiliation
+            + paramètres du client) et logue chaque clic dans l'historique (audit trail)."""
+            if not o.get("url_souscription"):
+                return
+            key_reveal = f"souscrire_reveal_{contexte}_{o['id']}"
+            if st.button("🔗 Souscrire", key=f"souscrire_btn_{contexte}_{o['id']}"):
+                st.session_state[key_reveal] = True
+                enregistrer_action(
+                    "offre", o["id"], "Clic lien affilié",
+                    f"{o['nom']} ({o['fournisseur']}) — client : {nom_complet}"
+                )
+            if st.session_state.get(key_reveal):
+                lien = construire_lien_affilie(
+                    o["url_souscription"], o.get("code_affiliation", ""),
+                    {"client": nom_complet, "cp": st.session_state.w_cp, "ville": st.session_state.w_ville},
+                )
+                st.link_button("➡️ Ouvrir le lien de souscription", lien)
 
         # ----- TÉLÉCOM -----
         if "Télécom" in st.session_state.w_univers:
             cout_tel = float(st.session_state.w_tel_cout) + sum(l["cout"] for l in st.session_state.w_lignes_multi)
             st.caption(f"Coût télécom actuel pris en compte : **{round(cout_tel,2)} €/mois**")
-            reco = construire_recommandations(st.session_state.w_service_principal, cout_tel)
+
+            fournisseur_exclu = None
+            if (st.session_state.w_sat_reseau != SATISFACTION_RESEAU[0]
+                    and st.session_state.w_tel_operateur not in ("Autre / Aucun", "")):
+                fournisseur_exclu = st.session_state.w_tel_operateur
+                st.caption(f"ℹ️ Client pas pleinement satisfait de **{fournisseur_exclu}** — "
+                           f"nous proposons en priorité des offres d'autres opérateurs.")
+            reco = construire_recommandations(st.session_state.w_service_principal, cout_tel,
+                                               fournisseur_exclu=fournisseur_exclu,
+                                               data_go_min=safe_float(st.session_state.w_tel_data))
+
+            # ids déjà couverts par une "carte" (PDF/email) pour éviter les doublons
+            ids_pdf = set()
+
+            def _ajouter_offre_interet(o, categorie):
+                """Enregistre une offre cochée « Intéresse le client » (box, pack ou offre
+                principale) pour la fiche prospect ET pour la restitution PDF/email."""
+                offres_interet_list.append({"univers": "Télécom", "categorie": categorie, **o})
+                if o["id"] not in ids_pdf:
+                    recommandations.append({
+                        "univers": "Télécom", "categorie": categorie,
+                        "cout_actuel": round(cout_tel, 2), "offre": o})
+                    ids_pdf.add(o["id"])
 
             titre_p, offres_p = reco["principal"]
             st.markdown(f"### {titre_p}")
             if not offres_p:
                 st.info("Aucune offre dans cette catégorie au catalogue. Ajoutez-en dans 🛠️ Admin.")
+            categorie_p = titre_p.strip("📱🏠📦📲 ")
             for o in offres_p:
                 with st.container(border=True):
                     a, b, c = st.columns([3, 2, 1])
@@ -1401,20 +632,25 @@ if menu == "🧭 Nouveau diagnostic":
                     b.write(f"💶 **{o['prix_mensuel']} €/mois**")
                     b.caption(f"Coût 1ère année : {o['cout_1_an']} €")
                     c.metric("Économie/an", f"{o['economie_annuelle']} €")
-            if offres_p:
-                recommandations.append({
-                    "univers": "Télécom", "categorie": titre_p.strip("📱🏠📦📲 "),
-                    "cout_actuel": round(cout_tel, 2), "offre": offres_p[0]})
+                    interesse = st.checkbox("⭐ Intéresse le client", key=f"interet_offre_{o['id']}")
+                    if interesse:
+                        _ajouter_offre_interet(o, categorie_p)
+                    _bouton_souscrire(o, "tel_principal")
 
             st.markdown("---")
             st.markdown("#### 💡 Pour aller plus loin (à proposer au client)")
             for titre_cs, offres_cs in reco["cross_sell"]:
                 if offres_cs:
+                    categorie_cs = titre_cs.strip("📱🏠📦📲⚡🎬 ")
                     with st.expander(f"{titre_cs}  —  à partir de {offres_cs[0]['prix_mensuel']} €/mois"):
                         for o in offres_cs:
-                            cca, ccb = st.columns([4, 1])
+                            cca, ccb, ccc = st.columns([4, 1, 1.6])
                             cca.write(f"**{o['nom']}** — {o['fournisseur']}  ·  {o['caracteristiques']}")
                             ccb.write(f"**{o['prix_mensuel']} €/mois**")
+                            interesse_cs = ccc.checkbox("⭐ Intéresse", key=f"interet_offre_{o['id']}")
+                            if interesse_cs:
+                                _ajouter_offre_interet(o, categorie_cs)
+                            _bouton_souscrire(o, f"tel_cs_{categorie_cs}")
 
         # ----- ÉNERGIE -----
         if "Énergie" in st.session_state.w_univers:
@@ -1433,16 +669,21 @@ if menu == "🧭 Nouveau diagnostic":
                                 a.caption(f"{o['fournisseur']} · {o['caracteristiques']}")
                                 b.write(f"💶 {o['prix_mensuel']} €/mois")
                                 c.metric("Économie/an", f"{o['economie_annuelle']} €")
-                        recommandations.append({
-                            "univers": "Énergie", "categorie": cat,
-                            "cout_actuel": float(cout), "offre": offres[0]})
+                                interesse = st.checkbox("⭐ Intéresse le client",
+                                                         key=f"interet_offre_ener_{cat}_{o['id']}")
+                                if interesse:
+                                    offres_interet_list.append({"univers": "Énergie", "categorie": cat, **o})
+                                    recommandations.append({
+                                        "univers": "Énergie", "categorie": cat,
+                                        "cout_actuel": float(cout), "offre": o})
+                                _bouton_souscrire(o, f"ener_{cat}")
                     else:
                         st.info(f"Aucune offre {cat} au catalogue.")
 
         # ----- ABONNEMENTS -----
         if "Abonnements" in st.session_state.w_univers and st.session_state.w_abos:
             st.markdown("### 🎬 Abonnements")
-            for a in st.session_state.w_abos:
+            for abo_idx, a in enumerate(st.session_state.w_abos):
                 cout_abo = safe_float(a["cout"])
                 offres   = comparer_offres("Abonnements", None, cout_abo)
                 # Ne proposer que des alternatives moins chères ET du même type (approximation par catégorie)
@@ -1459,9 +700,14 @@ if menu == "🧭 Nouveau diagnostic":
                         x.caption(f"{o['fournisseur']} · {o['caracteristiques']}")
                         y.write(f"💶 {o['prix_mensuel']} €/mois")
                         z.metric("Économie/an", f"{eco_reelle_an} €")
-                    recommandations.append({
-                        "univers": "Abonnements", "categorie": a["nom"],
-                        "cout_actuel": cout_abo, "offre": o})
+                        interesse = st.checkbox("⭐ Intéresse le client",
+                                                 key=f"interet_offre_abo_{abo_idx}_{o['id']}")
+                        if interesse:
+                            offres_interet_list.append({"univers": "Abonnements", "categorie": a["nom"], **o})
+                            recommandations.append({
+                                "univers": "Abonnements", "categorie": a["nom"],
+                                "cout_actuel": cout_abo, "offre": o})
+                        _bouton_souscrire(o, f"abo_{abo_idx}")
                 else:
                     st.caption("Pas d'alternative moins chère au catalogue.")
 
@@ -1482,6 +728,7 @@ if menu == "🧭 Nouveau diagnostic":
             "email":                st.session_state.w_email,
             "code_postal":          st.session_state.w_cp,
             "ville":                st.session_state.w_ville,
+            "adresse":              st.session_state.w_adresse,
             "type_client":          st.session_state.w_type_client,
             "univers_interesse":    ", ".join(st.session_state.w_univers),
             "service_principal":    st.session_state.w_service_principal,
@@ -1503,21 +750,26 @@ if menu == "🧭 Nouveau diagnostic":
             "notes":                (f"Satisfaction réseau : {st.session_state.w_sat_reseau}. "
                                      f"Veut rester : {'Oui' if st.session_state.w_veut_rester else 'Non'}."),
             "cree_par":             st.session_state.auth_nom_complet,  # ← TRAÇABILITÉ
+            "offres_interet":       json.dumps(offres_interet_list, ensure_ascii=False),
         }
 
-        # ----- RESTITUTION -----
+        # ----- RESTITUTION (teaser — le détail des offres n'est communiqué qu'après
+        #       règlement des honoraires, voir menu 🧾 Facturation) -----
         st.divider()
         st.markdown("#### 📤 Restitution & suivi")
+        st.caption("📌 Le PDF et l'email ci-dessous sont la version « aperçu » (économie totale, "
+                   "sans détail des offres). Le détail complet se débloque via un devis d'honoraires "
+                   "dans le menu 🧾 Facturation.")
         pdf_bytes = None
         if recommandations:
             with st.spinner("Génération du PDF…"):
-                pdf_bytes = generer_pdf_restitution(
-                    infos_client, recommandations, st.session_state.nom_societe)
+                pdf_bytes = generer_pdf_teaser(
+                    infos_client, st.session_state.w_univers, total_eco, st.session_state.nom_societe)
 
         col1, col2, col3, col4 = st.columns(4)
         if pdf_bytes:
-            col1.download_button("📄 Télécharger le PDF", data=pdf_bytes,
-                                 file_name=f"bilan_{nom_complet.replace(' ','_')}.pdf",
+            col1.download_button("📄 Télécharger le PDF (aperçu)", data=pdf_bytes,
+                                 file_name=f"apercu_{nom_complet.replace(' ','_')}.pdf",
                                  mime="application/pdf")
         elif not FPDF_OK:
             col1.caption("PDF indispo (pip install fpdf2)")
@@ -1528,12 +780,12 @@ if menu == "🧭 Nouveau diagnostic":
             elif not recommandations:
                 st.warning("Aucune recommandation.")
             else:
-                corps = construire_corps_email(infos_client, recommandations, total_eco)
+                corps = construire_corps_email_teaser(infos_client, st.session_state.w_univers, total_eco)
                 ok, msg = envoyer_email(
                     st.session_state.w_email,
-                    "Votre bilan d'économies personnalisé",
+                    "Votre étude d'économies personnalisée",
                     corps, pdf_bytes,
-                    f"bilan_{nom_complet.replace(' ','_')}.pdf")
+                    f"apercu_{nom_complet.replace(' ','_')}.pdf")
                 (st.success if ok else st.error)(msg)
 
         if col3.button("📇 Enregistrer prospect"):
@@ -1560,7 +812,10 @@ if menu == "🧭 Nouveau diagnostic":
                 st.rerun()
 
         st.divider()
-        if st.button("🔄 Nouveau diagnostic (réinitialiser)"):
+        br1, br2 = st.columns(2)
+        if br1.button("⬅️ Corriger une information (retour à l'étape 3)"):
+            st.session_state.w_etape = 3; st.rerun()
+        if br2.button("🔄 Nouveau diagnostic (réinitialiser)"):
             for k in list(DEFAUTS.keys()):
                 if k.startswith("w_") or k == "facture_data":
                     st.session_state[k] = DEFAUTS[k]
@@ -1615,16 +870,16 @@ if menu == "🧭 Nouveau diagnostic":
 
 
 # ==============================================================================
-#  15. TABLEAU DE BORD
+#  TABLEAU DE BORD
 # ==============================================================================
 elif menu == "📊 Tableau de bord":
     moi  = st.session_state.auth_nom_complet
     role = st.session_state.auth_role
     st.title(f"📊 Tableau de bord — {moi}")
 
+    recalculer_scores_prospects()
     df_p_all = lire_prospects()
     df_c_all = lire_clients()
-    today    = datetime.now().strftime("%d/%m/%Y")
 
     # Filtrer par conseiller (admin voit tout si souhaité)
     if role == "Admin":
@@ -1664,36 +919,136 @@ elif menu == "📊 Tableau de bord":
         if relances.empty:
             st.success("✅ Aucune relance en attente — bon travail !")
         else:
-            cols_rel = ["prenom","nom","telephone","email","operateur_actuel",
+            if "score" in relances.columns:
+                relances["priorité"] = relances["score"].apply(indicateur_score)
+            cols_rel = ["priorité","score","prenom","nom","telephone","email","operateur_actuel",
                         "cout_mensuel_actuel","economie_estimee_an","statut","date_relance","cree_par"]
             cols_rel = [c for c in cols_rel if c in relances.columns]
-            st.dataframe(
-                relances[cols_rel].sort_values("date_relance", ascending=True, na_position="last"),
-                hide_index=True, use_container_width=True
-            )
+
+            today_date = datetime.now().date()
+            relances["_date_parsed"] = relances["date_relance"].apply(parser_date_relance)
+
+            def _trier_par_priorite(g):
+                """Trie par score décroissant (priorité business), et par date à défaut."""
+                return g.sort_values("score", ascending=False) if "score" in g.columns \
+                    else g.sort_values("_date_parsed")
+
+            en_retard  = _trier_par_priorite(relances[relances["_date_parsed"].notna() & (relances["_date_parsed"] < today_date)])
+            aujourdhui = _trier_par_priorite(relances[relances["_date_parsed"] == today_date])
+            a_venir    = _trier_par_priorite(relances[relances["_date_parsed"].notna() & (relances["_date_parsed"] > today_date)])
+            sans_date  = _trier_par_priorite(relances[relances["_date_parsed"].isna()])
+
+            for titre, groupe in [
+                (f"🔴 En retard ({len(en_retard)})", en_retard),
+                (f"🟠 Aujourd'hui ({len(aujourdhui)})", aujourdhui),
+                (f"🟢 À venir ({len(a_venir)})", a_venir),
+                (f"⚪ Sans date ({len(sans_date)})", sans_date),
+            ]:
+                st.markdown(f"#### {titre}")
+                if groupe.empty:
+                    st.caption("Aucune")
+                else:
+                    st.dataframe(groupe[cols_rel], hide_index=True, use_container_width=True)
+
             # Actions rapides
             st.markdown("**Action rapide sur un prospect :**")
             ids_rel = relances["id"].tolist()
             sel = st.selectbox("Prospect", ids_rel,
                 format_func=lambda i: f"{relances[relances['id']==i]['prenom'].values[0]} {relances[relances['id']==i]['nom'].values[0]} — {relances[relances['id']==i]['telephone'].values[0]}",
                 key="tdb_sel_prospect")
-            ca, cb, cc = st.columns(3)
-            if ca.button("📞 Marqué relancé aujourd'hui", key="tdb_relance"):
-                maj_prospect(int(sel), "date_relance", today)
-                maj_prospect(int(sel), "statut", "Relancé")
-                st.success("Statut mis à jour."); st.rerun()
-            if cb.button("✅ Converti en client", key="tdb_convert"):
-                p_row = relances[relances["id"] == sel].iloc[0]
-                d = {k: p_row.get(k, "") for k in [
-                    "ref","prenom","nom","telephone","email","code_postal","ville","type_client",
-                    "operateur_actuel","techno","data_go","offre_actuelle","cout_mensuel_actuel",
-                    "satisfaction_reseau","veut_rester","speed_down","speed_up",
-                    "fournisseur_energie","cout_elec","cout_gaz","economie_estimee_an","notes"]}
-                d["cree_par"] = moi
-                ajouter_client(d); supprimer_prospect(int(sel))
-                st.success("Converti en client !"); st.rerun()
+            if widget_relance(sel, "tdb_relance"):
+                st.success("Relance programmée."); st.rerun()
+            cb, cc = st.columns(2)
+            if cb.button("✅ Convertir en client", key="tdb_convert_open"):
+                st.session_state["tdb_conv_open"] = int(sel)
             if cc.button("🗑️ Supprimer", key="tdb_del"):
                 supprimer_prospect(int(sel)); st.warning("Supprimé."); st.rerun()
+
+            if st.session_state.get("tdb_conv_open") == int(sel):
+                with st.container(border=True):
+                    p_row_conv = relances[relances["id"] == sel].iloc[0]
+                    if convertir_prospect_ui(p_row_conv, "tdb_conv", moi):
+                        st.session_state["tdb_conv_open"] = None
+                        st.success("Converti en client !"); st.rerun()
+
+    st.divider()
+
+    # ── Relances clients à faire aujourd'hui / en retard ───────────────────────
+    st.markdown("### ⏰ Relances clients à traiter")
+    if df_c.empty or "statut_relance" not in df_c.columns:
+        st.info("Aucun client enregistré.")
+    else:
+        relances_c = df_c[df_c["statut_relance"].isin(["À relancer", "Relancé"])].copy()
+        if relances_c.empty:
+            st.success("✅ Aucune relance client en attente.")
+        else:
+            cols_rel_c = ["prenom","nom","telephone","email","operateur_actuel",
+                          "cout_mensuel_actuel","economie_estimee_an","statut_relance","date_relance","cree_par"]
+            cols_rel_c = [c for c in cols_rel_c if c in relances_c.columns]
+
+            today_date_c = datetime.now().date()
+            relances_c["_date_parsed"] = relances_c["date_relance"].apply(parser_date_relance)
+
+            en_retard_c  = relances_c[relances_c["_date_parsed"].notna() & (relances_c["_date_parsed"] < today_date_c)] \
+                              .sort_values("_date_parsed")
+            aujourdhui_c = relances_c[relances_c["_date_parsed"] == today_date_c]
+            a_venir_c    = relances_c[relances_c["_date_parsed"].notna() & (relances_c["_date_parsed"] > today_date_c)] \
+                              .sort_values("_date_parsed")
+            sans_date_c  = relances_c[relances_c["_date_parsed"].isna()]
+
+            for titre, groupe in [
+                (f"🔴 En retard ({len(en_retard_c)})", en_retard_c),
+                (f"🟠 Aujourd'hui ({len(aujourdhui_c)})", aujourdhui_c),
+                (f"🟢 À venir ({len(a_venir_c)})", a_venir_c),
+                (f"⚪ Sans date ({len(sans_date_c)})", sans_date_c),
+            ]:
+                st.markdown(f"#### {titre}")
+                if groupe.empty:
+                    st.caption("Aucune")
+                else:
+                    st.dataframe(groupe[cols_rel_c], hide_index=True, use_container_width=True)
+
+            st.markdown("**Action rapide sur un client :**")
+            ids_rel_c = relances_c["id"].tolist()
+            sel_c = st.selectbox("Client", ids_rel_c,
+                format_func=lambda i: f"{relances_c[relances_c['id']==i]['prenom'].values[0]} {relances_c[relances_c['id']==i]['nom'].values[0]} — {relances_c[relances_c['id']==i]['telephone'].values[0]}",
+                key="tdb_sel_client")
+            if widget_relance_client(sel_c, "tdb_relance_client"):
+                st.success("Relance client programmée."); st.rerun()
+
+    st.divider()
+
+    # ── Contrats arrivant à échéance (fin d'engagement dans les 90 jours) ──────
+    st.markdown("### 📅 Contrats arrivant à échéance (90 jours)")
+    df_echeance = lire_contrats_echeance(90)
+    if not vue_admin and not df_echeance.empty and "client_conseiller" in df_echeance.columns:
+        df_echeance = df_echeance[df_echeance["client_conseiller"] == moi]
+    if df_echeance.empty:
+        st.success("✅ Aucun contrat n'arrive à échéance dans les 90 prochains jours.")
+    else:
+        cols_ech = ["client_prenom", "client_nom", "client_telephone", "client_email",
+                    "fournisseur", "nom_offre", "cout_mensuel", "date_fin_engagement", "jours_restants"]
+        cols_ech = [c for c in cols_ech if c in df_echeance.columns]
+        st.dataframe(df_echeance[cols_ech], hide_index=True, use_container_width=True)
+
+        st.markdown("**Envoyer l'alerte de fin d'engagement à un client :**")
+        ids_ech = df_echeance["id"].tolist()
+        sel_ech = st.selectbox("Contrat", ids_ech,
+            format_func=lambda i: f"{df_echeance[df_echeance['id']==i]['client_prenom'].values[0]} "
+                                   f"{df_echeance[df_echeance['id']==i]['client_nom'].values[0]} — "
+                                   f"fin le {df_echeance[df_echeance['id']==i]['date_fin_engagement'].values[0]}",
+            key="tdb_sel_echeance")
+        if st.button("📧 Envoyer l'alerte au client", key="tdb_envoi_echeance"):
+            row_ech = df_echeance[df_echeance["id"] == sel_ech].iloc[0]
+            alternatives = comparer_offres(row_ech["univers"], row_ech["categorie"],
+                                            float(row_ech["cout_mensuel"] or 0),
+                                            fournisseur_exclu=row_ech["fournisseur"])
+            meilleure = alternatives[0] if alternatives and alternatives[0]["economie_annuelle"] > 0 else None
+            corps = construire_corps_email_fin_engagement(
+                row_ech["client_prenom"], row_ech["date_fin_engagement"], meilleure)
+            ok, msg = envoyer_email(row_ech["client_email"],
+                                     "Votre engagement arrive à échéance", corps)
+            (st.success if ok else st.error)(msg)
 
     st.divider()
 
@@ -1730,29 +1085,57 @@ elif menu == "📊 Tableau de bord":
 
 
 # ==============================================================================
-#  16-OLD → RENOMMÉ : anciennement section 15
+#  PROSPECTS
 # ==============================================================================
 elif menu == "📇 Prospects":
     st.title("📇 Prospects à relancer")
+    recalculer_scores_prospects()
     df = lire_prospects()
     if df.empty:
         st.info("Aucun prospect. Lancez un diagnostic puis « Enregistrer prospect ».")
     else:
+        recherche_p = st.text_input("🔎 Rechercher (nom, ville, email, réf., opérateur…)",
+                                     key="recherche_prospects")
+
         # Filtre par statut
         statuts_dispo = ["Tous"] + sorted(df["statut"].dropna().unique().tolist()) if "statut" in df.columns else ["Tous"]
-        col_f1, col_f2 = st.columns([2, 3])
+        col_f1, col_f2, col_f3 = st.columns([2, 2, 3])
         filtre_statut = col_f1.selectbox("Filtrer par statut", statuts_dispo, key="filtre_statut_prospects")
-        col_f2.metric("Total prospects", len(df),
+        tri_score_actif = col_f2.toggle("🔥 Trier par score", value=True, key="tri_score_prospects")
+        col_f3.metric("Total prospects", len(df),
                       delta=f"{len(df[df['statut']=='À relancer'])} à relancer" if 'statut' in df.columns else "")
 
         dff = df if filtre_statut == "Tous" else df[df["statut"] == filtre_statut]
+        if recherche_p:
+            ids = recherche_fts("prospects", recherche_p)
+            if ids is not None:
+                ordre = {i: n for n, i in enumerate(ids)}
+                dff = dff[dff["id"].isin(ids)]
+                dff = dff.assign(_rang=dff["id"].map(ordre)).sort_values("_rang").drop(columns="_rang")
+            else:
+                r   = recherche_p.lower()
+                dff = dff[dff.apply(lambda row: r in str(row.to_dict()).lower(), axis=1)]
 
-        cols = ["ref","prenom","nom","telephone","email","ville","univers_interesse",
+        if "score" in dff.columns:
+            dff = dff.assign(priorité=dff["score"].apply(indicateur_score))
+            if tri_score_actif:
+                dff = dff.sort_values("score", ascending=False)
+
+        cols = ["priorité","score","ref","origine","prenom","nom","telephone","email","ville","univers_interesse",
                 "service_principal","operateur_actuel","cout_mensuel_actuel",
                 "satisfaction_reseau","veut_rester","economie_estimee_an","statut",
                 "cree_par","date_creation","date_relance"]
         cols = [c for c in cols if c in dff.columns]
         st.dataframe(dff[cols], hide_index=True, use_container_width=True)
+
+        excel_bytes = exporter_excel(dff[cols], nom_feuille="Prospects")
+        if excel_bytes:
+            st.download_button("📥 Exporter en Excel (.xlsx)", data=excel_bytes,
+                                file_name=f"prospects_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key="export_excel_prospects")
+        elif not OPENPYXL_OK:
+            st.caption("Export Excel indisponible (pip install openpyxl)")
 
         st.divider()
         st.markdown("#### Fiche prospect détaillée")
@@ -1764,6 +1147,11 @@ elif menu == "📇 Prospects":
                 f"{df[df['id']==i]['prenom'].values[0]} "
                 f"{df[df['id']==i]['nom'].values[0]} (#{i})"))
         p = df[df["id"] == choix].iloc[0]
+        if p.get("origine") == "Chatbot":
+            st.info("🤖 Ce prospect a été créé automatiquement par le chatbot du site web.")
+        if "score" in p and p["score"] is not None:
+            st.markdown(f"**Priorité de relance :** {indicateur_score(safe_float(p['score']))} "
+                        f"(score {safe_float(p['score']):.0f})")
         c1, c2, c3 = st.columns(3)
         c1.write(f"**Tél :** {p['telephone']}")
         c1.write(f"**Email :** {p['email']}")
@@ -1774,37 +1162,148 @@ elif menu == "📇 Prospects":
         c1.write(f"**Coût actuel :** {p['cout_mensuel_actuel']} €/mois")
         c2.write(f"**Débits :** ⬇️ {p['speed_down']} / ⬆️ {p['speed_up']} Mbps")
         c3.write(f"**Économie estimée :** {p['economie_estimee_an']} €/an")
+        c1.write(f"**Adresse :** {p.get('adresse') or '—'}")
+        c2.write(f"**Ville :** {p.get('ville','')} ({p.get('code_postal','')})")
         if "cree_par" in p and p["cree_par"]:
             st.caption(f"Créé par : **{p['cree_par']}** le {p['date_creation']}")
         if p["lignes_multi"] and p["lignes_multi"] not in ("[]", None):
             with st.expander("Lignes supplémentaires"):
                 try:    st.json(json.loads(p["lignes_multi"]))
                 except: st.write(p["lignes_multi"])
+        if p.get("offres_interet") and p.get("offres_interet") not in ("[]", None):
+            st.markdown("##### ⭐ Offres qui intéressaient le client")
+            try:
+                offres_int = json.loads(p["offres_interet"])
+            except Exception:
+                offres_int = None
+            if offres_int:
+                for idx_oi, oi in enumerate(offres_int):
+                    with st.container(border=True):
+                        a, b, c = st.columns([3, 2, 1])
+                        a.markdown(f"**{oi.get('nom','—')}**")
+                        sous_titre = " · ".join(x for x in (oi.get("univers"), oi.get("categorie"), oi.get("fournisseur")) if x)
+                        a.caption(sous_titre)
+                        if oi.get("caracteristiques"):
+                            a.caption(oi["caracteristiques"])
+                        b.write(f"💶 **{oi.get('prix_mensuel','—')} €/mois**")
+                        if oi.get("engagement"):
+                            b.caption(f"Engagement {oi['engagement']} mois")
+                        if oi.get("economie_annuelle") is not None:
+                            c.metric("Économie/an", f"{oi.get('economie_annuelle')} €")
+                        if peut_modifier() and oi.get("fournisseur") in OPERATEURS_SUPPORTES:
+                            if b.button("🖊️ Pré-remplir la souscription",
+                                        key=f"presous_prosp_{choix}_{idx_oi}"):
+                                donnees = construire_donnees_client(p)
+                                ok, msg = lancer_souscription(
+                                    oi.get("fournisseur"), oi.get("url_souscription", ""), donnees,
+                                    code_affiliation=oi.get("code_affiliation", ""),
+                                    entite_type="prospect", entite_id=int(choix),
+                                    nom_offre=oi.get("nom", ""),
+                                )
+                                (st.success if ok else st.warning)(msg)
+            else:
+                st.caption(p["offres_interet"])
 
         if peut_modifier():
             with st.expander("✏️ Modifier ce prospect"):
-                champs = {"telephone":"Téléphone","email":"Email","operateur_actuel":"Opérateur",
+                champs = {"telephone":"Téléphone","email":"Email","adresse":"Adresse",
+                          "ville":"Ville","code_postal":"Code postal","operateur_actuel":"Opérateur",
                           "offre_actuelle":"Offre actuelle","cout_mensuel_actuel":"Coût (€)",
                           "notes":"Notes","statut":"Statut"}
-                for champ, label in champs.items():
-                    val = st.text_input(label, str(p[champ]), key=f"edit_p_{champ}")
-                    if st.button(f"💾 {label}", key=f"btn_p_{champ}"):
-                        v = float(val) if champ == "cout_mensuel_actuel" else val
-                        maj_prospect(int(choix), champ, v); st.success("Mis à jour."); st.rerun()
+                with st.form(key=f"form_edit_prospect_{choix}"):
+                    valeurs = {champ: st.text_input(label, str(p[champ]), key=f"edit_p_{champ}_{choix}")
+                               for champ, label in champs.items()}
+                    if st.form_submit_button("💾 Enregistrer"):
+                        for champ, val in valeurs.items():
+                            v = safe_float(val) if champ == "cout_mensuel_actuel" else val
+                            maj_prospect(int(choix), champ, v)
+                        st.success("Prospect mis à jour."); st.rerun()
 
-            c1, c2, c3 = st.columns(3)
-            if c1.button("✅ Convertir en client"):
-                d = {k: p[k] for k in p.index if k in (
-                    "ref","prenom","nom","telephone","email","code_postal","ville","type_client",
-                    "operateur_actuel","techno","data_go","offre_actuelle","cout_mensuel_actuel",
-                    "satisfaction_reseau","veut_rester","speed_down","speed_up",
-                    "fournisseur_energie","cout_elec","cout_gaz","economie_estimee_an","notes")}
-                d["cree_par"] = st.session_state.auth_nom_complet
-                ajouter_client(d); supprimer_prospect(int(choix))
-                st.success("Converti en client."); st.rerun()
-            if c2.button("📞 Marqué relancé aujourd'hui"):
-                maj_prospect(int(choix), "date_relance", datetime.now().strftime("%d/%m/%Y"))
-                maj_prospect(int(choix), "statut", "Relancé"); st.success("OK."); st.rerun()
+            with st.expander("⭐ Modifier les offres qui intéressent le client"):
+                st.caption("Cochez les offres que le client souhaite finalement retenir "
+                           "— l'économie totale de la fiche est recalculée automatiquement.")
+                try:
+                    offres_int_actuelles = json.loads(p.get("offres_interet") or "[]")
+                except Exception:
+                    offres_int_actuelles = []
+                ids_actuels = {o.get("id") for o in offres_int_actuelles}
+
+                nouvelles_offres = []
+                univers_p = [u.strip() for u in (p.get("univers_interesse") or "").split(",") if u.strip()]
+
+                if "Télécom" in univers_p:
+                    cat_map_simple = {"Mobile uniquement": "Mobile", "Box / Fibre uniquement": "Box / Fibre",
+                                       "Pack Box + Mobile": "Pack Box + Mobile", "Multi-lignes": "Multi-lignes"}
+                    cat_key = cat_map_simple.get(p.get("service_principal"), "Mobile")
+                    offres_tel = comparer_offres("Télécom", cat_key, safe_float(p.get("cout_mensuel_actuel")),
+                                                  data_go_min=safe_float(p.get("data_go")))
+                    if offres_tel:
+                        st.markdown(f"##### 📱 Télécom — {cat_key}")
+                        for o in offres_tel[:5]:
+                            val = st.checkbox(
+                                f"{o['nom']} — {o['fournisseur']} · {o['prix_mensuel']} €/mois · "
+                                f"éco {o['economie_annuelle']} €/an",
+                                value=o["id"] in ids_actuels, key=f"prosp_int_tel_{choix}_{o['id']}")
+                            if val:
+                                nouvelles_offres.append({"univers": "Télécom", "categorie": cat_key, **o})
+
+                if "Énergie" in univers_p:
+                    for cat, cout_champ in [("Électricité", "cout_elec"), ("Gaz", "cout_gaz")]:
+                        cout = safe_float(p.get(cout_champ))
+                        if cout > 0:
+                            offres_e = comparer_offres("Énergie", cat, cout) or \
+                                       comparer_offres("Énergie", cat + " Pro", cout)
+                            if offres_e:
+                                st.markdown(f"##### ⚡ {cat}")
+                                for o in offres_e[:3]:
+                                    val = st.checkbox(
+                                        f"{o['nom']} — {o['fournisseur']} · {o['prix_mensuel']} €/mois · "
+                                        f"éco {o['economie_annuelle']} €/an",
+                                        value=o["id"] in ids_actuels,
+                                        key=f"prosp_int_ener_{choix}_{cat}_{o['id']}")
+                                    if val:
+                                        nouvelles_offres.append({"univers": "Énergie", "categorie": cat, **o})
+
+                if "Abonnements" in univers_p and p.get("abonnements") and p["abonnements"] not in ("[]", None):
+                    try:
+                        abos_p = json.loads(p["abonnements"])
+                    except Exception:
+                        abos_p = []
+                    if abos_p:
+                        st.markdown("##### 🎬 Abonnements")
+                        for abo_idx, a in enumerate(abos_p):
+                            cout_abo = safe_float(a.get("cout"))
+                            offres_abo = comparer_offres("Abonnements", None, cout_abo)
+                            alt = [o for o in offres_abo if safe_float(o["prix_mensuel"]) < cout_abo]
+                            if alt:
+                                eco_reelle = round((cout_abo - safe_float(alt[0]["prix_mensuel"])) * 12, 2)
+                                o = {**alt[0], "economie_annuelle": eco_reelle}
+                                val = st.checkbox(
+                                    f"{a.get('nom','')} → {o['nom']} — {o['fournisseur']} · "
+                                    f"{o['prix_mensuel']} €/mois · éco {eco_reelle} €/an",
+                                    value=o["id"] in ids_actuels,
+                                    key=f"prosp_int_abo_{choix}_{abo_idx}_{o['id']}")
+                                if val:
+                                    nouvelles_offres.append({"univers": "Abonnements", "categorie": a.get("nom"), **o})
+
+                if not univers_p:
+                    st.caption("Aucun univers renseigné sur ce prospect.")
+
+                if st.button("💾 Mettre à jour les offres retenues", key=f"btn_maj_offres_{choix}"):
+                    total_eco_nv = round(sum((o.get("economie_annuelle", 0) or 0) for o in nouvelles_offres), 2)
+                    maj_prospect(int(choix), "offres_interet", json.dumps(nouvelles_offres, ensure_ascii=False))
+                    maj_prospect(int(choix), "economie_estimee_an", total_eco_nv)
+                    st.success(f"Offres mises à jour — économie recalculée : {total_eco_nv} €/an."); st.rerun()
+
+            if st.button("✅ Convertir en client", key="fiche_convert_open"):
+                st.session_state["fiche_conv_open"] = int(choix)
+            if st.session_state.get("fiche_conv_open") == int(choix):
+                with st.container(border=True):
+                    if convertir_prospect_ui(p, "fiche_conv", st.session_state.auth_nom_complet):
+                        st.session_state["fiche_conv_open"] = None
+                        st.success("Converti en client."); st.rerun()
+            if widget_relance(choix, f"fiche_relance_{choix}"):
+                st.success("Relance programmée."); st.rerun()
             with st.expander("🗑️ Supprimer ce prospect"):
                 st.warning(f"Cette action est irréversible. Le prospect **{p.get('prenom','')} {p.get('nom','')}** sera définitivement supprimé.")
                 if st.button("✅ Confirmer la suppression", key="confirm_del_prospect"):
@@ -1814,7 +1313,7 @@ elif menu == "📇 Prospects":
 
 
 # ==============================================================================
-#  17. CLIENTS & CONTRATS
+#  CLIENTS & CONTRATS
 # ==============================================================================
 elif menu == "👥 Clients & contrats":
     st.title("👥 Clients & contrats")
@@ -1822,11 +1321,18 @@ elif menu == "👥 Clients & contrats":
     if df.empty:
         st.info("Aucun client signé.")
     else:
-        recherche = st.text_input("🔎 Rechercher (nom, ville, email, réf., opérateur…)")
+        recherche = st.text_input("🔎 Rechercher (nom, ville, email, réf., opérateur…)",
+                                   key="recherche_clients")
         dff = df.copy()
         if recherche:
-            r   = recherche.lower()
-            dff = df[df.apply(lambda row: r in str(row.to_dict()).lower(), axis=1)]
+            ids = recherche_fts("clients", recherche)
+            if ids is not None:
+                ordre = {i: n for n, i in enumerate(ids)}
+                dff = df[df["id"].isin(ids)]
+                dff = dff.assign(_rang=dff["id"].map(ordre)).sort_values("_rang").drop(columns="_rang")
+            else:
+                r   = recherche.lower()
+                dff = df[df.apply(lambda row: r in str(row.to_dict()).lower(), axis=1)]
 
         col_m1, col_m2 = st.columns([3, 1])
         col_m2.metric("Clients trouvés", len(dff))
@@ -1836,6 +1342,15 @@ elif menu == "👥 Clients & contrats":
                     "cree_par","date_creation"]
         cols_aff = [c for c in cols_aff if c in dff.columns]
         st.dataframe(dff[cols_aff], hide_index=True, use_container_width=True)
+
+        excel_bytes_c = exporter_excel(dff[cols_aff], nom_feuille="Clients")
+        if excel_bytes_c:
+            st.download_button("📥 Exporter en Excel (.xlsx)", data=excel_bytes_c,
+                                file_name=f"clients_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key="export_excel_clients")
+        elif not OPENPYXL_OK:
+            st.caption("Export Excel indisponible (pip install openpyxl)")
 
         if dff.empty:
             st.info("Aucun client ne correspond à votre recherche.")
@@ -1859,12 +1374,21 @@ elif menu == "👥 Clients & contrats":
             c3.write(f"**Satisfaction réseau :** {cl.get('satisfaction_reseau', '—')}")
             c3.write(f"**Veut rester :** {cl.get('veut_rester', '—')}")
             c3.write(f"**Débits :** ⬇️ {cl.get('speed_down', 0)} / ⬆️ {cl.get('speed_up', 0)} Mbps")
+            c1.write(f"**Adresse :** {cl.get('adresse') or '—'}")
             if cl.get("cree_par"):
                 st.caption(f"Créé par : **{cl.get('cree_par')}** le {cl.get('date_creation', '')}")
 
+            st.markdown("##### ⏰ Relance")
+            st.write(f"**Statut :** {cl.get('statut_relance') or 'Aucune'}  ·  "
+                     f"**Prochaine relance :** {cl.get('date_relance') or '—'}")
+            if peut_modifier():
+                with st.expander("📅 Programmer / reprogrammer une relance"):
+                    if widget_relance_client(int(choix), f"fiche_relance_client_{choix}"):
+                        st.success("Relance programmée."); st.rerun()
+
             if peut_modifier():
                 with st.expander("✏️ Modifier les informations du client"):
-                    champs = {"telephone":"Téléphone","email":"Email","ville":"Ville",
+                    champs = {"telephone":"Téléphone","email":"Email","adresse":"Adresse","ville":"Ville",
                               "operateur_actuel":"Opérateur","offre_actuelle":"Offre actuelle",
                               "cout_mensuel_actuel":"Coût actuel (€)","satisfaction_reseau":"Satisfaction réseau",
                               "veut_rester":"Veut rester","notes":"Notes"}
@@ -1882,7 +1406,7 @@ elif menu == "👥 Clients & contrats":
             else:
                 cols_ct = ["id","univers","categorie","fournisseur","nom_offre",
                            "cout_mensuel","economie_mensuelle","statut_contrat",
-                           "cree_par","date_souscription"]
+                           "cree_par","date_souscription","date_fin_engagement"]
                 cols_ct = [c for c in cols_ct if c in contrats.columns]
                 st.dataframe(contrats[cols_ct], hide_index=True, use_container_width=True)
                 a, b = st.columns(2)
@@ -1894,16 +1418,36 @@ elif menu == "👥 Clients & contrats":
                         ctid = st.selectbox("Contrat", contrats["id"].tolist(),
                             format_func=lambda i: f"#{i} · {contrats[contrats['id']==i]['nom_offre'].values[0]}")
                         ct = contrats[contrats["id"] == ctid].iloc[0]
+                        if ct.get("fournisseur") in OPERATEURS_SUPPORTES:
+                            off_match = lire_offres()
+                            off_match = off_match[(off_match["fournisseur"] == ct["fournisseur"]) &
+                                                   (off_match["nom_offre"] == ct["nom_offre"])]
+                            if not off_match.empty and off_match.iloc[0].get("url_souscription"):
+                                if st.button("🖊️ Pré-remplir la souscription", key=f"presous_ctr_{ctid}"):
+                                    row_off = off_match.iloc[0]
+                                    donnees = construire_donnees_client(cl)
+                                    ok, msg = lancer_souscription(
+                                        ct["fournisseur"], row_off["url_souscription"], donnees,
+                                        code_affiliation=row_off.get("code_affiliation", ""),
+                                        entite_type="client", entite_id=int(choix),
+                                        nom_offre=ct["nom_offre"],
+                                    )
+                                    (st.success if ok else st.warning)(msg)
                         nv_offre  = st.text_input("Nom de l'offre", ct["nom_offre"], key="ct_nom")
                         nv_cout   = st.number_input("Coût mensuel (€)", min_value=0.0,
                                                     value=float(ct["cout_mensuel"]), step=1.0, key="ct_cout")
                         nv_statut = st.selectbox("Statut du contrat",
                             ["En cours d'ouverture","Actif","Résilié","En attente"], key="ct_statut")
+                        nv_fin_eng = st.date_input(
+                            "Date de fin d'engagement", value=parser_date_relance(ct.get("date_fin_engagement")),
+                            format="DD/MM/YYYY", key="ct_fin_eng")
                         cx, cy = st.columns(2)
                         if cx.button("💾 Enregistrer les modifs"):
                             maj_contrat(int(ctid), "nom_offre",      nv_offre)
                             maj_contrat(int(ctid), "cout_mensuel",   nv_cout)
                             maj_contrat(int(ctid), "statut_contrat", nv_statut)
+                            maj_contrat(int(ctid), "date_fin_engagement",
+                                        nv_fin_eng.strftime("%d/%m/%Y") if nv_fin_eng else "")
                             st.success("Contrat mis à jour."); st.rerun()
                         if cy.button("🗑️ Supprimer ce contrat"):
                             supprimer_contrat(int(ctid)); st.warning("Contrat supprimé."); st.rerun()
@@ -1919,12 +1463,15 @@ elif menu == "👥 Clients & contrats":
                     cm  = st.number_input("Coût mensuel (€)", min_value=0.0, step=1.0, key="add_ctr_cm")
                     em  = st.number_input("Économie mensuelle (€)", min_value=0.0, step=1.0, key="add_ctr_em")
                     ref_c = st.text_input("Référence contrat", key="add_ctr_ref")
+                    fin_eng = st.date_input("Date de fin d'engagement", value=None,
+                                             format="DD/MM/YYYY", key="add_ctr_fin_eng")
                     if st.button("Ajouter le contrat"):
                         ajouter_contrat({
                             "client_id": int(choix), "univers": u, "categorie": cat,
                             "fournisseur": f, "nom_offre": no, "cout_mensuel": cm,
                             "economie_mensuelle": em, "reference_contrat": ref_c,
                             "statut_contrat": "En cours d'ouverture",
+                            "date_fin_engagement": fin_eng.strftime("%d/%m/%Y") if fin_eng else "",
                             "notes": "Ajout manuel",
                             "cree_par": st.session_state.auth_nom_complet,
                         })
@@ -1937,9 +1484,152 @@ elif menu == "👥 Clients & contrats":
             else:
                 st.caption("🔒 Rôle Lecture — connexion Conseiller ou Admin requise pour modifier.")
 
+            st.divider()
+            st.markdown("##### 🕒 Historique des actions")
+            hist = lire_historique("client", int(choix))
+            if hist.empty:
+                st.caption("Aucune action enregistrée pour cette fiche.")
+            else:
+                cols_h = ["date_action", "auteur", "action", "details"]
+                st.dataframe(hist[cols_h], hide_index=True, use_container_width=True)
+
 
 # ==============================================================================
-#  18. ADMIN
+#  FACTURATION — devis d'honoraires, mandat, suivi de paiement
+# ==============================================================================
+elif menu == "🧾 Facturation":
+    st.title("🧾 Facturation")
+    df_f = lire_factures()
+
+    statuts_dispo_f = ["Tous"] + STATUTS_FACTURE
+    col_f1, col_f2  = st.columns([2, 3])
+    filtre_statut_f = col_f1.selectbox("Filtrer par statut", statuts_dispo_f, key="filtre_statut_factures")
+    col_f2.metric("Total devis/factures", len(df_f))
+
+    dff_f = df_f if filtre_statut_f == "Tous" else df_f[df_f["statut"] == filtre_statut_f]
+    if df_f.empty:
+        st.info("Aucun devis créé pour l'instant.")
+    elif dff_f.empty:
+        st.info("Aucun devis avec ce statut.")
+    else:
+        cols_f = ["reference", "prenom", "nom", "telephone", "montant_honoraires", "statut",
+                  "date_creation", "date_paiement", "mandat_signe", "cree_par"]
+        cols_f = [c for c in cols_f if c in dff_f.columns]
+        st.dataframe(dff_f[cols_f], hide_index=True, use_container_width=True)
+
+    st.divider()
+
+    if peut_modifier():
+        with st.expander("➕ Créer un devis d'honoraires"):
+            df_p_choix = lire_prospects()
+            if df_p_choix.empty:
+                st.info("Aucun prospect enregistré. Enregistrez d'abord un prospect depuis le diagnostic.")
+            else:
+                pid_sel = st.selectbox("Prospect", df_p_choix["id"].tolist(),
+                    format_func=lambda i: (
+                        f"{df_p_choix[df_p_choix['id']==i]['prenom'].values[0]} "
+                        f"{df_p_choix[df_p_choix['id']==i]['nom'].values[0]} (#{i})"),
+                    key="fact_sel_prospect")
+                p_sel        = df_p_choix[df_p_choix["id"] == pid_sel].iloc[0]
+                eco_defaut   = safe_float(p_sel.get("economie_estimee_an"))
+                taux_defaut  = safe_float(lire_parametre("taux_honoraires_defaut", "20"), 20.0)
+
+                cfa, cfb = st.columns(2)
+                eco_saisie = cfa.number_input("Économie annuelle (€)", min_value=0.0,
+                                              value=eco_defaut, step=10.0, key="fact_eco")
+                taux_saisi = cfb.number_input("Taux d'honoraires (%)", min_value=0.0, max_value=100.0,
+                                              value=taux_defaut, step=1.0, key="fact_taux")
+                montant = round(eco_saisie * taux_saisi / 100, 2)
+                st.info(f"💶 Montant des honoraires : **{montant} €**")
+
+                if st.button("🧾 Créer le devis", type="primary"):
+                    fid = creer_facture({
+                        "reference":  generer_ref("FAC"),
+                        "prospect_id": int(pid_sel),
+                        "prenom": p_sel.get("prenom"), "nom": p_sel.get("nom"),
+                        "email": p_sel.get("email"),   "telephone": p_sel.get("telephone"),
+                        "ville": p_sel.get("ville"),
+                        "economie_annuelle": eco_saisie, "taux_honoraires": taux_saisi,
+                        "montant_honoraires": montant,   "statut": "Devis envoyé",
+                        "cree_par": st.session_state.auth_nom_complet,
+                    })
+                    st.success(f"Devis créé — dossier #{fid}."); st.rerun()
+
+    st.divider()
+    st.markdown("#### 📂 Fiche devis/facture")
+    if df_f.empty:
+        st.info("Aucun devis à afficher.")
+    else:
+        fid_choix = st.selectbox("Devis", df_f["id"].tolist(),
+            format_func=lambda i: (
+                f"{df_f[df_f['id']==i]['reference'].values[0]} — "
+                f"{df_f[df_f['id']==i]['prenom'].values[0]} {df_f[df_f['id']==i]['nom'].values[0]}"),
+            key="fact_sel_fiche")
+        f = df_f[df_f["id"] == fid_choix].iloc[0].to_dict()
+
+        c1, c2, c3 = st.columns(3)
+        c1.write(f"**Client :** {f.get('prenom','')} {f.get('nom','')}")
+        c1.write(f"**Tél :** {f.get('telephone','')}")
+        c2.write(f"**Économie annuelle :** {f.get('economie_annuelle',0)} €/an")
+        c2.write(f"**Taux :** {f.get('taux_honoraires',0)} %")
+        c3.metric("Montant honoraires", f"{f.get('montant_honoraires',0)} €")
+        c3.write(f"**Statut :** {f.get('statut','')}")
+
+        pdf_devis  = generer_pdf_devis(f, st.session_state.nom_societe)
+        pdf_mandat = generer_pdf_mandat(f, st.session_state.nom_societe)
+        dcol1, dcol2 = st.columns(2)
+        if pdf_devis:
+            dcol1.download_button("📄 Télécharger le devis", data=pdf_devis,
+                file_name=f"devis_{f.get('reference','')}.pdf", mime="application/pdf",
+                key=f"dl_devis_{fid_choix}")
+        if pdf_mandat:
+            dcol2.download_button("📄 Télécharger le mandat", data=pdf_mandat,
+                file_name=f"mandat_{f.get('reference','')}.pdf", mime="application/pdf",
+                key=f"dl_mandat_{fid_choix}")
+
+        if peut_modifier():
+            st.markdown("##### 🔄 Statut du dossier")
+            statut_actuel = f.get("statut") or "Devis envoyé"
+            idx_statut    = STATUTS_FACTURE.index(statut_actuel) if statut_actuel in STATUTS_FACTURE else 0
+            if idx_statut < len(STATUTS_FACTURE) - 1:
+                prochain = STATUTS_FACTURE[idx_statut + 1]
+                labels   = {"Payé": "✅ Marquer payé", "Démarches en cours": "🔧 Démarches en cours",
+                            "Terminé": "🏁 Marquer terminé"}
+                if st.button(labels.get(prochain, f"➡️ {prochain}"), key=f"statut_next_{fid_choix}"):
+                    changer_statut(int(fid_choix), prochain)
+                    st.success(f"Statut mis à jour : {prochain}."); st.rerun()
+            else:
+                st.success("✅ Dossier terminé.")
+
+            st.markdown("##### ✍️ Mandat")
+            if f.get("mandat_signe"):
+                st.success(f"Signé par **{f.get('mandat_signataire','')}** "
+                           f"le **{f.get('mandat_date_signature','')}**.")
+            else:
+                with st.form(key=f"form_mandat_{fid_choix}"):
+                    nom_sign  = st.text_input("Nom du signataire",
+                        value=f"{f.get('prenom','')} {f.get('nom','')}".strip())
+                    date_sign = st.date_input("Date de signature", value=datetime.now().date())
+                    if st.form_submit_button("✅ Marquer le mandat comme signé"):
+                        marquer_mandat_signe(int(fid_choix), nom_sign, date_sign.strftime("%d/%m/%Y"))
+                        st.success("Mandat marqué comme signé."); st.rerun()
+
+        if f.get("statut") in ("Payé", "Démarches en cours", "Terminé"):
+            st.markdown("##### 📄 Restitution complète (post-paiement)")
+            personne, recos_post = _recos_post_paiement(f)
+            if not recos_post:
+                st.caption("Aucune offre enregistrée pour ce dossier (prospect sans offre cochée, "
+                           "ou client sans contrat) — rien à restituer automatiquement.")
+            else:
+                pdf_complet = generer_pdf_restitution(personne, recos_post, st.session_state.nom_societe)
+                if pdf_complet:
+                    st.download_button("📄 Télécharger le PDF complet", data=pdf_complet,
+                        file_name=f"bilan_complet_{f.get('reference','')}.pdf", mime="application/pdf",
+                        key=f"dl_complet_{fid_choix}")
+
+
+# ==============================================================================
+#  ADMIN
 # ==============================================================================
 elif menu == "🛠️ Admin":
     st.title("🛠️ Administration")
@@ -1949,8 +1639,9 @@ elif menu == "🛠️ Admin":
 
     st.success(f"Mode administrateur — connecté en tant que **{st.session_state.auth_nom_complet}**.")
 
-    tab_users, tab_cat, tab_add, tab_demo, tab_mail = st.tabs(
-        ["👤 Utilisateurs", "📚 Catalogue", "➕ Ajouter une offre", "⚡ Pré-remplir (démo)", "📧 Email"])
+    tab_users, tab_cat, tab_add, tab_demo, tab_mail, tab_fact, tab_ocr, tab_veille = st.tabs(
+        ["👤 Utilisateurs", "📚 Catalogue", "➕ Ajouter une offre", "⚡ Pré-remplir (démo)",
+         "📧 Email", "💶 Facturation", "🔍 OCR Vision", "📈 Veille prix"])
 
     # ---- UTILISATEURS (NOUVEAU Étape 1) ----
     with tab_users:
@@ -2027,9 +1718,11 @@ elif menu == "🛠️ Admin":
         if df_o.empty:
             st.info("Catalogue vide.")
         else:
-            st.dataframe(df_o[["id","univers","categorie","fournisseur","nom_offre","prix_mensuel",
-                               "frais_activation","engagement_mois","commission_affiliation","actif"]],
-                         hide_index=True, use_container_width=True)
+            cols_cat = [c for c in ["id","univers","categorie","fournisseur","nom_offre","prix_mensuel",
+                                     "frais_activation","engagement_mois","data_go",
+                                     "commission_affiliation","url_souscription","code_affiliation",
+                                     "actif"] if c in df_o.columns]
+            st.dataframe(df_o[cols_cat], hide_index=True, use_container_width=True)
             oid = st.selectbox("Offre à modifier", df_o["id"].tolist(),
                 format_func=lambda i: f"#{i} · {df_o[df_o['id']==i]['nom_offre'].values[0]}")
             c1, c2, c3 = st.columns(3)
@@ -2042,6 +1735,18 @@ elif menu == "🛠️ Admin":
                 maj_offre(oid, "actif", 0 if etat else 1); st.rerun()
             if c3.button("🗑️ Supprimer"):
                 supprimer_offre(oid); st.warning("Supprimé."); st.rerun()
+
+            st.markdown("##### 🔗 Lien de souscription (affiliation)")
+            ligne_sel = df_o[df_o["id"] == oid].iloc[0]
+            cu1, cu2 = st.columns(2)
+            nv_url  = cu1.text_input("URL de souscription", ligne_sel.get("url_souscription") or "",
+                                      key="edit_off_url")
+            nv_code = cu2.text_input("Code d'affiliation", ligne_sel.get("code_affiliation") or "",
+                                      key="edit_off_code")
+            if st.button("💾 MàJ lien affilié", key="btn_maj_lien_affilie"):
+                maj_offre(oid, "url_souscription", nv_url)
+                maj_offre(oid, "code_affiliation", nv_code)
+                st.success("Lien affilié mis à jour."); st.rerun()
 
     # ---- AJOUTER OFFRE ----
     with tab_add:
@@ -2061,13 +1766,19 @@ elif menu == "🛠️ Admin":
         frais  = c2.number_input("Frais d'activation (€)", min_value=0.0, step=1.0)
         engage = c1.number_input("Engagement (mois)", min_value=0, step=1)
         commiss= c2.number_input("Commission affiliation (€)", min_value=0.0, step=1.0)
+        data_go_off = c1.number_input("Data (Go) — 0 si non applicable (Box/Fibre, Énergie, Abo)",
+                                      min_value=0.0, step=10.0, key="add_off_data")
         carac  = st.text_area("Caractéristiques (data, débit, options…)")
+        url_souscr = c1.text_input("URL de souscription (lien affilié)", key="add_off_url")
+        code_aff   = c2.text_input("Code d'affiliation", key="add_off_code")
         if st.button("➕ Ajouter au catalogue", type="primary"):
             if nom and fourn:
                 ajouter_offre({"univers": u, "categorie": cat, "fournisseur": fourn,
                                "nom_offre": nom, "prix_mensuel": prix,
                                "frais_activation": frais, "engagement_mois": engage,
-                               "caracteristiques": carac, "commission_affiliation": commiss})
+                               "caracteristiques": carac, "commission_affiliation": commiss,
+                               "data_go": data_go_off,
+                               "url_souscription": url_souscr, "code_affiliation": code_aff})
                 st.success(f"« {nom} » ajoutée.")
             else:
                 st.warning("Fournisseur et nom obligatoires.")
@@ -2095,11 +1806,179 @@ elif menu == "🛠️ Admin":
                                           value=cfg.get("mdp", ""),                                    key="smtp_mdp")
         cfg["expediteur"] = st.text_input("Expéditeur affiché",    cfg.get("expediteur", cfg.get("user", "")), key="smtp_expediteur")
         st.session_state.smtp_config = cfg
+
+        st.markdown("### 🔔 Notifications de relances (`notifications.py`)")
+        st.caption("Réglages utilisés par le script planifié `notifications.py` (cron / tâche "
+                   "planifiée quotidienne) — celui-ci tourne hors de l'application, donc ces "
+                   "valeurs doivent être enregistrées en base (bouton ci-dessous), pas seulement "
+                   "gardées en session.")
+        notif_email = st.text_input("Email du conseiller à notifier",
+                                     lire_parametre("notif_email_destinataire", cfg.get("user", "")),
+                                     key="notif_email_dest")
+        c_tg1, c_tg2 = st.columns(2)
+        tg_token = c_tg1.text_input("Jeton bot Telegram (optionnel)",
+                                     lire_parametre("telegram_bot_token", ""), key="notif_tg_token")
+        tg_chat  = c_tg2.text_input("Chat ID Telegram (optionnel)",
+                                     lire_parametre("telegram_chat_id", ""), key="notif_tg_chat")
+
         if st.button("💾 Enregistrer", key="btn_smtp_save"):
-            st.success("Configuration enregistrée pour la session.")
+            ecrire_parametre("smtp_serveur",    cfg["serveur"])
+            ecrire_parametre("smtp_port",       cfg["port"])
+            ecrire_parametre("smtp_user",       cfg["user"])
+            ecrire_parametre("smtp_mdp",        cfg["mdp"])
+            ecrire_parametre("smtp_expediteur", cfg["expediteur"])
+            ecrire_parametre("nom_societe",     st.session_state.nom_societe)
+            ecrire_parametre("notif_email_destinataire", notif_email)
+            ecrire_parametre("telegram_bot_token",       tg_token)
+            ecrire_parametre("telegram_chat_id",         tg_chat)
+            st.success("Configuration enregistrée en base — réutilisable par notifications.py.")
 
+    # ---- FACTURATION ----
+    with tab_fact:
+        st.markdown("### Taux d'honoraires par défaut")
+        st.caption("Appliqué par défaut à la création d'un devis (modifiable au cas par cas) "
+                   "— pourcentage de l'économie annuelle trouvée.")
+        taux_actuel = safe_float(lire_parametre("taux_honoraires_defaut", "20"), 20.0)
+        nv_taux = st.number_input("Taux d'honoraires par défaut (%)", min_value=0.0, max_value=100.0,
+                                  value=taux_actuel, step=1.0, key="admin_taux_honoraires")
+        if st.button("💾 Enregistrer le taux", key="btn_taux_save"):
+            ecrire_parametre("taux_honoraires_defaut", nv_taux)
+            st.success("Taux par défaut mis à jour."); st.rerun()
 
-# ==============================================================================
-#  19. OFFRES DE DÉMONSTRATION
-# ==============================================================================
-# Fin du fichier
+    # ---- OCR VISION (NOUVEAU) ----
+    with tab_ocr:
+        st.markdown("### Analyse de factures par IA Vision (Claude)")
+        st.caption(
+            "Remplace/complète l'extraction PyPDF2 (texte embarqué uniquement) par l'API "
+            "Claude Vision, capable de lire une **photo**, un **scan** ou un **PDF image** de "
+            "facture. Sans clé configurée, l'analyse retombe automatiquement sur l'extraction "
+            "PyPDF2 classique (PDF texte uniquement — les photos/scans nécessitent la clé API)."
+        )
+        if not ANTHROPIC_OK:
+            st.warning("Le package `anthropic` n'est pas installé — `pip install anthropic` "
+                       "puis relancez l'application.")
+        cle_actuelle = lire_parametre("anthropic_api_key", "")
+        nv_cle = st.text_input("Clé API Anthropic (Claude)", value=cle_actuelle,
+                                type="password", key="admin_anthropic_key",
+                                help="Obtenue sur console.anthropic.com — jamais affichée en clair.")
+        if st.button("💾 Enregistrer la clé", key="btn_anthropic_save"):
+            ecrire_parametre("anthropic_api_key", nv_cle)
+            st.success("Clé API enregistrée.")
+
+    # ---- VEILLE PRIX (NOUVEAU) ----
+    with tab_veille:
+        st.markdown("### 📈 Veille automatique des prix opérateurs")
+        st.caption(
+            "Surveille des pages tarifs (Playwright) et détecte les changements de prix. "
+            "Aucune mise à jour du catalogue n'est automatique : chaque changement crée "
+            "une alerte que vous validez ou rejetez ci-dessous."
+        )
+        if not PLAYWRIGHT_OK:
+            st.warning("Le package `playwright` n'est pas installé (ou ses navigateurs ne le "
+                       "sont pas) — `pip install playwright && playwright install chromium`.")
+
+        sous_sources, sous_alertes, sous_historique = st.tabs(
+            ["🔗 Sources surveillées", "🔔 Alertes en attente", "📊 Historique des prix"])
+
+        # -- Sources --
+        with sous_sources:
+            df_off_veille = lire_offres(actif_seulement=False)
+            st.markdown("#### ➕ Ajouter une source à surveiller")
+            cv1, cv2 = st.columns(2)
+            v_u   = cv1.selectbox("Univers", UNIVERS, key="veille_u")
+            v_cat_map = {"Télécom": CATEGORIES_TELECOM, "Énergie": CATEGORIES_ENERGIE,
+                         "Abonnements": CATEGORIES_ABO}
+            v_cat = cv2.selectbox("Catégorie", v_cat_map[v_u], key="veille_cat")
+            v_fourn = cv1.text_input("Fournisseur / Opérateur", key="veille_fourn")
+            v_nom   = cv2.text_input("Nom de l'offre suivie", key="veille_nom")
+            v_url   = st.text_input("URL de la page tarif à surveiller", key="veille_url")
+            v_sel   = st.text_input(
+                "Sélecteur CSS du prix (ex. `.price`, `span#tarif`)", key="veille_selecteur",
+                help="Inspectez la page (clic droit > Inspecter) pour trouver l'élément qui "
+                     "affiche le prix.")
+            offres_dispo = ["Aucune (veille seule, sans mise à jour catalogue)"] + [
+                f"#{r.id} · {r.fournisseur} — {r.nom_offre}" for r in df_off_veille.itertuples()]
+            v_offre_choix = st.selectbox(
+                "Offre du catalogue à mettre à jour automatiquement (après validation)",
+                offres_dispo, key="veille_offre_liee")
+            if st.button("➕ Ajouter la source", type="primary", key="btn_add_source_veille"):
+                if v_url and v_sel and v_fourn:
+                    offre_id_liee = None
+                    if v_offre_choix != offres_dispo[0]:
+                        offre_id_liee = int(v_offre_choix.split("·")[0].strip().lstrip("#"))
+                    ajouter_source({
+                        "univers": v_u, "categorie": v_cat, "fournisseur": v_fourn,
+                        "nom_offre": v_nom, "offre_id": offre_id_liee,
+                        "url": v_url, "selecteur_prix": v_sel,
+                    })
+                    st.success("Source ajoutée."); st.rerun()
+                else:
+                    st.warning("Fournisseur, URL et sélecteur CSS sont obligatoires.")
+
+            st.divider()
+            st.markdown("#### Sources actives")
+            df_src = lire_sources()
+            if df_src.empty:
+                st.info("Aucune source configurée pour le moment.")
+            else:
+                cols_src = [c for c in ["id", "univers", "categorie", "fournisseur", "nom_offre",
+                                         "offre_id", "url", "dernier_prix", "date_derniere_verif",
+                                         "actif"] if c in df_src.columns]
+                st.dataframe(df_src[cols_src], hide_index=True, use_container_width=True)
+
+                if st.button("🔎 Lancer la veille maintenant", type="primary", key="btn_lancer_veille"):
+                    with st.spinner("Vérification des sources en cours…"):
+                        nouvelles = lancer_veille()
+                    if nouvelles:
+                        st.warning(f"{len(nouvelles)} changement(s) de prix détecté(s) — "
+                                   f"voir l'onglet « Alertes en attente ».")
+                    else:
+                        st.success("Vérification terminée — aucun changement détecté.")
+                    st.rerun()
+
+                sid_sel = st.selectbox("Source à gérer", df_src["id"].tolist(),
+                    format_func=lambda i: f"#{i} · {df_src[df_src['id']==i]['fournisseur'].values[0]} — "
+                                          f"{df_src[df_src['id']==i]['nom_offre'].values[0]}",
+                    key="veille_sel_source")
+                cs1, cs2 = st.columns(2)
+                if cs1.button("🔁 Activer/Désactiver", key="btn_toggle_source"):
+                    etat = int(df_src[df_src["id"] == sid_sel]["actif"].values[0])
+                    maj_source(int(sid_sel), "actif", 0 if etat else 1); st.rerun()
+                if cs2.button("🗑️ Supprimer la source", key="btn_del_source"):
+                    supprimer_source(int(sid_sel)); st.warning("Source supprimée."); st.rerun()
+
+        # -- Alertes --
+        with sous_alertes:
+            df_al = lire_alertes(statut="en_attente")
+            if df_al.empty:
+                st.info("Aucune alerte en attente.")
+            else:
+                for a in df_al.itertuples():
+                    sens = "🔺" if a.nouveau_prix > a.ancien_prix else "🔻"
+                    with st.container(border=True):
+                        st.markdown(f"**{a.fournisseur} — {a.nom_offre}** ({a.univers} / {a.categorie})")
+                        st.markdown(f"{sens} {a.ancien_prix:.2f} € → **{a.nouveau_prix:.2f} €** "
+                                    f"— détecté le {a.date_detection}")
+                        ca1, ca2 = st.columns(2)
+                        if ca1.button("✅ Valider (répercuter au catalogue)", key=f"btn_valid_{a.id}"):
+                            ok, msg = valider_alerte(int(a.id), st.session_state.auth_nom_complet)
+                            (st.success if ok else st.error)(msg); st.rerun()
+                        if ca2.button("❌ Rejeter", key=f"btn_reject_{a.id}"):
+                            rejeter_alerte(int(a.id)); st.warning("Alerte rejetée."); st.rerun()
+
+        # -- Historique --
+        with sous_historique:
+            df_src_hist = lire_sources()
+            if df_src_hist.empty:
+                st.info("Aucune source configurée.")
+            else:
+                sid_hist = st.selectbox("Source", df_src_hist["id"].tolist(),
+                    format_func=lambda i: f"#{i} · {df_src_hist[df_src_hist['id']==i]['fournisseur'].values[0]} — "
+                                          f"{df_src_hist[df_src_hist['id']==i]['nom_offre'].values[0]}",
+                    key="veille_sel_historique")
+                df_h = lire_historique_prix(int(sid_hist))
+                if df_h.empty:
+                    st.info("Aucun relevé pour cette source pour le moment — lancez la veille.")
+                else:
+                    st.line_chart(df_h.set_index("date_releve")["prix"])
+                    st.dataframe(df_h[["date_releve", "prix"]], hide_index=True, use_container_width=True)

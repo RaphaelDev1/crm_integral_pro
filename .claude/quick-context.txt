@@ -41,7 +41,8 @@ RÔLES : Admin, Conseiller, Lecture (voir peut_modifier() / est_admin()).
 Chaque conseiller ne voit que ses propres prospects/clients (colonne
 cree_par) ; un Admin peut activer une vue globale sur le Tableau de bord.
 
-TABLES SQLITE : utilisateurs, prospects, clients, contrats, offres.
+TABLES SQLITE : utilisateurs, prospects, clients, contrats, offres,
+historique_actions (audit trail clients, Étape 3).
 Détail complet → docs/DATABASE.md
 
 CONVENTIONS : voir .claude/project.rules.md

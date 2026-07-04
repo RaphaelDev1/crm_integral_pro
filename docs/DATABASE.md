@@ -52,6 +52,7 @@ vide (`creer_admin_par_defaut()`) : `admin` / `Admin2026!`.
 | statut | TEXT | défaut `À relancer` |
 | date_creation, date_relance | TEXT | |
 | cree_par | TEXT | nom du conseiller — filtrage des vues |
+| offres_interet | TEXT | JSON sérialisé — offres cochées « intéresse le client » à l'étape 4 du diagnostic |
 
 Colonnes modifiables via formulaire : voir `CHAMPS_PROSPECT` dans
 `app.py`.
@@ -97,6 +98,65 @@ Colonnes modifiables : `CHAMPS_OFFRE`. `inserer_offres_demo()` (section 19
 de `app.py`) pré-remplit un catalogue de démonstration Télécom / Énergie /
 Abonnements depuis Admin.
 
+## `historique_actions` (Étape 3)
+
+Journal d'audit, insert-only (jamais modifiée ni supprimée), alimentée par
+`enregistrer_action()` et lue par `lire_historique()`.
+
+| Colonne | Type | Notes |
+|---|---|---|
+| id | INTEGER PK | |
+| entite_type | TEXT | référence polymorphe — seule la valeur `"client"` est utilisée actuellement |
+| entite_id | INTEGER | id de l'entité concernée (ex. id du client) |
+| action | TEXT | libellé court (`Création client`, `Modification`, `Suppression`, `Ajout contrat`, `Modification contrat`, `Suppression contrat`, `Conversion prospect→client`) |
+| details | TEXT | texte libre (champ modifié, nom du contrat, etc.) |
+| auteur | TEXT | `auth_nom_complet` du conseiller connecté |
+| date_action | TEXT | `dd/mm/YYYY HH:MM` |
+
+Affichée en lecture seule dans la fiche client (section 17 de `app.py`),
+triée par `id` décroissant (pas par `date_action`, qui est du texte).
+
+## `sources_veille` / `veille_historique_prix` / `veille_alertes` (veille prix)
+
+Alimentées par `veille_prix_engine.py` (scraping Playwright, cf. aussi
+`docs/CHANGELOG.md`). Aucune de ces tables ne modifie `offres` directement :
+seule `valider_alerte()` répercute un prix, sur action admin explicite.
+
+`sources_veille` — une page tarif surveillée :
+
+| Colonne | Type | Notes |
+|---|---|---|
+| id | INTEGER PK | |
+| univers, categorie, fournisseur, nom_offre | TEXT | libellés d'affichage |
+| offre_id | INTEGER FK → offres(id) | nullable — `NULL` = veille concurrentielle sans impact catalogue |
+| url | TEXT | page à ouvrir (Playwright headless) |
+| selecteur_prix | TEXT | sélecteur CSS de l'élément contenant le prix |
+| actif | INTEGER | 1 = incluse dans `lancer_veille()` |
+| dernier_prix | REAL | dernier prix relevé — sert de référence pour détecter un changement |
+| date_derniere_verif | TEXT | `dd/mm/YYYY HH:MM` |
+| date_creation | TEXT | |
+
+`veille_historique_prix` — un relevé par vérification (insert-only, jamais
+modifiée), triée par `id` (ordre chronologique d'insertion) pour tracer les
+tendances de prix :
+
+| Colonne | Type | Notes |
+|---|---|---|
+| id | INTEGER PK | |
+| source_id | INTEGER FK → sources_veille(id) | |
+| prix | REAL | |
+| date_releve | TEXT | `dd/mm/YYYY HH:MM` |
+
+`veille_alertes` — changement de prix détecté, en attente de validation admin :
+
+| Colonne | Type | Notes |
+|---|---|---|
+| id | INTEGER PK | |
+| source_id | INTEGER FK → sources_veille(id) | |
+| ancien_prix, nouveau_prix | REAL | |
+| statut | TEXT | `en_attente` / `validee` / `rejetee` |
+| date_detection, date_traitement | TEXT | `date_traitement` vide tant que `en_attente` |
+
 ## Migrations
 
 Toute évolution de schéma suit ce processus (voir aussi
@@ -109,3 +169,11 @@ Toute évolution de schéma suit ce processus (voir aussi
 3. Documenter la colonne dans ce fichier.
 4. Ajouter la colonne au bon ensemble `CHAMPS_*` si elle doit être
    modifiable depuis un formulaire.
+
+**Nuance nouvelle table vs nouvelle colonne :** l'étape 2 (`_migrer_bdd()`)
+ne concerne que l'ajout d'une **colonne** à une table déjà existante
+(`ALTER TABLE ... ADD COLUMN`). Pour une **table entièrement nouvelle**
+(ex. `historique_actions`), un simple `CREATE TABLE IF NOT EXISTS` dans
+`initialiser_bdd()` suffit à migrer les bases existantes, puisque cette
+fonction s'exécute à chaque démarrage de l'application — aucune entrée
+dans `_migrer_bdd()` n'est nécessaire dans ce cas.
