@@ -161,17 +161,24 @@ class TestGestionErreurs:
         with pytest.raises(facture_analyzer.FactureAnalyzerError):
             facture_analyzer.analyser_facture(chemin)
 
-    def test_sans_cle_api(self, facture_mobile_pdf, monkeypatch):
+    def test_sans_cle_api_leve_en_production(self, facture_mobile_pdf, monkeypatch):
         monkeypatch.setattr(settings, "anthropic_api_key", "")
+        monkeypatch.setattr(settings, "app_env", "production")
         with pytest.raises(facture_analyzer.FactureAnalyzerError):
             facture_analyzer.analyser_facture(facture_mobile_pdf)
+
+    def test_sans_cle_api_degrade_proprement_hors_production(self, facture_mobile_pdf, monkeypatch):
+        monkeypatch.setattr(settings, "anthropic_api_key", "")
+        monkeypatch.setattr(settings, "app_env", "development")
+        res = facture_analyzer.analyser_facture(facture_mobile_pdf)
+        assert res == facture_analyzer._resultat_vide()
 
     def test_reponse_json_invalide(self, facture_mobile_pdf, monkeypatch):
         _patch_claude(monkeypatch, texte="Désolé, je ne peux pas analyser ce document.")
         with pytest.raises(facture_analyzer.FactureAnalyzerError):
             facture_analyzer.analyser_facture(facture_mobile_pdf)
 
-    def test_erreur_api_anthropic_est_convertie(self, facture_mobile_pdf, monkeypatch):
+    def test_erreur_api_anthropic_est_convertie_en_production(self, facture_mobile_pdf, monkeypatch):
         import anthropic
 
         class ClientEnErreur:
@@ -181,6 +188,22 @@ class TestGestionErreurs:
                     raise anthropic.APIConnectionError(request=None)
 
         monkeypatch.setattr(settings, "anthropic_api_key", "fake-key")
+        monkeypatch.setattr(settings, "app_env", "production")
         monkeypatch.setattr(facture_analyzer.anthropic, "Anthropic", lambda api_key: ClientEnErreur())
         with pytest.raises(facture_analyzer.FactureAnalyzerError):
             facture_analyzer.analyser_facture(facture_mobile_pdf)
+
+    def test_erreur_api_anthropic_degrade_proprement_hors_production(self, facture_mobile_pdf, monkeypatch):
+        import anthropic
+
+        class ClientEnErreur:
+            class messages:
+                @staticmethod
+                def create(**kwargs):
+                    raise anthropic.APIConnectionError(request=None)
+
+        monkeypatch.setattr(settings, "anthropic_api_key", "fake-key")
+        monkeypatch.setattr(settings, "app_env", "development")
+        monkeypatch.setattr(facture_analyzer.anthropic, "Anthropic", lambda api_key: ClientEnErreur())
+        res = facture_analyzer.analyser_facture(facture_mobile_pdf)
+        assert res == facture_analyzer._resultat_vide()

@@ -35,6 +35,8 @@ python -m alembic current   # doit afficher "0008 (head)"
 ```
 Sans cette étape, les tables des derniers chantiers (`demarches`, `tokens_publics`) n'existent pas sur Postgres.
 
+> ✅ Appliqué le 2026-07-24 sur le Neon du projet — `alembic current` renvoie bien `0008 (head)`.
+
 ## 2. Lancer chaque brique en local (sans Docker)
 
 Dans des terminaux séparés (venv activé) :
@@ -85,14 +87,15 @@ cd src
 python -m pytest -q          # 194 tests attendus verts
 
 cd ..
-python -m pytest backend/tests -q
+python -m pytest backend/tests -q   # 84 tests attendus verts
 
 ruff check backend           # lint (scope backend/ uniquement, voir pyproject.toml)
 ```
 
-> **Connu au 2026-07-24** : `backend/tests/test_facture_analyzer.py::test_sans_cle_api` et
-> `::test_erreur_api_anthropic_est_convertie` échouent — `facture_analyzer.py` dégrade proprement
-> au lieu de lever `FactureAnalyzerError`, les tests n'ont pas été mis à jour en conséquence.
+> ✅ Corrigé le 2026-07-24 : `test_facture_analyzer.py` distinguait mal le comportement volontaire
+> de `facture_analyzer.py` (dégradation propre hors production, `FactureAnalyzerError` uniquement
+> en production — `settings.is_production`). Les tests couvrent maintenant explicitement les deux
+> cas (`*_leve_en_production` / `*_degrade_proprement_hors_production`).
 
 ## 5. Vérifier concrètement chaque chantier d'automatisation
 
