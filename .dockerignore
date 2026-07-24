@@ -1,0 +1,30 @@
+# Contexte de build racine (backend/Dockerfile, src/Dockerfile) — voir aussi
+# frontend-portail/.dockerignore pour l'image du portail (contexte séparé).
+
+.venv/
+**/__pycache__/
+**/*.pyc
+.git/
+.github/
+.pytest_cache/
+.claude/
+
+# Secrets — jamais dans une image Docker
+.env
+**/.env
+!**/.env.example
+
+# Données locales, ne doivent jamais finir dans une image
+src/ia_conseil_crm.db
+src/ia_conseil_crm.db-wal
+src/ia_conseil_crm.db-shm
+backend/_local_storage/
+
+# Projet Node (build isolé via son propre Dockerfile/contexte)
+frontend-portail/node_modules
+frontend-portail/.next
+
+# Ancienne version, docs, non nécessaires à l'exécution
+/old
+docs/
+*.md

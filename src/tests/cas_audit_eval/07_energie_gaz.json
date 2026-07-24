@@ -1,0 +1,15 @@
+{
+  "situation": {
+    "univers_interesse": ["Énergie"],
+    "cout_elec": 0.0,
+    "cout_gaz": 95.0,
+    "fournisseur_energie": "Engie",
+    "ville": ""
+  },
+  "attendu": {
+    "fournisseurs_acceptables": ["TotalEnergies"],
+    "economie_an_min": 190,
+    "economie_an_max": 220,
+    "categories_attendues": ["Gaz"]
+  }
+}

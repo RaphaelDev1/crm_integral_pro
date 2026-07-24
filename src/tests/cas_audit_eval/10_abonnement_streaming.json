@@ -1,0 +1,14 @@
+{
+  "situation": {
+    "univers_interesse": ["Abonnements"],
+    "abonnements": [{"nom": "Netflix Premium", "cout": 19.99}],
+    "ville": ""
+  },
+  "attendu": {
+    "fournisseurs_acceptables": ["Netflix", "Disney+", "Prime Video"],
+    "economie_an_min": 100,
+    "economie_an_max": 200,
+    "categories_attendues": ["Streaming Vidéo"],
+    "note": "Cas le plus ambigu du lot (la situation ne précise pas la catégorie catalogue) : sert surtout à observer si l'agent devine correctement 'Streaming Vidéo'."
+  }
+}

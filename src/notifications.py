@@ -28,6 +28,7 @@ from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
+import secrets_config
 from contrats_engine import lire_contrats_echeance
 from db import get_conn, lire_parametre
 from email_engine import construire_corps_email_fin_engagement
@@ -38,14 +39,9 @@ JOURS_AVANT_ALERTE_ENGAGEMENT = 60   # ≈ 2 mois, cf. suivi post-souscription
 
 
 def _lire_smtp_config() -> dict:
-    return {
-        "serveur":      lire_parametre("smtp_serveur"),
-        "port":         int(safe_float(lire_parametre("smtp_port", "587"), 587)),
-        "user":         lire_parametre("smtp_user"),
-        "mdp":          lire_parametre("smtp_mdp"),
-        "expediteur":   lire_parametre("smtp_expediteur"),
-        "destinataire": lire_parametre("notif_email_destinataire"),
-    }
+    cfg = secrets_config.smtp_config()
+    cfg["destinataire"] = lire_parametre("notif_email_destinataire")
+    return cfg
 
 
 def _envoyer_email_texte(destinataire: str, sujet: str, corps_texte: str) -> bool:
@@ -88,8 +84,8 @@ def _envoyer_email_html(destinataire: str, sujet: str, corps_html: str) -> bool:
 
 
 def _envoyer_telegram(texte: str) -> bool:
-    token   = lire_parametre("telegram_bot_token")
-    chat_id = lire_parametre("telegram_chat_id")
+    token   = secrets_config.telegram_bot_token()
+    chat_id = secrets_config.telegram_chat_id()
     if not (token and chat_id):
         return False
     url  = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -235,6 +231,60 @@ def notifier_nouveau_prospect_chatbot(prospect_id: int, infos_client: dict, tota
     return envoye
 
 
+def envoyer_demande_documents_prospect(prospect: dict, url: str) -> dict:
+    """Envoie au prospect (SMS + email, selon les coordonnées disponibles sur sa
+    fiche) le lien à usage personnel lui permettant de transmettre lui-même sa
+    facture et un test de débit — évite au conseiller d'avoir à les lui
+    redemander par téléphone. Renvoie {"sms_envoye": bool, "email_envoye": bool}."""
+    from prospects_engine import TOKEN_DOCUMENTS_DUREE_JOURS
+    from sms_engine import envoyer_sms
+
+    prenom = (prospect.get("prenom") or "").strip()
+    salutation = f"Bonjour {prenom}," if prenom else "Bonjour,"
+
+    message_sms = (
+        f"{salutation} merci de nous transmettre votre facture et un test de débit "
+        f"via ce lien sécurisé : {url} (valable {TOKEN_DOCUMENTS_DUREE_JOURS} jours). "
+        f"Votre conseiller."
+    )
+    corps_email = (
+        f"<p>{salutation}</p>"
+        f"<p>Pour finaliser votre étude, merci de nous transmettre directement, "
+        f"sans avoir à nous les envoyer par téléphone ou par un autre biais :</p>"
+        f"<ul><li>votre dernière facture (photo ou PDF)</li>"
+        f"<li>un test de débit (capture d'écran ou export PDF nPerf / Speedtest)</li></ul>"
+        f'<p><a href="{url}">{url}</a></p>'
+        f"<p>Ce lien est personnel et valable {TOKEN_DOCUMENTS_DUREE_JOURS} jours.</p>"
+        f"<p>Votre conseiller.</p>"
+    )
+
+    telephone = prospect.get("telephone") or ""
+    email     = prospect.get("email") or ""
+    sms_envoye   = envoyer_sms(telephone, message_sms) if telephone else False
+    email_envoye = _envoyer_email_html(
+        email, "Merci de nous transmettre votre facture et votre test de débit", corps_email
+    ) if email else False
+    return {"sms_envoye": sms_envoye, "email_envoye": email_envoye}
+
+
+def notifier_document_prospect_recu(prospect_id: int, nom_complet: str, resume: str) -> bool:
+    """Alerte immédiate (email + Telegram, mêmes canaux que le digest quotidien)
+    quand un prospect transmet sa facture ou son test de débit via son lien
+    personnel — le conseiller n'a alors plus qu'à vérifier, pas à ressaisir."""
+    texte = (
+        f"📎 {nom_complet or 'Un prospect'} vient de transmettre un document via son lien "
+        f"personnel.\n{resume}\nFiche prospect #{prospect_id}."
+    )
+    cfg = _lire_smtp_config()
+    envoye = False
+    if cfg["destinataire"]:
+        envoye = _envoyer_email_texte(
+            cfg["destinataire"], f"Document reçu — {nom_complet or 'prospect #' + str(prospect_id)}", texte
+        ) or envoye
+    envoye = _envoyer_telegram(texte) or envoye
+    return envoye
+
+
 def notifier_changement_prix(alertes: list[dict]) -> bool:
     """Alerte immédiate (email + Telegram, mêmes canaux que le digest quotidien)
     quand `veille_prix_engine.lancer_veille()` détecte un ou plusieurs changements
@@ -260,6 +310,37 @@ def notifier_changement_prix(alertes: list[dict]) -> bool:
     if not envoye:
         print("Changement(s) de prix détecté(s), mais aucun canal de notification "
               "configuré (voir Admin > Email).")
+    return envoye
+
+
+def notifier_nouvelles_offres_staging(resume: dict) -> bool:
+    """Alerte immédiate (email + Telegram) quand `catalogue_engine.
+    ingerer_toutes_sources_actives()` détecte de nouvelles offres, des offres à
+    vérifier (prix manquant) ou des changements de prix — à valider dans
+    Admin > 📚 Catalogue > Offres détectées. Appelée en import direct depuis
+    catalogue_engine.py (script autonome), pas seulement via ce module."""
+    total = resume.get("detectees", 0) + resume.get("a_verifier", 0) + resume.get("changements", 0)
+    if not total:
+        return False
+    lignes = [
+        f"📚 {total} offre(s) détectée(s) par le catalogue auto — à valider dans "
+        f"Admin > 📚 Catalogue > Offres détectées :", "",
+        f"- 🆕 Nouvelles offres : {resume.get('detectees', 0)}",
+        f"- ❓ À vérifier (prix non trouvé) : {resume.get('a_verifier', 0)}",
+        f"- 🔄 Changements de prix : {resume.get('changements', 0)}",
+    ]
+    texte = "\n".join(lignes)
+
+    cfg = _lire_smtp_config()
+    envoye = False
+    if cfg["destinataire"]:
+        envoye = _envoyer_email_texte(
+            cfg["destinataire"], f"IA Conseil — {total} offre(s) détectée(s) au catalogue", texte
+        ) or envoye
+    envoye = _envoyer_telegram(texte) or envoye
+    if not envoye:
+        print("Offre(s) détectée(s), mais aucun canal de notification configuré "
+              "(voir Admin > Email).")
     return envoye
 
 

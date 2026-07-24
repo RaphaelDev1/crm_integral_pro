@@ -211,6 +211,55 @@ def analyser_speedtest_pdf(texte: str):
     return down, up
 
 
+PROMPT_SPEEDTEST_VISION = (
+    "Tu analyses une capture d'écran ou un export PDF d'un test de débit internet "
+    "(nPerf, Speedtest.net, Ookla…). Réponds UNIQUEMENT avec un objet JSON valide "
+    '(rien avant, rien après) : {"down": 0.0, "up": 0.0}\n'
+    "- down : débit descendant (téléchargement/download) en Mbit/s\n"
+    "- up : débit montant (envoi/upload) en Mbit/s\n"
+    "Si une valeur est illisible ou absente, mets 0.0. Ne réponds rien d'autre que ce JSON."
+)
+
+
+def analyser_speedtest_vision(contenu: bytes, nom_fichier: str, api_key: str,
+                               model: str = "claude-sonnet-5"):
+    """Extrait les débits descendant/montant d'une capture d'écran ou d'un PDF de
+    test de débit via l'API Claude Vision. Renvoie (down, up) ou None en cas
+    d'échec (package/clé absents, format non supporté, erreur réseau, réponse
+    non exploitable) — l'appelant doit alors retomber sur `analyser_speedtest_pdf`
+    (texte) ou laisser les valeurs à 0."""
+    if not ANTHROPIC_OK or not api_key or not contenu:
+        return None
+    ext  = nom_fichier.rsplit(".", 1)[-1].lower() if "." in nom_fichier else ""
+    mime = _MIME_PAR_EXTENSION.get(ext)
+    if not mime:
+        return None
+
+    bloc_type = "document" if mime == "application/pdf" else "image"
+    b64 = base64.b64encode(contenu).decode("ascii")
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        msg = client.messages.create(
+            model=model,
+            max_tokens=256,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": bloc_type, "source": {"type": "base64", "media_type": mime, "data": b64}},
+                    {"type": "text", "text": PROMPT_SPEEDTEST_VISION},
+                ],
+            }],
+        )
+        texte = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+        texte = re.sub(r"^```(?:json)?|```$", "", texte.strip(), flags=re.MULTILINE).strip()
+        brut = json.loads(texte)
+        down = float(str(brut.get("down", 0.0)).replace(",", ".") or 0.0)
+        up   = float(str(brut.get("up", 0.0)).replace(",", ".") or 0.0)
+        return down, up
+    except Exception:
+        return None
+
+
 # ------------------------------------------------------------------------------
 #  GÉNÉRATION PDF DE RESTITUTION
 # ------------------------------------------------------------------------------
@@ -571,7 +620,7 @@ def generer_pdf_restitution(client, recommandations, nom_societe="IA CONSEIL"):
 # ------------------------------------------------------------------------------
 #  PDF TEASER — aperçu gratuit avant paiement des honoraires (sans détail d'offres)
 # ------------------------------------------------------------------------------
-def generer_pdf_teaser(client, univers_analyses, economie_totale, nom_societe="IA CONSEIL"):
+def generer_pdf_teaser(client, univers_analyses, economie_totale, nom_societe="IA CONSEIL", details_univers=None):
     if not FPDF_OK:
         return None
     pdf = PDFPro(nom_societe)
@@ -589,11 +638,20 @@ def generer_pdf_teaser(client, univers_analyses, economie_totale, nom_societe="I
     pdf.set_text_color(0, 0, 0)
     pdf.ln(3)
 
+    details_univers = details_univers or {}
     for u in univers_analyses:
+        categories = details_univers.get(u) or []
+        hauteur = 9 if not categories else 9 + 5
         y = pdf.get_y()
-        pdf.rounded_card(10, y, 190, 9, r=2, fill=COULEUR_FOND_CARTE, border=COULEUR_BORDURE)
+        pdf.rounded_card(10, y, 190, hauteur, r=2, fill=COULEUR_FOND_CARTE, border=COULEUR_BORDURE)
         pdf.puce_check(15, y + 2.2, u, 170)
-        pdf.set_y(y + 11)
+        if categories:
+            pdf.set_xy(20, y + 8.5)
+            pdf.set_font("Helvetica", "", 8.5)
+            pdf.set_text_color(*COULEUR_GRIS)
+            pdf.cell(0, 4.5, _pdf_txt("Ce que nous vous proposons : " + ", ".join(categories)))
+            pdf.set_text_color(0, 0, 0)
+        pdf.set_y(y + hauteur + 2)
     pdf.ln(3)
 
     _banniere_totale(pdf, economie_totale, "Estimation realisee sur la base des documents transmis", hauteur=24)
@@ -639,6 +697,36 @@ def generer_pdf_teaser(client, univers_analyses, economie_totale, nom_societe="I
         "honoraires de conseil (devis joint separement)."))
     pdf.set_text_color(0, 0, 0)
     return bytes(pdf.output())
+
+
+def construire_apercu_pdf_prospect(prospect: dict, nom_societe: str = "IA CONSEIL"):
+    """Reconstruit le PDF teaser d'un prospect à partir de ses offres « intéresse le client »
+    (prospect['offres_interet'], JSON) — même logique que le wizard de diagnostic (étape 4),
+    généralisée pour être réutilisable depuis la fiche prospect (app.py) et le portail public
+    (chatbot_api.py, lien SMS). Renvoie None si aucune offre retenue ou économie nulle."""
+    from utils import economie_totale_groupee
+
+    try:
+        offres_interet = json.loads(prospect.get("offres_interet") or "[]")
+    except Exception:
+        offres_interet = []
+    if not offres_interet:
+        return None
+    total_eco = economie_totale_groupee(offres_interet)
+    if total_eco <= 0:
+        return None
+    univers_analyses = []
+    details_univers = {}
+    for o in offres_interet:
+        u = o.get("univers")
+        if u and u not in univers_analyses:
+            univers_analyses.append(u)
+        if u:
+            categories = details_univers.setdefault(u, [])
+            if o.get("categorie") and o["categorie"] not in categories:
+                categories.append(o["categorie"])
+    return generer_pdf_teaser(prospect, univers_analyses, total_eco, nom_societe,
+                               details_univers=details_univers)
 
 
 # ------------------------------------------------------------------------------

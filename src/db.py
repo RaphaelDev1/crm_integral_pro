@@ -164,6 +164,18 @@ def initialiser_bdd():
         )
     """)
 
+    # Table login_tentatives — audit + rate limiting login (insert-only), une ligne
+    # par tentative de connexion (succès ou échec), clé (identifiant, ip).
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS login_tentatives (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            identifiant    TEXT,
+            ip             TEXT,
+            succes         INTEGER,
+            date_tentative TEXT
+        )
+    """)
+
     # Table parametres — réglages clé/valeur génériques (ex. taux d'honoraires par défaut)
     c.execute("""
         CREATE TABLE IF NOT EXISTS parametres (
@@ -262,6 +274,78 @@ def initialiser_bdd():
         )
     """)
 
+    # Table catalogue_sources — pages/flux à ingérer pour découvrir de nouvelles
+    # offres (cf. catalogue_engine.py). À ne pas confondre avec sources_veille,
+    # qui ne suit que le prix d'une offre déjà présente au catalogue : ici on
+    # récupère la page entière et on laisse le LLM en extraire les offres.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS catalogue_sources (
+            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+            univers                 TEXT,
+            categorie               TEXT,
+            fournisseur             TEXT,
+            url                     TEXT,
+            type_source             TEXT DEFAULT 'page_officielle',
+            methode                 TEXT DEFAULT 'requests',
+            actif                   INTEGER DEFAULT 1,
+            robots_ok               INTEGER,
+            frequence_h             INTEGER DEFAULT 24,
+            date_derniere_ingestion TEXT,
+            date_creation           TEXT
+        )
+    """)
+
+    # Table offres_staging — offres détectées par catalogue_engine.py, jamais
+    # écrites directement dans `offres` : un admin valide/rejette/fusionne
+    # depuis Admin > 📚 Catalogue > Offres détectées (même principe que
+    # veille_alertes pour la veille prix).
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS offres_staging (
+            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id               INTEGER,
+            univers                 TEXT,
+            categorie               TEXT,
+            fournisseur             TEXT,
+            nom_offre               TEXT,
+            prix_mensuel            REAL,
+            frais_activation        REAL,
+            engagement_mois         INTEGER,
+            data_go                 REAL,
+            caracteristiques        TEXT,
+            commission_affiliation  REAL,
+            url_souscription        TEXT,
+            code_affiliation        TEXT,
+            hash_contenu            TEXT,
+            statut                  TEXT DEFAULT 'en_attente',
+            confiance_llm           REAL,
+            champs_incertains       TEXT,
+            payload_brut            TEXT,
+            offre_existante_id      INTEGER,
+            date_detection          TEXT,
+            date_traitement         TEXT,
+            FOREIGN KEY (source_id) REFERENCES catalogue_sources(id),
+            FOREIGN KEY (offre_existante_id) REFERENCES offres(id)
+        )
+    """)
+
+    # Table tokens_prospects — lien à usage personnel (sans login) envoyé par
+    # SMS/email à un prospect pour qu'il transmette lui-même sa facture et un
+    # test de débit (cf. prospects_engine.creer_token_documents / chatbot_api.py
+    # /portail/{token}), sur le même principe que le portail client du backend/.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS tokens_prospects (
+            id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+            prospect_id               INTEGER NOT NULL,
+            token                     TEXT UNIQUE NOT NULL,
+            date_creation             TEXT,
+            date_expiration           TEXT,
+            date_derniere_utilisation TEXT,
+            nb_utilisations           INTEGER DEFAULT 0,
+            revoque                   INTEGER DEFAULT 0,
+            FOREIGN KEY (prospect_id) REFERENCES prospects(id)
+        )
+    """)
+
     conn.commit()
     conn.close()
     _migrer_bdd()   # ← Ajoute les colonnes manquantes aux BDD existantes
@@ -301,6 +385,10 @@ def _migrer_bdd():
         ("prospects", "offres_interet",       "TEXT"),
         ("prospects", "score",                "REAL DEFAULT 0"),
         ("prospects", "origine",              "TEXT DEFAULT 'Manuel'"),
+        # Date de fin d'engagement du contrat actuel du prospect (chez son opérateur actuel) —
+        # sert à programmer automatiquement la relance à l'approche de l'échéance au lieu d'une
+        # date arbitraire, cf. prospects_engine.py::widget_relance.
+        ("prospects", "date_fin_engagement",  "TEXT"),
         # ── clients ────────────────────────────────────────────────────
         ("clients",   "type_client",          "TEXT"),
         ("clients",   "operateur_actuel",     "TEXT"),
@@ -319,6 +407,13 @@ def _migrer_bdd():
         ("clients",   "cree_par",             "TEXT"),
         ("clients",   "date_relance",         "TEXT"),
         ("clients",   "statut_relance",       "TEXT DEFAULT 'Aucune'"),
+        # backend_client_id : id du client miroir côté backend/ (Postgres) — backend/ et le
+        # CRM Streamlit (SQLite) sont deux bases disjointes avec des id indépendants (voir
+        # src/api_client.py::_backend_client_id_pour) ; ce champ mémorise le mapping une fois
+        # le miroir créé, pour ne pas en recréer un à chaque nouveau dossier.
+        ("clients",   "backend_client_id",    "INTEGER"),
+        # ── utilisateurs ───────────────────────────────────────────────
+        ("utilisateurs", "doit_changer_mdp",  "INTEGER DEFAULT 0"),
         ("prospects", "adresse",              "TEXT"),
         ("clients",   "adresse",              "TEXT"),
         # ── contrats (base créée avant l'ajout de ces colonnes → ALTER requis) ──
@@ -334,10 +429,24 @@ def _migrer_bdd():
         ("contrats",  "date_fin_engagement",  "TEXT"),
         ("contrats",  "notes",                "TEXT"),
         ("contrats",  "cree_par",             "TEXT"),
+        # prospect_id : contrat rattaché à un prospect (autre service déjà souscrit ailleurs,
+        # appris par le conseiller) plutôt qu'à un client — client_id reste NULL dans ce cas.
+        ("contrats",  "prospect_id",          "INTEGER"),
+        # type_contrat : distingue, pour un contrat rattaché à un prospect, un simple service
+        # déjà souscrit ailleurs ("reference_externe", sert de base de comparaison cross-sell,
+        # cf. cout_reference_categorie) d'un dossier en cours de vente avec nous
+        # ("dossier_cmr", suit ETAPES_CONTRAT et déclenche la conversion en client une fois
+        # "Actif" — cf. app.py::finaliser_conversion_client). NULL = reference_externe (valeur
+        # implicite des contrats prospect créés avant l'ajout de cette colonne).
+        ("contrats",  "type_contrat",         "TEXT"),
         # ── offres ─────────────────────────────────────────────────────
         ("offres",    "data_go",              "REAL DEFAULT 0"),
         ("offres",    "url_souscription",     "TEXT"),
         ("offres",    "code_affiliation",     "TEXT"),
+        # backend_client_id sur prospects : même mécanisme que pour les clients (voir
+        # commentaire ci-dessus) — un prospect peut désormais avoir un dossier suivi côté
+        # backend/ (stepper + mandats + historique) avant même sa conversion en client.
+        ("prospects", "backend_client_id",    "INTEGER"),
     ]
     conn = get_conn()
     c    = conn.cursor()

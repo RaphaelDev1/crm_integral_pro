@@ -1,0 +1,17 @@
+{
+  "situation": {
+    "univers_interesse": ["Télécom"],
+    "service_principal": "Pack Box + Mobile",
+    "operateur_actuel": "Orange",
+    "cout_mensuel_actuel": 60.0,
+    "satisfaction_reseau": "😐 Ça va",
+    "veut_rester": false,
+    "ville": ""
+  },
+  "attendu": {
+    "fournisseurs_acceptables": ["Free"],
+    "economie_an_min": 220,
+    "economie_an_max": 260,
+    "categories_attendues": ["Pack Box + Mobile"]
+  }
+}

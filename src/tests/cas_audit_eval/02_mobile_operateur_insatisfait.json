@@ -1,0 +1,18 @@
+{
+  "situation": {
+    "univers_interesse": ["Télécom"],
+    "service_principal": "Mobile uniquement",
+    "operateur_actuel": "YouPrice (Réseau Orange)",
+    "cout_mensuel_actuel": 15.0,
+    "satisfaction_reseau": "😡 Pas du tout",
+    "veut_rester": false,
+    "ville": ""
+  },
+  "attendu": {
+    "fournisseurs_acceptables": ["SFR"],
+    "economie_an_min": 18,
+    "economie_an_max": 30,
+    "categories_attendues": ["Mobile"],
+    "note": "Le client est insatisfait de son opérateur actuel (le moins cher du marché) : l'agent doit l'exclure et proposer le suivant, pas rester dessus."
+  }
+}

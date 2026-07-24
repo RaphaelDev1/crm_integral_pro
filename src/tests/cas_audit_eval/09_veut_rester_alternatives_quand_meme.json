@@ -1,0 +1,19 @@
+{
+  "situation": {
+    "univers_interesse": ["Télécom"],
+    "service_principal": "Mobile uniquement",
+    "operateur_actuel": "Free",
+    "cout_mensuel_actuel": 39.99,
+    "satisfaction_reseau": "😀 Très content",
+    "veut_rester": true,
+    "ville": ""
+  },
+  "attendu": {
+    "fournisseurs_acceptables": ["YouPrice (Réseau Orange)"],
+    "economie_an_min": 340,
+    "economie_an_max": 380,
+    "categories_attendues": ["Mobile"],
+    "points_attention_attendus": true,
+    "note": "Le client veut rester chez son opérateur : l'agent doit quand même chiffrer des alternatives (ne jamais rester silencieux) mais signaler ce souhait dans points_attention."
+  }
+}

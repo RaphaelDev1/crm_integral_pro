@@ -9,3 +9,7 @@ fastapi
 uvicorn
 pyjwt
 requests
+beautifulsoup4
+python-dotenv
+python-multipart
+sentry-sdk

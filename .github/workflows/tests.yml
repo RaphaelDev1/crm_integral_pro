@@ -5,7 +5,7 @@ on:
   pull_request:
 
 jobs:
-  pytest:
+  pytest-streamlit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,3 +16,38 @@ jobs:
         run: pip install -r src/requirements-dev.txt
       - name: Lancer la suite de tests
         run: cd src && pytest -q
+
+  pytest-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Installer les dépendances
+        run: pip install -r backend/requirements-dev.txt
+      - name: Lancer la suite de tests
+        run: pytest backend/tests -q
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Installer ruff
+        run: pip install ruff
+      - name: Lint backend/
+        run: ruff check backend
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image backend
+        run: docker build -f backend/Dockerfile -t ia-conseil-backend .
+      - name: Build image streamlit
+        run: docker build -f src/Dockerfile -t ia-conseil-streamlit .
+      - name: Build image portail Next.js
+        run: docker build -t ia-conseil-portail frontend-portail

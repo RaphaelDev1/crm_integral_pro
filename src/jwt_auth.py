@@ -1,23 +1,31 @@
 # ==============================================================================
 #  JWT — émission/validation des jetons pour l'API CRM interne (crm_api.py)
 #
-#  Le secret est lu dans la variable d'environnement CRM_API_SECRET. En son
-#  absence (poste de dev / tests), un secret par défaut est utilisé et un
-#  avertissement est affiché une seule fois — à ne jamais utiliser en production.
+#  Le secret est lu dans la variable d'environnement CRM_API_SECRET (.env en
+#  dev, variable réelle en prod). En son absence : secret de dev + avertissement
+#  si APP_ENV != production, sinon échec au démarrage (on refuse de tourner en
+#  prod avec un secret JWT prévisible).
 # ==============================================================================
 import os
 import sys
 from datetime import datetime, timedelta, timezone
 
 import jwt
+from dotenv import load_dotenv
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+load_dotenv()
 
 ALGORITHME = "HS256"
 DUREE_VALIDITE_MINUTES = 8 * 60   # 8h — la durée d'une journée de travail
 
 _SECRET = os.environ.get("CRM_API_SECRET")
 if not _SECRET:
+    if os.environ.get("APP_ENV", "development") == "production":
+        raise RuntimeError(
+            "CRM_API_SECRET doit être défini en production (voir .env.example)."
+        )
     _SECRET = "dev-secret-a-changer-en-production"
     print("⚠️  CRM_API_SECRET non défini — utilisation d'un secret de développement. "
           "Définissez cette variable d'environnement avant tout déploiement.", file=sys.stderr)
@@ -26,13 +34,19 @@ _bearer = HTTPBearer(auto_error=False)
 
 
 def creer_token(user: dict) -> str:
-    """Émet un JWT à partir d'un utilisateur (dict avec id/username/nom_complet/role)."""
+    """Émet un JWT à partir d'un utilisateur (dict avec id/username/nom_complet/role).
+
+    Inclut "type": "access" pour rester compatible avec backend/core/security.py
+    (backend/, API FastAPI Postgres) qui exige ce champ sur les jetons d'accès —
+    sans lui, un jeton émis ici est rejeté par backend.main:app et api_client.py
+    retombe silencieusement sur l'accès direct SQLite (cf. api_client.py)."""
     maintenant = datetime.now(timezone.utc)
     payload = {
         "sub":         user["username"],
         "user_id":     user["id"],
         "nom_complet": user["nom_complet"],
         "role":        user["role"],
+        "type":        "access",
         "iat":         maintenant,
         "exp":         maintenant + timedelta(minutes=DUREE_VALIDITE_MINUTES),
     }

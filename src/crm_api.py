@@ -12,22 +12,27 @@
 #  sur les modules *_engine.py si l'API n'est pas démarrée (cf. api_client.py).
 #
 #  Lancement (depuis src/) :
-#     uvicorn crm_api:app --host 0.0.0.0 --port 8000
-#  Documentation interactive : http://localhost:8000/docs
+#     uvicorn crm_api:app --host 0.0.0.0 --port 8003
+#  Documentation interactive : http://localhost:8003/docs
+#  Port 8003 (et non 8000) : backend/ (FastAPI + Postgres) occupe déjà le 8000 pour
+#  les dossiers/factures/honoraires. api_client.py cible ce service sur 8003 par
+#  défaut (CRM_API_URL) pour ne jamais confondre les deux bases — voir la note en
+#  tête de api_client.py.
 # ==============================================================================
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from auth import authentifier_utilisateur
+from auth import authentifier_avec_limite
 from clients_engine import (
     CHAMPS_CLIENT, ajouter_client, lire_clients, maj_client, supprimer_client,
 )
 from contrats_engine import (
-    CHAMPS_CONTRAT, ajouter_contrat, lire_contrats_client, maj_contrat, supprimer_contrat,
+    CHAMPS_CONTRAT, STATUT_CONTRAT_INITIAL, ajouter_contrat, lire_contrats_client,
+    maj_contrat, supprimer_contrat,
 )
 from db import get_conn, initialiser_bdd
 from jwt_auth import creer_token, get_current_user, require_role
@@ -81,10 +86,11 @@ class LoginIn(BaseModel):
 
 
 @app.post("/auth/login")
-def login(payload: LoginIn):
-    user = authentifier_utilisateur(payload.username, payload.password)
+def login(payload: LoginIn, request: Request):
+    ip = request.client.host if request.client else ""
+    user, err = authentifier_avec_limite(payload.username, payload.password, ip)
     if not user:
-        raise HTTPException(status_code=401, detail="Identifiant ou mot de passe incorrect.")
+        raise HTTPException(status_code=401, detail=err)
     token = creer_token(user)
     user_public = {k: v for k, v in user.items() if k != "password_hash"}
     return {"access_token": token, "token_type": "bearer", "user": user_public}
@@ -168,7 +174,7 @@ class ContratCreate(BaseModel):
     cout_mensuel: float = 0.0
     economie_mensuelle: float = 0.0
     reference_contrat: str = ""
-    statut_contrat: str = "En cours d'ouverture"
+    statut_contrat: str = STATUT_CONTRAT_INITIAL
     date_fin_engagement: str = ""
     notes: str = ""
 

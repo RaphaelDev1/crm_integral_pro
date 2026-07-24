@@ -1,0 +1,9 @@
+[tool.ruff]
+line-length = 130
+target-version = "py311"
+# Lint scopé à backend/ (voir .github/workflows/tests.yml) : src/app.py est un
+# fichier historique jamais linté à ce jour, y faire tourner ruff serait
+# uniquement du bruit — dette assumée, pas un oubli (voir IA.CONSEIL.MD).
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]

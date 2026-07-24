@@ -8,24 +8,35 @@
 #  Lancement (depuis src/) :
 #     uvicorn chatbot_api:app --host 0.0.0.0 --port 8001
 # ==============================================================================
+import io
 import os
 import time
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import secrets_config
 from chatbot_engine import traiter_message
-from db import initialiser_bdd
+from db import enregistrer_action, initialiser_bdd, lire_parametre
+from notifications import notifier_document_prospect_recu
 from offres_engine import comparer_offres, construire_recommandations
-from prospects_engine import ajouter_prospect
+from pdf_engine import (
+    analyser_facture, analyser_facture_vision, analyser_speedtest_pdf,
+    analyser_speedtest_vision, construire_apercu_pdf_prospect, lire_pdf,
+)
+from prospects_engine import ajouter_prospect, maj_prospect, valider_token_documents
 from utils import generer_ref, safe_float, valider_email, valider_telephone
 
-STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+STATIC_DIR       = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+PORTAIL_HTML     = os.path.join(STATIC_DIR, "portail_prospect.html")
+EXTENSIONS_OK    = {"pdf", "jpg", "jpeg", "png"}
+TAILLE_MAX_OCTETS = 10 * 1024 * 1024
 
 
 @asynccontextmanager
@@ -172,3 +183,134 @@ def bilan(payload: BilanIn, request: Request):
 @app.get("/api/health")
 def health():
     return {"statut": "ok"}
+
+
+# ------------------------------------------------------------------------------
+#  PORTAIL PROSPECT — mini-page publique (lien à usage personnel, sans login)
+#  où le prospect transmet lui-même sa facture et un test de débit, cf. le
+#  bouton « Demander facture + test de débit » de la fiche prospect (app.py).
+# ------------------------------------------------------------------------------
+@app.get("/portail/{token}", response_class=HTMLResponse)
+def portail_prospect_page(token: str):
+    # Le token n'est pas vérifié ici : la page est statique, c'est le JS embarqué
+    # qui l'extrait de l'URL et appelle /api/portail/{token} pour le valider.
+    with open(PORTAIL_HTML, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+@app.get("/api/portail/{token}")
+def portail_contexte(token: str, request: Request):
+    _verifier_limite(request)
+    prospect = valider_token_documents(token)
+    if prospect is None:
+        raise HTTPException(status_code=404, detail="Lien invalide ou expiré.")
+    return {"prenom": prospect["prenom"] or "", "nom": prospect["nom"] or ""}
+
+
+@app.get("/portail/{token}/apercu.pdf")
+def portail_apercu_pdf(token: str, request: Request):
+    """Régénère à la volée le PDF teaser (économie totale, sans détail des offres) d'un
+    prospect — lien envoyé par SMS depuis la fiche prospect (un SMS ne pouvant pas porter de
+    pièce jointe), cf. app.py::envoi de l'aperçu."""
+    _verifier_limite(request)
+    prospect = valider_token_documents(token)
+    if prospect is None:
+        raise HTTPException(status_code=404, detail="Lien invalide ou expiré.")
+    pdf_bytes = construire_apercu_pdf_prospect(dict(prospect), lire_parametre("nom_societe", "IA CONSEIL"))
+    if pdf_bytes is None:
+        raise HTTPException(status_code=404, detail="Aucun aperçu disponible pour ce prospect.")
+    return Response(content=pdf_bytes, media_type="application/pdf")
+
+
+def _extension(nom_fichier: str) -> str:
+    return nom_fichier.rsplit(".", 1)[-1].lower() if nom_fichier and "." in nom_fichier else ""
+
+
+async def _lire_upload(fichier: UploadFile) -> bytes:
+    ext = _extension(fichier.filename or "")
+    if ext not in EXTENSIONS_OK:
+        raise HTTPException(status_code=422, detail="Format non supporté (PDF, JPG ou PNG uniquement).")
+    contenu = await fichier.read()
+    if len(contenu) > TAILLE_MAX_OCTETS:
+        raise HTTPException(status_code=413, detail="Fichier trop volumineux (max 10 Mo).")
+    if not contenu:
+        raise HTTPException(status_code=422, detail="Fichier vide.")
+    return contenu
+
+
+@app.post("/api/portail/{token}/facture")
+async def portail_upload_facture(token: str, request: Request, fichier: UploadFile = File(...)):
+    _verifier_limite(request)
+    prospect = valider_token_documents(token)
+    if prospect is None:
+        raise HTTPException(status_code=404, detail="Lien invalide ou expiré.")
+    contenu = await _lire_upload(fichier)
+
+    api_key = secrets_config.anthropic_api_key()
+    ext = _extension(fichier.filename or "")
+    data = None
+    if ext == "pdf":
+        data = analyser_facture(lire_pdf(io.BytesIO(contenu)))
+        if data.get("prix", 0.0) == 0.0 and data.get("operateur") == "Autre / Aucun" and api_key:
+            data = analyser_facture_vision(contenu, fichier.filename, api_key) or data
+    elif api_key:
+        data = analyser_facture_vision(contenu, fichier.filename, api_key)
+
+    if not data or (data.get("prix", 0.0) == 0.0 and data.get("operateur") == "Autre / Aucun"
+                    and data.get("fournisseur") == "Autre / Aucun"):
+        raise HTTPException(status_code=422,
+                             detail="Facture illisible — réessayez avec une photo plus nette ou un PDF.")
+
+    pid = int(prospect["id"])
+    if data.get("operateur") and data["operateur"] != "Autre / Aucun":
+        maj_prospect(pid, "operateur_actuel", data["operateur"])
+    if data.get("fournisseur") and data["fournisseur"] != "Autre / Aucun":
+        maj_prospect(pid, "fournisseur_energie", data["fournisseur"])
+    if data.get("prix"):
+        maj_prospect(pid, "cout_mensuel_actuel", safe_float(data["prix"]))
+    if data.get("data_go"):
+        maj_prospect(pid, "data_go", data["data_go"])
+
+    operateur_resume = data.get("operateur") if data.get("operateur") != "Autre / Aucun" else data.get("fournisseur")
+    resume = f"Facture reçue — {operateur_resume or '—'} · {safe_float(data.get('prix')):.0f} €/mois"
+    nom_complet = f"{prospect['prenom'] or ''} {prospect['nom'] or ''}".strip()
+    enregistrer_action("prospect", pid, "Facture reçue via lien personnel", resume,
+                        auteur="Prospect (lien personnel)")
+    notifier_document_prospect_recu(pid, nom_complet, resume)
+
+    return {"ok": True, "resume": resume}
+
+
+@app.post("/api/portail/{token}/speedtest")
+async def portail_upload_speedtest(token: str, request: Request, fichier: UploadFile = File(...)):
+    _verifier_limite(request)
+    prospect = valider_token_documents(token)
+    if prospect is None:
+        raise HTTPException(status_code=404, detail="Lien invalide ou expiré.")
+    contenu = await _lire_upload(fichier)
+
+    api_key = secrets_config.anthropic_api_key()
+    ext = _extension(fichier.filename or "")
+    down = up = 0.0
+    if ext == "pdf":
+        down, up = analyser_speedtest_pdf(lire_pdf(io.BytesIO(contenu)))
+    if down == 0.0 and up == 0.0 and api_key:
+        resultat_vision = analyser_speedtest_vision(contenu, fichier.filename, api_key)
+        if resultat_vision:
+            down, up = resultat_vision
+
+    if down == 0.0 and up == 0.0:
+        raise HTTPException(status_code=422,
+                             detail="Débit illisible — réessayez avec une capture plus nette ou un export PDF.")
+
+    pid = int(prospect["id"])
+    maj_prospect(pid, "speed_down", down)
+    maj_prospect(pid, "speed_up", up)
+
+    resume = f"Test de débit reçu — ⬇️ {down} Mbps / ⬆️ {up} Mbps"
+    nom_complet = f"{prospect['prenom'] or ''} {prospect['nom'] or ''}".strip()
+    enregistrer_action("prospect", pid, "Test de débit reçu via lien personnel", resume,
+                        auteur="Prospect (lien personnel)")
+    notifier_document_prospect_recu(pid, nom_complet, resume)
+
+    return {"ok": True, "resume": resume}

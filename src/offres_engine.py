@@ -103,15 +103,15 @@ def inserer_offres_demo():
         ("Télécom","Mobile","Orange","Forfait 5G 150 Go",24.99,0,0,"150 Go - 5G+ - Meilleure couverture",35,150,"https://boutique.orange.fr","DEMO-ORANGE"),
         ("Télécom","Mobile","Free","Forfait Free 2€",2.00,0,0,"2h appels - SMS illimités - 50 Mo",5,0,"https://mobile.free.fr","DEMO-FREE"),
         # ---- TÉLÉCOM : Box / Fibre (data_go non applicable) ----
-        ("Télécom","Box / Fibre","Free","Freebox Pop Fibre",29.99,0,0,"Jusqu'à 5 Gbps - WiFi 7 - TV incluse",50,0,"https://www.free.fr","DEMO-FREE"),
+        ("Télécom","Box / Fibre","Free","Freebox Pop Fibre",29.99,0,0,"Jusqu'à 5 Gbps - WiFi 7 - TV incluse",50,0,"https://signup.free.fr/subscribe_promo/#new","DEMO-FREE"),
         ("Télécom","Box / Fibre","Bouygues","Bbox Fibre Must",31.99,0,0,"2 Gbps - WiFi 6 - 180 chaînes",45,0,"https://www.bouyguestelecom.fr","DEMO-BOUYGUES"),
         ("Télécom","Box / Fibre","SFR","SFR Fibre Power",34.99,0,0,"2 Gbps - décodeur 4K",42,0,"https://www.sfr.fr","DEMO-SFR"),
         ("Télécom","Box / Fibre","Orange","Livebox Fibre",39.99,0,0,"2 Gbps - WiFi 6 - réseau Orange",55,0,"https://boutique.orange.fr","DEMO-ORANGE"),
-        ("Télécom","Box / Fibre","Free","Freebox Ultra",49.99,0,0,"8 Gbps - WiFi 7 - Netflix/Disney+ inclus",60,0,"https://www.free.fr","DEMO-FREE"),
+        ("Télécom","Box / Fibre","Free","Freebox Ultra",49.99,0,0,"8 Gbps - WiFi 7 - Netflix/Disney+ inclus",60,0,"https://signup.free.fr/subscribe_promo/#new","DEMO-FREE"),
         # ---- TÉLÉCOM : Pack Box + Mobile (data_go = quota mobile inclus dans le pack) ----
         ("Télécom","Pack Box + Mobile","Bouygues","Pack Bbox + Forfait 200 Go",42.99,0,0,"Fibre 2 Gbps + 200 Go 5G",60,200,"https://www.bouyguestelecom.fr","DEMO-BOUYGUES"),
         ("Télécom","Pack Box + Mobile","SFR","Pack Fibre + RED 130 Go",44.99,0,0,"Fibre 2 Gbps + 130 Go",55,130,"https://www.sfr.fr","DEMO-SFR"),
-        ("Télécom","Pack Box + Mobile","Free","Freebox Pop + Forfait 350 Go",39.98,0,0,"Fibre 5 Gbps + 350 Go 5G",70,350,"https://www.free.fr","DEMO-FREE"),
+        ("Télécom","Pack Box + Mobile","Free","Freebox Pop + Forfait 350 Go",39.98,0,0,"Fibre 5 Gbps + 350 Go 5G",70,350,"https://signup.free.fr/subscribe_promo/#new","DEMO-FREE"),
         ("Télécom","Pack Box + Mobile","Orange","Livebox + Forfait 150 Go",54.99,0,0,"Fibre 2 Gbps + 150 Go 5G",75,150,"https://boutique.orange.fr","DEMO-ORANGE"),
         # ---- TÉLÉCOM : Multi-lignes ----
         ("Télécom","Multi-lignes","Free","2 lignes Free 350 Go",35.98,0,0,"2 forfaits 350 Go (-10% 2e ligne)",50,350,"https://mobile.free.fr","DEMO-FREE"),
@@ -195,9 +195,11 @@ def construire_recommandations(service_principal, cout_tel, fournisseurs_autoris
         cross     = [("📦 Top 3 de nos packs Box + Mobile", top("Pack Box + Mobile")),
                      ("📱 Nos 3 meilleurs forfaits Mobile", top("Mobile"))]
     elif service_principal == "Pack Box + Mobile":
+        # Un pack combine box + mobile : le comparer à une offre Mobile seule ou Box seule
+        # n'a pas de sens (le client perdrait l'autre service). On ne compare donc les packs
+        # qu'entre eux, sans cross-sell vers du Mobile ou du Box / Fibre isolé.
         principal = ("📦 Vos meilleurs packs Box + Mobile", top("Pack Box + Mobile"))
-        cross     = [("📱 Nos 3 meilleurs forfaits Mobile", top("Mobile")),
-                     ("🏠 Nos 3 meilleures offres Box / Fibre", top("Box / Fibre"))]
+        cross     = []
     else:
         ml        = top("Multi-lignes") or top("Mobile")
         principal = ("📲 Vos meilleures offres Multi-lignes", ml)

@@ -23,3 +23,11 @@ src/.env
 # Logs / artefacts de test
 *.log
 *.pid
+
+# Portail client Next.js
+frontend-portail/node_modules
+frontend-portail/.next
+frontend-portail/.env.local
+
+# Fallback stockage local (dev uniquement, quand S3 n'est pas configuré)
+backend/_local_storage/

@@ -1,0 +1,15 @@
+{
+  "situation": {
+    "univers_interesse": ["Énergie"],
+    "cout_elec": 110.0,
+    "cout_gaz": 0.0,
+    "fournisseur_energie": "EDF",
+    "ville": ""
+  },
+  "attendu": {
+    "fournisseurs_acceptables": ["TotalEnergies"],
+    "economie_an_min": 235,
+    "economie_an_max": 270,
+    "categories_attendues": ["Électricité"]
+  }
+}

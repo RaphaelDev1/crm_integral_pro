@@ -26,12 +26,15 @@ def tmp_db(tmp_path, monkeypatch):
     # mis en cache par un test précédent (base différente, mêmes arguments).
     from offres_engine import lire_offres, comparer_offres
     from veille_prix_engine import lire_sources
+    from catalogue_engine import lire_sources_catalogue
     lire_offres.clear()
     comparer_offres.clear()
     lire_sources.clear()
+    lire_sources_catalogue.clear()
 
     yield db_module
 
     lire_offres.clear()
     comparer_offres.clear()
     lire_sources.clear()
+    lire_sources_catalogue.clear()

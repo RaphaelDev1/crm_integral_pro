@@ -1,0 +1,17 @@
+{
+  "situation": {
+    "univers_interesse": ["Télécom"],
+    "service_principal": "Mobile uniquement",
+    "operateur_actuel": "Orange",
+    "cout_mensuel_actuel": 39.99,
+    "satisfaction_reseau": "😐 Ça va",
+    "veut_rester": false,
+    "ville": ""
+  },
+  "attendu": {
+    "fournisseurs_acceptables": ["YouPrice (Réseau Orange)"],
+    "economie_an_min": 340,
+    "economie_an_max": 380,
+    "categories_attendues": ["Mobile"]
+  }
+}

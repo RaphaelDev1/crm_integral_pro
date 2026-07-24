@@ -1,0 +1,18 @@
+{
+  "situation": {
+    "univers_interesse": ["Télécom"],
+    "service_principal": "Mobile uniquement",
+    "operateur_actuel": "Orange",
+    "cout_mensuel_actuel": 20.0,
+    "satisfaction_reseau": "😐 Ça va",
+    "veut_rester": false,
+    "ville": ""
+  },
+  "attendu": {
+    "fournisseurs_acceptables": ["YouPrice (Réseau Orange)"],
+    "economie_an_min": 110,
+    "economie_an_max": 130,
+    "categories_attendues": ["Mobile"],
+    "note": "Le client n'a déclaré qu'un service Mobile, sans contrat Box/Fibre connu : l'agent ne doit PAS recommander une offre Box/Fibre (cout_reference_categorie renverrait null faute de base de comparaison)."
+  }
+}

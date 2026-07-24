@@ -113,6 +113,17 @@ def meilleur_debit_par_zone(ville: str) -> pd.DataFrame:
     return agg.sort_values("debit_down_moyen", ascending=False)
 
 
+def definir_backend_client_id(cid: int, backend_id: int):
+    """Mémorise l'id du client miroir créé côté backend/ (Postgres) pour ce client SQLite —
+    champ technique, pas exposé via CHAMPS_CLIENT/maj_client (rien à voir avec un champ
+    éditable en UI). Voir src/api_client.py::_backend_client_id_pour."""
+    conn = get_conn()
+    c    = conn.cursor()
+    c.execute("UPDATE clients SET backend_client_id=? WHERE id=?", (backend_id, cid))
+    conn.commit()
+    conn.close()
+
+
 def maj_client(cid: int, champ: str, valeur, auteur: str = None):
     if champ not in CHAMPS_CLIENT:
         raise ValueError(f"Champ non autorisé : {champ}")
