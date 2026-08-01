@@ -40,7 +40,7 @@ sudo usermod -aG docker $USER   # puis se déconnecter/reconnecter du terminal L
 ## 1. Récupérer le projet
 
 ```bash
-git clone <URL_DU_DEPOT_GITHUB> cmr_integral_pro
+git clone https://github.com/RaphaelDev1/crm_integral_pro.git cmr_integral_pro
 cd cmr_integral_pro
 ```
 
