@@ -1,18 +1,10 @@
 "use client";
 
-import { Compass, LayoutDashboard, Receipt, Settings, UserCheck, Users } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import { useAuth } from "@/contexts/AuthContext";
-
-const NAV_ITEMS = [
-  { href: "/dashboard", label: "Tableau de bord", icon: LayoutDashboard },
-  { href: "/diagnostic", label: "Nouveau diagnostic", icon: Compass },
-  { href: "/prospects", label: "Prospects", icon: Users },
-  { href: "/clients", label: "Clients & contrats", icon: UserCheck },
-  { href: "/facturation", label: "Facturation", icon: Receipt },
-] as const;
+import { ADMIN_NAV_ITEM, NAV_ITEMS } from "@/lib/nav";
 
 export function Sidebar() {
   const pathname = usePathname();
@@ -41,13 +33,13 @@ export function Sidebar() {
         })}
         {estAdmin() && (
           <Link
-            href="/admin"
+            href={ADMIN_NAV_ITEM.href}
             className={`flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
-              pathname.startsWith("/admin") ? "bg-primary/10 text-primary" : "text-slate-600 hover:bg-slate-100"
+              pathname.startsWith(ADMIN_NAV_ITEM.href) ? "bg-primary/10 text-primary" : "text-slate-600 hover:bg-slate-100"
             }`}
           >
-            <Settings size={18} />
-            Admin
+            <ADMIN_NAV_ITEM.icon size={18} />
+            {ADMIN_NAV_ITEM.label}
           </Link>
         )}
       </nav>

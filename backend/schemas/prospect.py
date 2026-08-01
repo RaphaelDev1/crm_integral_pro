@@ -51,3 +51,17 @@ class ProspectOut(ProspectBase):
     id: int
     date_creation: str | None = None
     cree_par: str | None = None
+    client_id: int | None = None
+    converti_at: str | None = None
+
+
+class DetailScoreOut(BaseModel):
+    facteur: str
+    poids: int
+    valeur: str
+
+
+class ScoreProspectOut(BaseModel):
+    score: float
+    indicateur: str
+    details: list[DetailScoreOut]

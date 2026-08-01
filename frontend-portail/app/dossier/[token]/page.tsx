@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { getContexte } from "@/lib/api";
-import { CheckCircle2, Upload, FileSignature, AlertCircle, Sparkles, FileText } from "lucide-react";
+import { CheckCircle2, Upload, FileSignature, AlertCircle, Sparkles, FileText, Wifi } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -115,6 +115,26 @@ export default async function DossierPage({
             className="block w-full bg-primary text-white text-center py-3 rounded-lg font-semibold hover:bg-primary/90 transition"
           >
             Compléter mes informations →
+          </Link>
+        </section>
+      )}
+
+      {ctx.peut_transmettre_speedtest && (
+        <section className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 mb-6">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-10 h-10 rounded-full flex items-center justify-center bg-blue-100 text-primary">
+              <Wifi className="w-6 h-6" />
+            </div>
+            <h3 className="text-lg font-semibold">Votre débit internet</h3>
+          </div>
+          <p className="text-slate-600 mb-4">
+            Un test de débit nous aide à confirmer la qualité de votre offre actuelle.
+          </p>
+          <Link
+            href={`/dossier/${params.token}/speedtest`}
+            className="block w-full bg-primary text-white text-center py-3 rounded-lg font-semibold hover:bg-primary/90 transition"
+          >
+            Tester mon débit →
           </Link>
         </section>
       )}

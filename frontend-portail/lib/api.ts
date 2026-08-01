@@ -38,6 +38,7 @@ export interface TokenContexte {
   peut_signer_mandat: boolean;
   demarches_a_completer: DemarcheAFournir[];
   peut_renseigner_demarches: boolean;
+  peut_transmettre_speedtest: boolean;
 }
 
 export interface UploadResult {
@@ -69,6 +70,51 @@ export async function uploadDocument(
     `${API_URL}/portail/${token}/documents?type_document=${encodeURIComponent(typeDocument)}`,
     { method: "POST", body: formData }
   );
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(err || `Erreur ${res.status}`);
+  }
+  return res.json();
+}
+
+export interface SpeedtestResultat {
+  speed_down?: number | null;
+  speed_up?: number | null;
+  document_id?: number | null;
+  message: string;
+}
+
+export async function soumettreSpeedtest(
+  token: string,
+  resultat: { download_mbps: number; upload_mbps: number; ping_ms?: number }
+): Promise<SpeedtestResultat> {
+  const formData = new FormData();
+  formData.append("download_mbps", String(resultat.download_mbps));
+  formData.append("upload_mbps", String(resultat.upload_mbps));
+  if (resultat.ping_ms !== undefined) formData.append("ping_ms", String(resultat.ping_ms));
+
+  const res = await fetch(`${API_URL}/portail/${token}/speedtest`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(err || `Erreur ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function soumettreSpeedtestFichier(
+  token: string,
+  fichier: File
+): Promise<SpeedtestResultat> {
+  const formData = new FormData();
+  formData.append("fichier", fichier);
+
+  const res = await fetch(`${API_URL}/portail/${token}/speedtest`, {
+    method: "POST",
+    body: formData,
+  });
   if (!res.ok) {
     const err = await res.text();
     throw new Error(err || `Erreur ${res.status}`);

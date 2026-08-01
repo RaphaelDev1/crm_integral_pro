@@ -30,7 +30,9 @@ from pdf_engine import (
     analyser_facture, analyser_facture_vision, analyser_speedtest_pdf,
     analyser_speedtest_vision, construire_apercu_pdf_prospect, lire_pdf,
 )
-from prospects_engine import ajouter_prospect, maj_prospect, valider_token_documents
+from prospects_engine import (
+    ajouter_prospect, maj_prospect, valider_token_documents, enregistrer_document_prospect,
+)
 from utils import generer_ref, safe_float, valider_email, valider_telephone
 
 STATIC_DIR       = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -270,6 +272,8 @@ async def portail_upload_facture(token: str, request: Request, fichier: UploadFi
         maj_prospect(pid, "cout_mensuel_actuel", safe_float(data["prix"]))
     if data.get("data_go"):
         maj_prospect(pid, "data_go", data["data_go"])
+    enregistrer_document_prospect(pid, "facture", fichier.filename or "facture",
+                                   contenu, fichier.content_type or "application/octet-stream")
 
     operateur_resume = data.get("operateur") if data.get("operateur") != "Autre / Aucun" else data.get("fournisseur")
     resume = f"Facture reçue — {operateur_resume or '—'} · {safe_float(data.get('prix')):.0f} €/mois"
@@ -306,6 +310,8 @@ async def portail_upload_speedtest(token: str, request: Request, fichier: Upload
     pid = int(prospect["id"])
     maj_prospect(pid, "speed_down", down)
     maj_prospect(pid, "speed_up", up)
+    enregistrer_document_prospect(pid, "speedtest", fichier.filename or "speedtest",
+                                   contenu, fichier.content_type or "application/octet-stream")
 
     resume = f"Test de débit reçu — ⬇️ {down} Mbps / ⬆️ {up} Mbps"
     nom_complet = f"{prospect['prenom'] or ''} {prospect['nom'] or ''}".strip()

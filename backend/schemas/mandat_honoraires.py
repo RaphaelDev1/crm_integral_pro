@@ -9,6 +9,8 @@ class MandatOut(BaseModel):
 
     id: int
     statut: str
+    pdf_url: str | None = None
+    pdf_signe_url: str | None = None
     date_envoi: str | None = None
     date_signature: str | None = None
 

@@ -9,7 +9,28 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.core.config import settings
 from backend.core.logging import configurer_logging
-from backend.routers import auth, clients, demarches, dossiers, factures, honoraires, portail_public, prospects, webhooks
+from backend.routers import (
+    alertes_offres,
+    audit_agent,
+    auth,
+    catalogue,
+    clients,
+    comparaisons_offres,
+    contrats,
+    dashboard,
+    demarches,
+    dossiers,
+    factures,
+    honoraires,
+    offres,
+    parametres,
+    portail_public,
+    prospects,
+    speedtest_backend,
+    users,
+    veille,
+    webhooks,
+)
 
 configurer_logging()
 
@@ -32,16 +53,28 @@ app.add_middleware(
 )
 
 # Routers protégés par JWT
+app.include_router(alertes_offres.router)
+app.include_router(audit_agent.router)
 app.include_router(auth.router)
+app.include_router(catalogue.router)
 app.include_router(clients.router)
+app.include_router(contrats.router)
 app.include_router(prospects.router)
 app.include_router(dossiers.router)
 app.include_router(factures.router)
 app.include_router(honoraires.router)
+app.include_router(honoraires.router_liste)
 app.include_router(demarches.router)
+app.include_router(comparaisons_offres.router)
+app.include_router(offres.router)
+app.include_router(veille.router)
+app.include_router(parametres.router)
+app.include_router(dashboard.router)
+app.include_router(users.router)
 
 # Routers publics
 app.include_router(portail_public.router)
+app.include_router(speedtest_backend.router)
 app.include_router(webhooks.router)
 
 

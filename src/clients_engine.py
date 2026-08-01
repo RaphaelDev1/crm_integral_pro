@@ -13,7 +13,7 @@ CHAMPS_CLIENT = {
     "telephone", "email", "ville", "code_postal", "adresse", "operateur_actuel", "offre_actuelle",
     "cout_mensuel_actuel", "satisfaction_reseau", "veut_rester", "notes",
     "fournisseur_energie", "techno", "data_go", "speed_down", "speed_up",
-    "economie_estimee_an", "date_relance", "statut_relance",
+    "economie_estimee_an", "date_relance", "statut_relance", "motif_relance",
 }
 
 
@@ -45,11 +45,13 @@ def ajouter_client(d: dict) -> int:
     cid = c.lastrowid
     conn.commit()
     conn.close()
+    lire_clients.clear()
     enregistrer_action("client", cid, "Création client",
                         f"{d.get('prenom','')} {d.get('nom','')}", auteur=d.get("cree_par") or None)
     return cid
 
 
+@st.cache_data(ttl=20)
 def lire_clients():
     conn = get_conn()
     df   = pd.read_sql_query("SELECT * FROM clients ORDER BY id DESC", conn)
@@ -122,6 +124,7 @@ def definir_backend_client_id(cid: int, backend_id: int):
     c.execute("UPDATE clients SET backend_client_id=? WHERE id=?", (backend_id, cid))
     conn.commit()
     conn.close()
+    lire_clients.clear()
 
 
 def maj_client(cid: int, champ: str, valeur, auteur: str = None):
@@ -132,6 +135,7 @@ def maj_client(cid: int, champ: str, valeur, auteur: str = None):
     c.execute(f"UPDATE clients SET {champ}=? WHERE id=?", (valeur, cid))
     conn.commit()
     conn.close()
+    lire_clients.clear()
     enregistrer_action("client", cid, "Modification", f"{champ} = {valeur}", auteur=auteur)
 
 
@@ -141,6 +145,7 @@ def widget_relance_client(client_id, key_prefix: str, jours_auto: int = 30) -> b
     d'appeler/faire le point), + une option de date précise repliée pour les cas
     particuliers. Renvoie True si une action a été effectuée (à l'appelant de faire
     le st.rerun())."""
+    motif = st.text_input("Raison de la relance (optionnel)", key=f"{key_prefix}_motif")
     fait = st.button(f"✅ Relance effectuée (reprogrammer +{jours_auto} j)",
                       key=f"{key_prefix}_fait", type="primary")
     with st.expander("📅 Date précise"):
@@ -153,10 +158,12 @@ def widget_relance_client(client_id, key_prefix: str, jours_auto: int = 30) -> b
         nv_date = datetime.now().date() + timedelta(days=jours_auto)
         maj_client(int(client_id), "date_relance", nv_date.strftime("%d/%m/%Y"))
         maj_client(int(client_id), "statut_relance", "À relancer")
+        maj_client(int(client_id), "motif_relance", motif)
         return True
     if programmer:
         maj_client(int(client_id), "date_relance", date_cible.strftime("%d/%m/%Y"))
         maj_client(int(client_id), "statut_relance", "À relancer")
+        maj_client(int(client_id), "motif_relance", motif)
         return True
     return False
 
@@ -169,5 +176,6 @@ def supprimer_client(cid: int, auteur: str = None):
     c.execute("DELETE FROM clients WHERE id=?", (cid,))
     conn.commit()
     conn.close()
+    lire_clients.clear()
     nom_aff = f"{row['prenom']} {row['nom']}" if row else ""
     enregistrer_action("client", cid, "Suppression", nom_aff, auteur=auteur)

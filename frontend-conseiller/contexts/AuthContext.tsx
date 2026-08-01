@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 
-import { backendFetch } from "@/lib/backend-fetch";
+import { backendFetch } from "@/lib/api";
 
 export interface AuthUser {
   id: number;

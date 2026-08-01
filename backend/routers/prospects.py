@@ -1,17 +1,29 @@
 # ==============================================================================
 #  PROSPECTS — CRUD, protégé par JWT (get_current_user).
 # ==============================================================================
+import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.core.config import settings
 from backend.core.database import get_db
 from backend.core.security import get_current_user
+from backend.models.document_prospect import DocumentProspect
 from backend.models.prospect import Prospect
 from backend.models.user import User
-from backend.schemas.prospect import ProspectCreate, ProspectOut, ProspectUpdate
+from backend.schemas.client import ClientOut
+from backend.schemas.document_prospect import DocumentProspectOut
+from backend.schemas.dossier import EnvoiLienClient
+from backend.schemas.historique_action import HistoriqueActionOut
+from backend.schemas.prospect import ProspectCreate, ProspectOut, ProspectUpdate, ScoreProspectOut
+from backend.services import audit_engine, notification_engine, prospect_scoring, token_engine
+from backend.services.prospect_conversion import ProspectDejaConverti, convertir_prospect
+from backend.services.storage_engine import StorageError, url_signee
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/prospects", tags=["prospects"], dependencies=[Depends(get_current_user)])
 
@@ -19,7 +31,11 @@ router = APIRouter(prefix="/prospects", tags=["prospects"], dependencies=[Depend
 @router.get("", response_model=list[ProspectOut])
 async def lister_prospects(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Prospect).order_by(Prospect.id.desc()))
-    return result.scalars().all()
+    prospects = result.scalars().all()
+    contacts = await prospect_scoring.derniers_contacts(db)
+    for prospect in prospects:
+        prospect.score = prospect_scoring.calculer_score(prospect, contacts.get(prospect.id))
+    return prospects
 
 
 @router.get("/{prospect_id}", response_model=ProspectOut)
@@ -27,7 +43,139 @@ async def obtenir_prospect(prospect_id: int, db: AsyncSession = Depends(get_db))
     prospect = await db.get(Prospect, prospect_id)
     if prospect is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Prospect introuvable.")
+    dernier_contact = await prospect_scoring.dernier_contact(db, prospect_id)
+    prospect.score = prospect_scoring.calculer_score(prospect, dernier_contact)
     return prospect
+
+
+@router.get("/{prospect_id}/score", response_model=ScoreProspectOut)
+async def score_prospect(prospect_id: int, db: AsyncSession = Depends(get_db)):
+    prospect = await db.get(Prospect, prospect_id)
+    if prospect is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Prospect introuvable.")
+    dernier_contact = await prospect_scoring.dernier_contact(db, prospect_id)
+    score = prospect_scoring.calculer_score(prospect, dernier_contact)
+    return ScoreProspectOut(
+        score=score,
+        indicateur=prospect_scoring.indicateur_score(score),
+        details=prospect_scoring.details_score(prospect, dernier_contact),
+    )
+
+
+@router.post("/{prospect_id}/convertir", response_model=ClientOut)
+async def convertir_en_client(
+    prospect_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    prospect = await db.get(Prospect, prospect_id)
+    if prospect is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Prospect introuvable.")
+    try:
+        return await convertir_prospect(db, prospect, par=user.nom_complet)
+    except ProspectDejaConverti as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
+
+
+@router.post("/{prospect_id}/token-documents", response_model=dict)
+async def generer_lien_documents_prospect(
+    prospect_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Génère un lien à envoyer au prospect (SMS/email) pour qu'il transmette
+    lui-même sa facture/son test de débit, avant même sa conversion en client."""
+    prospect = await db.get(Prospect, prospect_id)
+    if prospect is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Prospect introuvable.")
+
+    token = await token_engine.generer_token_prospect_documents(
+        db, prospect_id, cree_par=user.username,
+    )
+
+    url = token_engine.construire_url_client(token.token, base_url=settings.portail_client_base_url)
+    return {
+        "token": token.token,
+        "url": url,
+        "expire_le": token.date_expiration,
+        "message_sms_suggere": (
+            f"Bonjour, voici votre lien personnel pour nous transmettre votre facture "
+            f"et/ou votre test de débit : {url} (valable 14 jours). Votre conseiller."
+        ),
+    }
+
+
+@router.get("/{prospect_id}/documents", response_model=list[DocumentProspectOut])
+async def documents_prospect(prospect_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(DocumentProspect)
+        .where(DocumentProspect.prospect_id == prospect_id)
+        .order_by(DocumentProspect.id.desc())
+    )
+    documents: list[DocumentProspectOut] = []
+    for doc in result.scalars().all():
+        try:
+            url = url_signee(doc.cle_stockage)
+        except StorageError:
+            logger.warning("URL signée indisponible pour le document %s (prospect %s)", doc.id, prospect_id)
+            continue
+        documents.append(DocumentProspectOut(
+            id=doc.id, prospect_id=doc.prospect_id, type_document=doc.type_document,
+            nom_fichier=doc.nom_fichier, mime=doc.mime, date_upload=doc.date_upload, url=url,
+        ))
+    return documents
+
+
+@router.get("/{prospect_id}/historique", response_model=list[HistoriqueActionOut])
+async def historique_prospect(prospect_id: int, db: AsyncSession = Depends(get_db)):
+    return await audit_engine.lire_historique(db, "prospect", prospect_id)
+
+
+@router.post("/{prospect_id}/envoyer-lien-documents", response_model=dict)
+async def envoyer_lien_documents_prospect(
+    prospect_id: int,
+    payload: EnvoiLienClient,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Génère le lien de collecte documents (comme /token-documents) et l'envoie
+    immédiatement au prospect par le canal choisi par le conseiller (SMS ou
+    email) — automatise l'étape manuelle « copier le lien puis le transmettre »."""
+    prospect = await db.get(Prospect, prospect_id)
+    if prospect is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Prospect introuvable.")
+
+    token = await token_engine.generer_token_prospect_documents(db, prospect_id, cree_par=user.username)
+    url = token_engine.construire_url_client(token.token, base_url=settings.portail_client_base_url)
+    prenom = prospect.prenom or ""
+
+    sms_envoye = False
+    email_envoye = False
+    if payload.canal == "sms":
+        message_sms = (
+            f"Bonjour {prenom}, voici votre lien personnel pour nous transmettre votre facture "
+            f"et/ou votre test de débit : {url} (valable 14 jours). Votre conseiller."
+        ).strip()
+        sms_envoye = notification_engine.envoyer_sms(prospect.telephone or "", message_sms)
+    else:
+        corps_email = (
+            f"<p>Bonjour {prenom},</p>"
+            f"<p>Voici votre lien personnel pour nous transmettre votre facture et/ou votre test de débit :</p>"
+            f'<p><a href="{url}">{url}</a></p>'
+            f"<p>Ce lien est valable 14 jours.</p>"
+            f"<p>Votre conseiller.</p>"
+        )
+        email_envoye = notification_engine.envoyer_email(
+            prospect.email or "", "Votre lien personnel — transmission de documents", corps_email
+        )
+
+    return {
+        "token": token.token,
+        "url": url,
+        "expire_le": token.date_expiration,
+        "sms_envoye": sms_envoye,
+        "email_envoye": email_envoye,
+    }
 
 
 @router.post("", response_model=ProspectOut, status_code=status.HTTP_201_CREATED)

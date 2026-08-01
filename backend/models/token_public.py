@@ -20,6 +20,7 @@ from backend.models.base import Base
 if TYPE_CHECKING:
     from backend.models.dossier import Dossier
     from backend.models.client import Client
+    from backend.models.prospect import Prospect
 
 
 class TokenPublic(Base):
@@ -28,8 +29,12 @@ class TokenPublic(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     token: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
 
-    # Ce à quoi le token donne accès
-    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id"), nullable=False)
+    # Ce à quoi le token donne accès — exactement l'un des deux (contrainte XOR en base,
+    # cf. migration 0019) : soit un Client (parcours dossier standard), soit un Prospect
+    # pas encore converti (parcours « transmettre facture/speedtest avant conversion »,
+    # cf. backend/services/token_engine.py::generer_token_prospect_documents).
+    client_id: Mapped[int | None] = mapped_column(ForeignKey("clients.id"), nullable=True)
+    prospect_id: Mapped[int | None] = mapped_column(ForeignKey("prospects.id"), nullable=True)
     dossier_id: Mapped[int | None] = mapped_column(ForeignKey("dossiers.id"), nullable=True)
 
     # Permissions granulaires
@@ -37,6 +42,7 @@ class TokenPublic(Base):
     peut_signer_mandat: Mapped[bool] = mapped_column(Boolean, default=True)
     peut_voir_suivi: Mapped[bool] = mapped_column(Boolean, default=True)
     peut_renseigner_demarches: Mapped[bool] = mapped_column(Boolean, default=True)
+    peut_transmettre_speedtest: Mapped[bool] = mapped_column(Boolean, default=True)
 
     # Cycle de vie
     date_creation: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -52,5 +58,6 @@ class TokenPublic(Base):
 
     cree_par: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    client: Mapped["Client"] = relationship()
+    client: Mapped["Client | None"] = relationship()
+    prospect: Mapped["Prospect | None"] = relationship()
     dossier: Mapped["Dossier | None"] = relationship()

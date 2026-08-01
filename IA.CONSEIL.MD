@@ -1,7 +1,23 @@
 # IA Conseil — CRM Intégral Pro
 ## Documentation technique complète
 
-**Mise à jour :** 24/07/2026 — **industrialisation & robustesse** (Chantier 4) : conteneurisation
+**Mise à jour :** 31/07/2026 — **socle du frontend conseiller validé bout-en-bout et committé**
+(`frontend-conseiller/`, Next.js 14, phase 04 du plan de bascule qui vise à remplacer à terme l'app
+Streamlit conseiller `src/app.py` par un vrai frontend web — réplique fonctionnelle fidèle des 6
+sections, pas une refonte UX) : socle d'authentification JWT en cookies **httpOnly** posés par un
+BFF (`backend/` renvoie les jetons en JSON, c'est `frontend-conseiller/` qui les transforme en
+cookies — le navigateur ne voit jamais le JWT), proxy API générique same-origin avec refresh
+transparent sur 401, layout + 6 pages stub reprenant la navigation actuelle (Tableau de bord,
+Nouveau diagnostic, Prospects, Clients & contrats, Facturation, Admin). Le parcours complet a été
+rejoué en conditions réelles contre le Postgres Neon (login, cookies `HttpOnly` confirmés,
+`/auth/me`, garde middleware, coupure backend → 502 propre, logout) — deux blocages réels
+découverts et corrigés au passage : la base Neon était restée à la révision Alembic `0009` alors
+que le rate-limiting du login dépend de la table `login_tentatives` (migration `0014`, tout comme
+`0010`-`0016` — désormais appliquées, `alembic upgrade head`), et aucun mécanisme ne permettait de
+créer le tout premier utilisateur backend (nouveau `backend/scripts/seed_admin.py`, équivalent
+Postgres de `src/auth.py::creer_admin_par_defaut()`). Voir §「Frontend conseiller」pour le détail —
+remplissage métier section par section prévu dans les sessions suivantes, une fois ce socle
+validé. Et, précédemment (24/07/2026) — **industrialisation & robustesse** (Chantier 4) : conteneurisation
 Docker des 3 process (`backend/Dockerfile`, `src/Dockerfile`, `frontend-portail/Dockerfile`) +
 `docker-compose.yml` de dev (backend, Streamlit, Redis, Celery worker/beat, Flower, Postgres local
 optionnel), logging structuré JSON (`backend/core/logging.py`), **Sentry** sur les 3 process
@@ -48,7 +64,7 @@ Application interne pour conseillers **Télécom / Énergie / Abonnements** : di
 Dépendances (`src/requirements.txt`) : `streamlit`, `pandas`, `PyPDF2`, `fpdf2`, `openpyxl`, `anthropic`, `playwright`, `fastapi`, `uvicorn`, `pyjwt`, `requests`, `beautifulsoup4` (parsing HTML pour `catalogue_engine.py`), `python-dotenv`, `python-multipart`, `sentry-sdk`.
 Dépendances dev (`src/requirements-dev.txt`) : `+ pytest`, `pytest-cov`.
 
-Le nouveau backend (`backend/requirements.txt`) est un projet **séparé** : `fastapi`, `sqlalchemy[asyncio]`, `asyncpg`, `alembic`, `pyjwt`, `pydantic`/`pydantic-settings`, `python-dotenv`, `httpx`, `anthropic`, `celery[redis]`, `boto3` (S3), `stripe`, `resend`, `python-multipart` (upload de fichiers), `sentry-sdk`, `flower` (monitoring Celery) — voir section dédiée plus bas. Dépendances dev (`backend/requirements-dev.txt`) : `+ pytest`, `pytest-cov`, `ruff`. Le portail client (`frontend-portail/package.json`) est un projet Node séparé : `next` 14.2.35, `react`/`react-dom` 18, `lucide-react`, `@sentry/nextjs`, Tailwind/TypeScript en devDependencies.
+Le nouveau backend (`backend/requirements.txt`) est un projet **séparé** : `fastapi`, `sqlalchemy[asyncio]`, `asyncpg`, `alembic`, `pyjwt`, `pydantic`/`pydantic-settings`, `python-dotenv`, `httpx`, `anthropic`, `celery[redis]`, `boto3` (S3), `stripe`, `resend`, `python-multipart` (upload de fichiers), `sentry-sdk`, `flower` (monitoring Celery) — voir section dédiée plus bas. Dépendances dev (`backend/requirements-dev.txt`) : `+ pytest`, `pytest-cov`, `ruff`. Le portail client (`frontend-portail/package.json`) est un projet Node séparé : `next` 14.2.35, `react`/`react-dom` 18, `lucide-react`, `@sentry/nextjs`, Tailwind/TypeScript en devDependencies. Le frontend conseiller (`frontend-conseiller/package.json`) est un troisième projet Node, même stack que `frontend-portail` — voir §「Frontend conseiller」.
 
 ---
 
@@ -75,6 +91,12 @@ cmr_integral_pro/
 │   ├── app/, lib/               # Pages App Router + client HTTP typé vers backend/
 │   ├── sentry.*.config.ts, instrumentation.ts, instrumentation-client.ts  # Sentry (@sentry/nextjs)
 │   ├── Dockerfile / .dockerignore  # Image standalone (contexte = frontend-portail/ lui-même)
+│   └── package.json
+├── frontend-conseiller/        # Outil conseiller Next.js (auth JWT, remplace à terme src/app.py)
+│   ├── app/, contexts/, components/, lib/  # Pages App Router + BFF (proxy auth/API) + AuthContext
+│   ├── middleware.ts            # Garde d'auth (redirige /login si le cookie access_token est absent)
+│   ├── sentry.*.config.ts, instrumentation.ts, instrumentation-client.ts  # Sentry (@sentry/nextjs)
+│   ├── Dockerfile / .dockerignore  # Image standalone (contexte = frontend-conseiller/ lui-même)
 │   └── package.json
 ├── docs/                       # API.md, ARCHITECTURE.md, DATABASE.md, CHANGELOG.md, CONTRIBUTING.md
 ├── scripts/                    # eval_audit.py (évaluation de l'agent d'audit, cas de test)
@@ -532,6 +554,95 @@ Commandes détaillées (installation, lancement) : voir `IA_CONSEIL_UTILISATION.
 
 ---
 
+## 🖥️ Frontend conseiller (`frontend-conseiller/`, Next.js) — socle livré et vérifié (phase 04), contenu métier à venir
+
+Quatrième process indépendant (Next.js 14, App Router, TypeScript, Tailwind — même stack que
+`frontend-portail/`), destiné cette fois au **conseiller**, pas au client final. Objectif à terme :
+remplacer `src/app.py` (Streamlit, 3538 lignes, seul outil conseiller à ce jour) par une **réplique
+fonctionnelle fidèle** de ses 6 sections (Tableau de bord, Nouveau diagnostic, Prospects, Clients &
+contrats, Facturation, Admin) — pas une refonte UX. Nouvelle app **séparée** de `frontend-portail/`
+plutôt qu'un module ajouté à celui-ci : mélanger un outil interne authentifié dans une app publique
+sans login aurait élargi inutilement sa surface d'attaque.
+
+**Cette étape ne livre que le socle** : authentification bout-en-bout, layout, navigation, proxy
+API — les 6 pages sont des **stubs** (titre + « Section en construction »), sans logique métier.
+Le remplissage se fera section par section dans des sessions suivantes ; un écart déjà identifié à
+trancher à ce moment-là : beaucoup de logique aujourd'hui codée en dur dans `app.py` (calcul
+d'honoraires, seuils de score « chaud », transitions de statut facture, conversion prospect→client)
+n'a pas d'équivalent backend, et la génération PDF (`src/pdf_engine.py`, fpdf2) n'est pour l'instant
+jamais exposée en endpoint.
+
+### Authentification — JWT en cookies httpOnly via un BFF
+
+`backend/routers/auth.py` (`POST /auth/login`) renvoie access/refresh token **en JSON**, comme pour
+n'importe quel consommateur HTTP — il ne pose aucun cookie lui-même. C'est `frontend-conseiller/`
+qui joue le rôle de **BFF (Backend-For-Frontend)** : ses propres route handlers reçoivent ce JSON et
+le transforment en cookies `httpOnly; sameSite=lax` (+ `secure` en production) — le navigateur ne
+voit et ne manipule jamais le JWT. Bénéfice additionnel : tous les appels navigateur → Next.js sont
+**same-origin**, donc aucune modification de CORS n'a été nécessaire côté `backend/`.
+
+1. `POST /api/auth/login` — proxy vers `backend` `POST /auth/login` ; en cas de succès, pose
+   `access_token` (1h, aligné sur `backend/core/config.py::access_token_expire_minutes`) et
+   `refresh_token` (7 jours, `refresh_token_expire_days`) en cookies, ne renvoie au client que
+   `{ user }`.
+2. `middleware.ts` — redirige vers `/login` si le cookie `access_token` est absent, sur toute route
+   **page** (pas API). Ne vérifie **pas** la signature (pas de secret JWT partagé côté edge
+   runtime) : le backend reste seul juge de la validité, exactement comme `peut_modifier()`/
+   `est_admin()` dans `src/app.py` sont des aides d'affichage et non une frontière de sécurité.
+3. `app/api/backend/[...path]/route.ts` — proxy générique authentifié (GET/POST/PUT/PATCH/DELETE) :
+   lit le cookie, ajoute `Authorization: Bearer`, relaie vers `BACKEND_URL`. Sur 401, tente un
+   refresh une fois (via la même logique que `POST /api/auth/refresh`) et rejoue la requête ; si le
+   refresh échoue aussi, renvoie 401 en JSON et efface les cookies — c'est `AuthContext` qui
+   détecte alors `user=null` et redirige vers `/login`.
+4. `POST /api/auth/logout` — efface les cookies (pas d'endpoint de révocation côté `backend/`,
+   comme se déconnecter en jetant simplement ses tokens).
+5. `AuthContext` s'hydrate au montage via `GET /api/backend/auth/me` (jamais de décodage JWT côté
+   client) et expose `peutModifier()`/`estAdmin()` — mêmes règles que `src/app.py:248-256`, aides
+   d'affichage uniquement, le backend revalide toujours le rôle sur chaque endpoint.
+
+**Écart volontaire par rapport au premier jet du plan** : le proxy `/api/backend/*` n'est **pas**
+protégé par `middleware.ts` (qui ne couvre que les pages). Une redirection HTTP sur un appel
+`fetch()` JSON aurait été suivie silencieusement par le navigateur et renvoyé du HTML là où le code
+client attend du JSON, cassant `res.json()`. L'auth sur `/api/backend/*` est donc appliquée par le
+proxy lui-même, qui répond un vrai 401 JSON quand le cookie est absent/expiré et le refresh échoue.
+
+| Fichier | Rôle |
+|---|---|
+| `app/login/page.tsx` | Formulaire de connexion (Client Component) |
+| `app/(conseiller)/layout.tsx` | Garde d'auth côté client (cookie présent mais invalide/expiré → `user=null` → redirection) + Sidebar/Header |
+| `app/(conseiller)/{dashboard,diagnostic,prospects,clients,facturation,admin}/page.tsx` | Les 6 pages, stub pour l'instant ; `admin` ajoute une garde de rôle (`estAdmin()`, accès direct par URL sinon possible) |
+| `app/api/auth/login\|logout\|refresh/route.ts` | Route handlers BFF — seuls points du code qui voient le JWT en clair |
+| `app/api/backend/[...path]/route.ts` | Proxy authentifié générique vers `backend/`, refresh transparent sur 401 |
+| `middleware.ts` | Garde d'auth par présence de cookie sur les pages (pas sur `/api/*`) |
+| `contexts/AuthContext.tsx` | `user`, `login()`, `logout()`, `peutModifier()`/`estAdmin()` |
+| `components/layout/{Sidebar,Header}.tsx` | Navigation des 6 sections (lucide-react), item Admin masqué si `!estAdmin()` |
+| `lib/backend-fetch.ts` | Wrapper `fetch("/api/backend/...")` pour les Client Components |
+| `lib/server/backend.ts`, `lib/server/refreshAccessToken.ts` | Constantes cookies/URL backend + logique de refresh partagée entre la route `/api/auth/refresh` et le proxy générique |
+| `backend/scripts/seed_admin.py` | Crée un compte `admin` si `utilisateurs` est vide (idempotent) — sans lui, aucun moyen de créer le tout premier utilisateur backend (pas d'endpoint d'inscription, par design) |
+
+**Vérifié bout-en-bout**, backend réellement lancé contre le Postgres Neon (pas seulement `npm run
+build`) : `POST /api/auth/login` (mauvais mot de passe → 401, bon mot de passe → `{user}` + cookies
+`access_token`/`refresh_token` marqués **HttpOnly** dans le cookie jar), `GET /api/backend/auth/me`
+avec/sans cookie (200/401), `GET /dashboard` avec/sans cookie (200 / redirect 307 `/login`),
+coupure du backend en cours de session → `502 {"detail":"Backend indisponible."}` propre (pas de
+crash Next.js) sur le proxy **et** sur le rendu de page, `POST /api/auth/logout` → cookies
+supprimés. Deux correctifs ont été nécessaires pour y arriver, tous deux liés à `backend/` et non au
+frontend lui-même :
+- **Migrations Alembic en retard** : la base Neon était à la révision `0009`, mais
+  `backend/routers/auth.py::login()` interroge la table `login_tentatives` (rate limiting,
+  `backend/core/security.py::compte_verrouille`) introduite par la migration `0014` — sans elle,
+  **tout** login (bon ou mauvais mot de passe) échouait en 500, jamais en 401. `alembic upgrade
+  head` (0009 → 0016, migrations purement additives) résout le problème.
+- **Aucun mécanisme de création du premier utilisateur** : contrairement à `src/auth.py::
+  creer_admin_par_defaut()` côté Streamlit, `backend/` n'exposait aucun endpoint d'inscription ni
+  script de seed. Le nouveau `backend/scripts/seed_admin.py` (`python -m backend.scripts.seed_admin`)
+  comble ce vide (idempotent, ne fait rien si `utilisateurs` contient déjà une ligne).
+
+Procédure complète (installation, lancement, seed, checklist de vérification) : voir
+`IA_CONSEIL_UTILISATION.md` §12.7.
+
+---
+
 ## 🐳 Industrialisation & déploiement
 
 Chantier 4 : les 3 process (Streamlit, backend, portail) restaient jusqu'ici des scripts locaux
@@ -588,3 +699,13 @@ déployable, observable et robuste sans changer l'architecture (toujours 3 proce
 Les phases 1 à 4 de la roadmap **d'origine** (fondations, automatisations, IA — chatbot, veille prix, API REST interne) sont **toutes livrées** — détail dans `IA_CONSEIL_ROADMAP.md` (document historique).
 
 Un plan bien plus large est désormais en cours d'exécution, détaillé sprint par sprint dans **`ROADMAP_EXECUTION.md`** (4 phases sur 12 mois : sécurisation + Postgres/FastAPI + portail client Next.js + signature/KYC + LLM factures, puis automatisation télécom/énergie, puis scale + verticales B2B, puis ORIAS/assurance). État réel au 24/07/2026 : Sprint 1 (sécurisation code) **terminé** (rate limiting login et changement de mot de passe forcé réellement en base, plus seulement documentés), Sprint 2 (Postgres/FastAPI) **branché sur un vrai Postgres Neon**, Sprint 3 (**portail client Next.js**, `frontend-portail/`) **livré et testé bout-en-bout** (génération de lien → upload documents → KYC auto), Sprint 5 (LLM factures) **branché en HTTP** depuis la fiche client Streamlit (`POST /factures/analyze`) en plus de l'appel Python direct dans le diagnostic, Sprint 4 (signature/KYC) écrit et déjà branché sur l'upload du portail mais non testé avec de vrais comptes Yousign/S3, Sprint 6 (notifications + 1er dossier réel) **notifications email/SMS automatiques par statut de dossier écrites** (`notification_engine.py`, `dossier_notifications.py`, relance quotidienne des dossiers stagnants via Celery beat) — reste à tester avec de vrais comptes Resend/OVH/Twilio. En parallèle de ce plan, deux évolutions propres à l'app Streamlit ont été ajoutées côté `src/` : un **suivi de dossier 100% local** (contrats prospect, conversion automatique en client) et un **lien à usage personnel** pour que le prospect transmette lui-même sa facture/son test de débit. Tâches précises restantes : voir `IA_CONSEIL_UTILISATION.md` §12.0 et `SETUP_STATUS.md`.
+
+Depuis le 31/07/2026, un chantier **distinct** de ce plan sprint-par-sprint a démarré : la **bascule
+de l'outil conseiller hors Streamlit** (`frontend-conseiller/`, phase 04 sur un plan en 5 phases —
+voir §「Frontend conseiller」). Objectif : remplacer `src/app.py` par un vrai frontend web
+équivalent, section par section, en s'appuyant sur `backend/` déjà largement avancé côté API. Le
+socle (auth, layout, navigation, proxy) est livré, **committé** et **vérifié bout-en-bout** contre un
+vrai backend/Postgres (login, cookies httpOnly, refresh, garde middleware, résilience à la coupure
+backend) ; le remplissage métier des 6 sections reste à faire, et nécessitera de trancher, section
+par section, les écarts entre la logique aujourd'hui codée en dur dans `app.py` et ce qu'expose déjà
+(ou pas) `backend/`.

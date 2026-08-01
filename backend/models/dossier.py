@@ -50,6 +50,13 @@ class Dossier(Base):
     fournisseur_cible: Mapped[str | None] = mapped_column(String, nullable=True)
     economie_annuelle_estimee: Mapped[float] = mapped_column(Float, default=0.0)
 
+    # True tant que le client rattaché n'est encore qu'un prospect côté CRM Streamlit (cf.
+    # src/api_client.py::creer_dossier, entite="prospect") — bascule à False lors de la
+    # conversion en client (src/app.py::finaliser_conversion_client). Sert uniquement à
+    # alléger les documents demandés (cf. dossier_engine.documents_requis_pour_univers) :
+    # inutile de réclamer CNI/justificatif de domicile à quelqu'un qui n'est pas encore client.
+    est_prospect: Mapped[bool] = mapped_column(default=True, server_default="true")
+
     # État
     statut: Mapped[str] = mapped_column(String, default="initie", nullable=False)
 

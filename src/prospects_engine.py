@@ -18,7 +18,7 @@ CHAMPS_PROSPECT = {
     "notes", "statut", "date_relance", "satisfaction_reseau", "veut_rester",
     "ville", "code_postal", "adresse", "prenom", "nom", "fournisseur_energie",
     "techno", "data_go", "speed_down", "speed_up", "type_client",
-    "economie_estimee_an", "offres_interet", "date_fin_engagement",
+    "economie_estimee_an", "offres_interet", "date_fin_engagement", "motif_relance",
 }
 
 # Catégorie Télécom correspondant au service principal déclaré par le prospect — c'est la
@@ -114,9 +114,11 @@ def ajouter_prospect(d: dict):
     pid = c.lastrowid
     conn.commit()
     conn.close()
+    lire_prospects.clear()
     return pid
 
 
+@st.cache_data(ttl=20)
 def lire_prospects():
     conn = get_conn()
     df   = pd.read_sql_query("SELECT * FROM prospects ORDER BY id DESC", conn)
@@ -132,6 +134,7 @@ def maj_prospect(pid: int, champ: str, valeur):
     c.execute(f"UPDATE prospects SET {champ}=? WHERE id=?", (valeur, pid))
     conn.commit()
     conn.close()
+    lire_prospects.clear()
 
 
 def supprimer_prospect(pid: int):
@@ -145,6 +148,7 @@ def supprimer_prospect(pid: int):
     c.execute("DELETE FROM prospects WHERE id=?", (pid,))
     conn.commit()
     conn.close()
+    lire_prospects.clear()
 
 
 def definir_backend_client_id(pid: int, backend_id: int):
@@ -157,6 +161,7 @@ def definir_backend_client_id(pid: int, backend_id: int):
     c.execute("UPDATE prospects SET backend_client_id=? WHERE id=?", (backend_id, pid))
     conn.commit()
     conn.close()
+    lire_prospects.clear()
 
 
 # ==============================================================================
@@ -213,6 +218,56 @@ def valider_token_documents(token: str):
     return prospect
 
 
+def demande_documents_en_attente(prospect_id: int) -> bool:
+    """True si un lien de demande de documents (facture/speedtest) a été envoyé à ce
+    prospect et est toujours valide (non révoqué, non expiré) — utilisé pour distinguer,
+    dans la fiche prospect, « pas encore demandé » de « demandé, en attente de retour »."""
+    conn = get_conn()
+    c    = conn.cursor()
+    lignes = c.execute(
+        "SELECT date_expiration FROM tokens_prospects WHERE prospect_id=? AND revoque=0",
+        (prospect_id,)
+    ).fetchall()
+    conn.close()
+    maintenant = datetime.now()
+    for ligne in lignes:
+        try:
+            expiration = datetime.strptime(ligne["date_expiration"], "%d/%m/%Y %H:%M")
+        except (ValueError, TypeError):
+            continue
+        if expiration >= maintenant:
+            return True
+    return False
+
+
+def enregistrer_document_prospect(prospect_id: int, type_document: str, nom_fichier: str,
+                                   contenu: bytes, mime: str = "application/pdf"):
+    """Conserve le fichier brut (facture, speedtest) transmis par le prospect via son lien
+    personnel — appelé par chatbot_api.py juste après l'analyse automatique du fichier,
+    pour que le conseiller puisse aussi consulter/télécharger le document original."""
+    conn = get_conn()
+    c    = conn.cursor()
+    c.execute("""
+        INSERT INTO documents_prospect (prospect_id, type_document, nom_fichier, contenu, mime, date_upload)
+        VALUES (?,?,?,?,?,?)
+    """, (prospect_id, type_document, nom_fichier, contenu, mime,
+          datetime.now().strftime("%d/%m/%Y %H:%M")))
+    conn.commit()
+    conn.close()
+
+
+def lire_documents_prospect(prospect_id: int) -> list:
+    """Documents (facture, speedtest) transmis par ce prospect via son lien personnel,
+    les plus récents d'abord."""
+    conn = get_conn()
+    c    = conn.cursor()
+    lignes = c.execute(
+        "SELECT * FROM documents_prospect WHERE prospect_id=? ORDER BY id DESC", (prospect_id,)
+    ).fetchall()
+    conn.close()
+    return [dict(l) for l in lignes]
+
+
 RELANCE_JOURS_AVANT_ENGAGEMENT = 14
 
 
@@ -235,6 +290,7 @@ def widget_relance(prospect_id, key_prefix: str, jours_auto: int = 7) -> bool:
     RELANCE_JOURS_AVANT_ENGAGEMENT jours avant cette échéance (cf. date_relance_avant_engagement),
     pour recontacter le prospect en temps utile plutôt qu'à une date arbitraire.
     Renvoie True si une action a été effectuée (à l'appelant de faire le st.rerun())."""
+    motif = st.text_input("Raison de la relance (optionnel)", key=f"{key_prefix}_motif")
     fait = st.button(f"✅ Relance effectuée (reprogrammer +{jours_auto} j)",
                       key=f"{key_prefix}_fait", type="primary")
     with st.expander("📅 Date de fin d'engagement (contrat actuel du prospect)"):
@@ -248,6 +304,7 @@ def widget_relance(prospect_id, key_prefix: str, jours_auto: int = 7) -> bool:
         nv_date = datetime.now().date() + timedelta(days=jours_auto)
         maj_prospect(int(prospect_id), "date_relance", nv_date.strftime("%d/%m/%Y"))
         maj_prospect(int(prospect_id), "statut", "À relancer")
+        maj_prospect(int(prospect_id), "motif_relance", motif)
         enregistrer_action("prospect", int(prospect_id), "Relance effectuée",
                             f"Prochaine relance programmée au {nv_date.strftime('%d/%m/%Y')}")
         return True
@@ -256,6 +313,7 @@ def widget_relance(prospect_id, key_prefix: str, jours_auto: int = 7) -> bool:
         maj_prospect(int(prospect_id), "date_fin_engagement", date_fin.strftime("%d/%m/%Y"))
         maj_prospect(int(prospect_id), "date_relance", date_cible.strftime("%d/%m/%Y"))
         maj_prospect(int(prospect_id), "statut", "À relancer")
+        maj_prospect(int(prospect_id), "motif_relance", motif)
         enregistrer_action("prospect", int(prospect_id), "Relance programmée",
                             f"Fin d'engagement le {date_fin.strftime('%d/%m/%Y')} — "
                             f"relance programmée au {date_cible.strftime('%d/%m/%Y')}")
@@ -377,3 +435,22 @@ def recalculer_scores_prospects():
         c.execute("UPDATE prospects SET score=? WHERE id=?", (score, p["id"]))
     conn.commit()
     conn.close()
+    lire_prospects.clear()
+
+
+SCORES_RECALCUL_INTERVALLE_S = 30
+
+
+def recalculer_scores_prospects_si_necessaire():
+    """Comme recalculer_scores_prospects(), mais throttlé (au plus une fois toutes les
+    SCORES_RECALCUL_INTERVALLE_S secondes par session) — évite de refaire un SELECT +
+    N UPDATE complets à chaque changement de page (Tableau de bord/Prospects sont visités
+    très fréquemment), qui rendait la navigation perceptiblement lente."""
+    if not hasattr(st, "session_state"):
+        recalculer_scores_prospects()
+        return
+    maintenant = datetime.now().timestamp()
+    dernier = st.session_state.get("_derniere_maj_scores_prospects", 0)
+    if maintenant - dernier >= SCORES_RECALCUL_INTERVALLE_S:
+        recalculer_scores_prospects()
+        st.session_state["_derniere_maj_scores_prospects"] = maintenant

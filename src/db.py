@@ -346,6 +346,22 @@ def initialiser_bdd():
         )
     """)
 
+    # Table documents_prospect — fichiers (facture, speedtest) transmis par le prospect via
+    # son lien personnel (portail prospect, chatbot_api.py), conservés tels quels en plus des
+    # données déjà extraites automatiquement sur la fiche prospect.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS documents_prospect (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            prospect_id   INTEGER NOT NULL,
+            type_document TEXT,
+            nom_fichier   TEXT,
+            contenu       BLOB,
+            mime          TEXT,
+            date_upload   TEXT,
+            FOREIGN KEY (prospect_id) REFERENCES prospects(id)
+        )
+    """)
+
     conn.commit()
     conn.close()
     _migrer_bdd()   # ← Ajoute les colonnes manquantes aux BDD existantes
@@ -447,6 +463,10 @@ def _migrer_bdd():
         # commentaire ci-dessus) — un prospect peut désormais avoir un dossier suivi côté
         # backend/ (stepper + mandats + historique) avant même sa conversion en client.
         ("prospects", "backend_client_id",    "INTEGER"),
+        # motif_relance : raison de la prochaine relance, saisie en même temps que sa date
+        # (widget_relance / widget_relance_client) — pour se souvenir pourquoi on rappelle.
+        ("prospects", "motif_relance",        "TEXT"),
+        ("clients",   "motif_relance",        "TEXT"),
     ]
     conn = get_conn()
     c    = conn.cursor()

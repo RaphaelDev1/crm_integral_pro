@@ -11,7 +11,7 @@
 # ==============================================================================
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Request, UploadFile, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Path, Request, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,14 +19,17 @@ from backend.core.database import get_db
 from backend.models.client import Client
 from backend.models.demarche import Demarche
 from backend.models.document import Document
+from backend.models.document_prospect import DocumentProspect
 from backend.models.dossier import Dossier
 from backend.models.mandat import Mandat
+from backend.models.prospect import Prospect
 from backend.models.token_public import TokenPublic
 from backend.schemas.portail_public import (
     ChampDemarchePublicOut,
     ChampsDemarchePublicUpdate,
     DemarcheAFournirOut,
     DocumentDemandeOut,
+    SpeedtestResultatOut,
     SuiviDossierOut,
     SuiviEtape,
     TokenPublicContexte,
@@ -36,6 +39,8 @@ from backend.services import demarches_engine, dossier_engine, storage_engine, t
 from backend.services.kyc_engine import KycError, valider_document
 
 router = APIRouter(prefix="/portail", tags=["portail_public"])
+
+MIME_AUTORISES_SPEEDTEST = {"application/pdf", "image/jpeg", "image/png", "image/webp"}
 
 
 async def _resoudre_token(
@@ -48,6 +53,33 @@ async def _resoudre_token(
     return token_obj
 
 
+async def _contexte_token_prospect(token_obj: TokenPublic, db: AsyncSession) -> TokenPublicContexte:
+    """Contexte réduit servi à un prospect (pas encore client, pas de dossier) —
+    seul l'upload de facture/speedtest lui est proposé, cf.
+    backend/services/token_engine.py::generer_token_prospect_documents."""
+    prospect = await db.get(Prospect, token_obj.prospect_id)
+    if prospect is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Prospect introuvable.")
+
+    return TokenPublicContexte(
+        prenom_client=prospect.prenom or "",
+        nom_client=prospect.nom or "",
+        dossier_id=None,
+        univers=None,
+        fournisseur_cible=None,
+        economie_annuelle_estimee=0.0,
+        statut_dossier=None,
+        conseiller_nom=prospect.cree_par,
+        documents_a_fournir=[],
+        mandat_statut=None,
+        peut_uploader_docs=token_obj.peut_uploader_docs,
+        peut_signer_mandat=False,
+        demarches_a_completer=[],
+        peut_renseigner_demarches=False,
+        peut_transmettre_speedtest=False,
+    )
+
+
 @router.get("/{token}", response_model=TokenPublicContexte)
 async def contexte_token(
     request: Request,
@@ -55,6 +87,9 @@ async def contexte_token(
     db: AsyncSession = Depends(get_db),
 ):
     token_obj = await _resoudre_token(token, request, db)
+
+    if token_obj.prospect_id is not None:
+        return await _contexte_token_prospect(token_obj, db)
 
     client = await db.get(Client, token_obj.client_id)
     if client is None:
@@ -65,7 +100,8 @@ async def contexte_token(
         dossier = await db.get(Dossier, token_obj.dossier_id)
 
     univers = dossier.univers if dossier else "telecom_mobile"
-    types_requis = dossier_engine.documents_requis_pour_univers(univers)
+    types_requis = dossier_engine.documents_requis_pour_univers(
+        univers, est_prospect=dossier.est_prospect if dossier else False)
 
     docs_existants = (await db.execute(
         select(Document).where(Document.client_id == client.id)
@@ -123,6 +159,7 @@ async def contexte_token(
         peut_signer_mandat=token_obj.peut_signer_mandat,
         demarches_a_completer=demarches_a_completer,
         peut_renseigner_demarches=token_obj.peut_renseigner_demarches,
+        peut_transmettre_speedtest=token_obj.peut_transmettre_speedtest,
     )
 
 
@@ -138,6 +175,50 @@ def _vers_demarche_a_fournir(demarche: Demarche, champs_a_afficher: dict[str, di
             )
             for cle, infos in champs_source.items()
         ],
+    )
+
+
+async def _uploader_document_prospect(
+    token_obj: TokenPublic, type_document: str, contenu: bytes, nom_fichier: str | None, db: AsyncSession,
+) -> UploadResultOut:
+    """Upload d'un document (facture, speedtest) par un prospect pas encore
+    client — équivalent de src/prospects_engine.py::enregistrer_document_prospect.
+    Pas de validation KYC (celle-ci ne s'applique qu'aux pièces CNI/RIB/justificatif
+    de domicile demandées à un client) : le document est simplement conservé pour
+    le conseiller."""
+    if type_document not in ("facture", "speedtest"):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "type_document doit être 'facture' ou 'speedtest' pour un lien prospect.",
+        )
+    nom_fichier = nom_fichier or "document.pdf"
+    try:
+        cle_s3 = storage_engine.upload_fichier(
+            prefixe=f"prospects/{token_obj.prospect_id}",
+            type_document=type_document,
+            contenu=contenu,
+            nom_fichier=nom_fichier,
+        )
+    except storage_engine.StorageError as exc:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Stockage impossible : {exc}")
+
+    document = DocumentProspect(
+        prospect_id=token_obj.prospect_id,
+        type_document=type_document,
+        nom_fichier=nom_fichier,
+        cle_stockage=cle_s3,
+        mime=storage_engine.deviner_mime_reel(contenu),
+        date_upload=datetime.now().strftime("%d/%m/%Y %H:%M"),
+    )
+    db.add(document)
+    await db.commit()
+    await db.refresh(document)
+
+    return UploadResultOut(
+        document_id=document.id,
+        type_detecte=None,
+        statut_kyc="recu",
+        message="Document reçu, votre conseiller le consultera.",
     )
 
 
@@ -160,6 +241,9 @@ async def uploader_document(
     contenu = await fichier.read()
     if len(contenu) > 10 * 1024 * 1024:
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Fichier trop volumineux (max 10 Mo).")
+
+    if token_obj.prospect_id is not None:
+        return await _uploader_document_prospect(token_obj, type_document, contenu, fichier.filename, db)
 
     try:
         cle_s3 = storage_engine.upload_document(
@@ -278,3 +362,75 @@ async def renseigner_champs_demarche(
     valeurs_filtrees = {cle: valeur for cle, valeur in payload.valeurs.items() if cle in cles_autorisees}
     demarche = await demarches_engine.marquer_champs(db, demarche, valeurs_filtrees)
     return _vers_demarche_a_fournir(demarche)
+
+
+@router.post("/{token}/speedtest", response_model=SpeedtestResultatOut)
+async def soumettre_speedtest(
+    request: Request,
+    token: str = Path(..., min_length=32),
+    download_mbps: float | None = Form(None),
+    upload_mbps: float | None = Form(None),
+    ping_ms: float | None = Form(None),
+    fichier: UploadFile | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Le client soumet soit un résultat mesuré par le widget LibreSpeed
+    (download_mbps/upload_mbps), soit, en repli, une capture d'écran/PDF d'un
+    test tiers (nPerf, Speedtest.net...) — jamais les deux à la fois."""
+    token_obj = await _resoudre_token(token, request, db)
+
+    if not token_obj.peut_transmettre_speedtest:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Transmission du test de débit non autorisée.")
+
+    if download_mbps is not None and upload_mbps is not None:
+        client = await db.get(Client, token_obj.client_id)
+        if client is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Client introuvable.")
+        client.speed_down = download_mbps
+        client.speed_up = upload_mbps
+        await db.commit()
+        return SpeedtestResultatOut(
+            speed_down=download_mbps, speed_up=upload_mbps,
+            message="Test de débit enregistré, merci !",
+        )
+
+    if fichier is not None:
+        contenu = await fichier.read()
+        if not contenu:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Fichier vide.")
+        if len(contenu) > 10 * 1024 * 1024:
+            raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Fichier trop volumineux (max 10 Mo).")
+
+        mime_reel = storage_engine.deviner_mime_reel(contenu)
+        if mime_reel not in MIME_AUTORISES_SPEEDTEST:
+            raise HTTPException(
+                status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                "Type de fichier non autorisé (PDF, JPG, PNG ou WEBP uniquement, quelle que soit l'extension).",
+            )
+
+        try:
+            cle_s3 = storage_engine.upload_document(
+                client_id=token_obj.client_id,
+                type_document="speedtest",
+                contenu=contenu,
+                nom_fichier=fichier.filename or "speedtest.pdf",
+            )
+        except storage_engine.StorageError as exc:
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Stockage impossible : {exc}")
+
+        document = Document(
+            client_id=token_obj.client_id,
+            type_document="speedtest",
+            url_stockage=cle_s3,
+            statut_kyc="en_attente",
+            date_upload=datetime.now().strftime("%d/%m/%Y %H:%M"),
+        )
+        db.add(document)
+        await db.commit()
+        await db.refresh(document)
+        return SpeedtestResultatOut(
+            document_id=document.id,
+            message="Capture reçue, votre conseiller vérifiera les résultats.",
+        )
+
+    raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Aucun résultat ni fichier transmis.")

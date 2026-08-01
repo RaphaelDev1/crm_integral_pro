@@ -1,9 +1,10 @@
 # ==============================================================================
 #  CELERY — file de tâches asynchrones (validation KYC, envoi et suivi des
 #  demandes de signature Yousign, relance des dossiers stagnants, génération
-#  et envoi LRE des documents de démarche) sur broker/backend Redis.
+#  et envoi LRE des documents de démarche, veille prix concurrentielle, digest
+#  quotidien admin) sur broker/backend Redis.
 #  Lancement worker : celery -A backend.workers.celery_app worker --loglevel=info
-#  Lancement du planificateur (relance quotidienne) : celery -A backend.workers.celery_app beat
+#  Lancement du planificateur (tâches périodiques) : celery -A backend.workers.celery_app beat
 # ==============================================================================
 import sentry_sdk
 from celery import Celery
@@ -41,6 +42,24 @@ celery_app.conf.update(
         "verifier-accuses-lre-horaire": {
             "task": "backend.workers.tasks.verifier_accuses_lre_en_attente",
             "schedule": crontab(minute=0),
+        },
+        "lancer-veille-prix-quotidien": {
+            "task": "backend.workers.tasks.lancer_veille_periodique",
+            "schedule": crontab(hour=7, minute=0),
+        },
+        "ingerer-catalogue-quotidien": {
+            "task": "backend.workers.tasks.ingerer_catalogue_periodique",
+            "schedule": crontab(hour=3, minute=0),
+        },
+        "detecter-offres-moins-cheres-quotidien": {
+            "task": "backend.workers.tasks.detecter_offres_moins_cheres_periodique",
+            # Calée 30 min après la veille prix (7h00) pour comparer contre un
+            # catalogue fraîchement mis à jour.
+            "schedule": crontab(hour=7, minute=30),
+        },
+        "envoyer-digest-quotidien": {
+            "task": "backend.workers.tasks.envoyer_digest_quotidien",
+            "schedule": crontab(hour=8, minute=0),
         },
     },
 )

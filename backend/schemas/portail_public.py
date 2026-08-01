@@ -54,6 +54,7 @@ class TokenPublicContexte(BaseModel):
     peut_signer_mandat: bool
     demarches_a_completer: list[DemarcheAFournirOut] = []
     peut_renseigner_demarches: bool = True
+    peut_transmettre_speedtest: bool = True
 
 
 class UploadResultOut(BaseModel):
@@ -61,6 +62,15 @@ class UploadResultOut(BaseModel):
     type_detecte: str | None
     statut_kyc: str
     motif_rejet: str | None = None
+    message: str
+
+
+class SpeedtestResultatOut(BaseModel):
+    """Résultat de la soumission — mesure numérique (LibreSpeed) ou capture
+    fichier (fallback), jamais les deux à la fois."""
+    speed_down: float | None = None
+    speed_up: float | None = None
+    document_id: int | None = None
     message: str
 
 

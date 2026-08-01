@@ -12,6 +12,7 @@ class DossierBase(BaseModel):
 
 class DossierCreate(DossierBase):
     client_id: int
+    est_prospect: bool = True
 
 
 class DossierUpdate(BaseModel):
@@ -21,6 +22,7 @@ class DossierUpdate(BaseModel):
     reference_fournisseur: str | None = None
     date_activation_prevue: str | None = None
     conseiller_responsable: str | None = None
+    est_prospect: bool | None = None
 
 
 class DossierOut(DossierBase):
@@ -29,6 +31,7 @@ class DossierOut(DossierBase):
     id: int
     client_id: int
     statut: str
+    est_prospect: bool = True
     date_creation: str | None = None
     date_soumission: str | None = None
     date_activation_prevue: str | None = None

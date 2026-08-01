@@ -110,8 +110,16 @@ async def ajouter_note(db: AsyncSession, dossier: Dossier, texte: str, *, par: s
     return dossier
 
 
-def documents_requis_pour_univers(univers: str) -> list[dict]:
-    """Retourne la liste des documents à demander au client pour un univers donné."""
+def documents_requis_pour_univers(univers: str, est_prospect: bool = False) -> list[dict]:
+    """Retourne la liste des documents à demander au client pour un univers donné.
+
+    Tant que la personne n'est encore qu'un prospect (`est_prospect=True` —
+    Dossier.est_prospect, cf. backend/models/dossier.py), aucun document KYC (CNI, RIB,
+    justificatif de domicile) n'est réclamé : la facture et le test de débit, déjà
+    couverts par le parcours prospect existant (src/prospects_engine.py::
+    enregistrer_document_prospect), suffisent avant la conversion en client."""
+    if est_prospect:
+        return []
     base = [
         {"type_document": "cni", "label_affiche": "Pièce d'identité (recto + verso)"},
         {"type_document": "rib", "label_affiche": "RIB"},

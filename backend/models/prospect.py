@@ -3,7 +3,7 @@
 #  ajoutées par _migrer_bdd()). Les dates restent des chaînes "%d/%m/%Y %H:%M"
 #  pour rester compatibles avec le formatage utilisé côté Streamlit (src/app.py).
 # ==============================================================================
-from sqlalchemy import Float, String
+from sqlalchemy import Float, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.models.base import Base
@@ -13,6 +13,11 @@ class Prospect(Base):
     __tablename__ = "prospects"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    # Client "miroir" (cf. backend/services/prospect_conversion.py) : renseigné dès qu'un
+    # dossier ou un token de documents pré-conversion a besoin d'un Client réel, réutilisé
+    # (pas recréé) comme client définitif à la conversion.
+    client_id: Mapped[int | None] = mapped_column(ForeignKey("clients.id"), nullable=True)
+    converti_at: Mapped[str | None] = mapped_column(String, nullable=True)
     ref: Mapped[str | None] = mapped_column(String, nullable=True)
     prenom: Mapped[str | None] = mapped_column(String, nullable=True)
     nom: Mapped[str | None] = mapped_column(String, nullable=True)

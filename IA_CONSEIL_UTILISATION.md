@@ -1,8 +1,8 @@
 # IA Conseil — Guide d'utilisation complet
 
-**Mise à jour :** 24/07/2026
+**Mise à jour :** 31/07/2026
 
-Ce document rassemble **toutes les commandes** nécessaires pour installer, lancer et utiliser IA Conseil de bout en bout : l'app Streamlit (`src/`), l'API CRM interne (JWT, désormais sur le port **8003**), l'API chatbot publique **et le portail prospect** (lien personnel facture/test de débit), les scripts planifiés (relances, veille prix), l'envoi de SMS, les tests, la CI, **le backend FastAPI + Postgres (`backend/`, branché sur un vrai Postgres Neon, consommé depuis Streamlit pour les dossiers/mandats/facture LLM — voir §12)** et **le portail client Next.js (`frontend-portail/`, consomme ce backend en HTTP — voir §12.6)**. Pour la description fonctionnelle complète (ce que fait l'app, page par page), voir `IA.CONSEIL.MD`. Pour l'état d'avancement réel du projet et les prochaines tâches, voir `ROADMAP_EXECUTION.md` et `SETUP_STATUS.md`.
+Ce document rassemble **toutes les commandes** nécessaires pour installer, lancer et utiliser IA Conseil de bout en bout : l'app Streamlit (`src/`), l'API CRM interne (JWT, désormais sur le port **8003**), l'API chatbot publique **et le portail prospect** (lien personnel facture/test de débit), les scripts planifiés (relances, veille prix), l'envoi de SMS, les tests, la CI, **le backend FastAPI + Postgres (`backend/`, branché sur un vrai Postgres Neon, consommé depuis Streamlit pour les dossiers/mandats/facture LLM — voir §12)**, **le portail client Next.js (`frontend-portail/`, consomme ce backend en HTTP — voir §12.6)** et **le frontend conseiller (`frontend-conseiller/`, socle auth + navigation, destiné à remplacer `src/app.py` section par section — voir §12.7)**. Pour la description fonctionnelle complète (ce que fait l'app, page par page), voir `IA.CONSEIL.MD`. Pour l'état d'avancement réel du projet et les prochaines tâches, voir `ROADMAP_EXECUTION.md` et `SETUP_STATUS.md`.
 
 ---
 
@@ -14,7 +14,7 @@ Ce document rassemble **toutes les commandes** nécessaires pour installer, lanc
 - Navigateur Chromium pour Playwright (souscription assistée + veille prix) — installé séparément (voir §2).
 - Optionnel : une **clé API Anthropic** (OCR Vision + chatbot + analyse facture LLM), un **compte SMTP** (emails), un **bot Telegram** (notifications), un **compte SMS OVH ou Twilio** (envoi du lien « transmettre facture + test de débit », voir §5.5).
 - Optionnel (uniquement pour le backend FastAPI/Postgres, §12) : un **Postgres** (Neon ou local), un **Redis** (Celery), un bucket **S3** (Scaleway Object Storage recommandé — upload de documents client).
-- Optionnel (uniquement pour le portail client Next.js, §12.6) : **Node.js 18+** et **npm**.
+- Optionnel (uniquement pour le portail client Next.js, §12.6, ou le frontend conseiller, §12.7) : **Node.js 18+** et **npm**.
 
 ---
 
@@ -343,7 +343,7 @@ python notifications.py        # tous les matins, ex. 08:00
 python veille_prix_engine.py   # tous les matins, ex. 07:00
 ```
 
-Le nouveau backend `backend/` (§12) est **optionnel** vis-à-vis de Streamlit : Streamlit fonctionne en totale autonomie sans lui (il tourne toujours en direct sur SQLite via `db.py`) — ne le lancer que si vous testez explicitement cette brique **ou** le portail client Next.js (`frontend-portail/`), qui lui en dépend entièrement.
+Le nouveau backend `backend/` (§12) est **optionnel** vis-à-vis de Streamlit : Streamlit fonctionne en totale autonomie sans lui (il tourne toujours en direct sur SQLite via `db.py`) — ne le lancer que si vous testez explicitement cette brique **ou** le portail client Next.js (`frontend-portail/`) / le frontend conseiller (`frontend-conseiller/`), qui en dépendent entièrement tous les deux.
 
 ### Ports par défaut
 | Service | Port | Authentifié ? |
@@ -353,8 +353,9 @@ Le nouveau backend `backend/` (§12) est **optionnel** vis-à-vis de Streamlit :
 | API chatbot publique + portail prospect (`chatbot_api.py`) | 8001 | Non (rate-limit 30 req/min/IP ; portail prospect protégé par token) |
 | Backend FastAPI + Postgres (`backend.main:app`) | 8000 | JWT (`/dossiers`, `/clients`...) ou token unique (`/portail/*`) |
 | Portail client Next.js (`frontend-portail/`) | 3000 | Non (token dans l'URL) |
+| Frontend conseiller (`frontend-conseiller/`) | 3001 | Oui — JWT en cookie httpOnly (proxy BFF, voir §12.7) |
 
-`crm_api.py` (port 8003) et `backend/main.py` (port 8000) sont deux projets volontairement isolés — plus de conflit de port entre eux. Le portail Next.js (`NEXT_PUBLIC_API_URL`) attend toujours `backend/` sur `http://localhost:8000` par défaut.
+`crm_api.py` (port 8003) et `backend/main.py` (port 8000) sont deux projets volontairement isolés — plus de conflit de port entre eux. Le portail Next.js (`NEXT_PUBLIC_API_URL`) attend toujours `backend/` sur `http://localhost:8000` par défaut ; le frontend conseiller (`BACKEND_URL`, lu uniquement côté serveur) fait de même.
 
 ---
 
@@ -376,6 +377,10 @@ Le nouveau backend `backend/` (§12) est **optionnel** vis-à-vis de Streamlit :
 | Backend `backend/` : `celery -A backend.workers.celery_app worker` ne démarre pas / tâches jamais exécutées | Redis non lancé | Démarrer un Redis local (`redis-server` ou conteneur Docker) et vérifier `REDIS_URL` dans `backend/.env` |
 | Portail Next.js : « Lien invalide » alors que le token vient d'être généré | Backend `backend/` non lancé, ou `NEXT_PUBLIC_API_URL` (`frontend-portail/.env.local`) ne pointe pas vers le bon port | Vérifier `uvicorn backend.main:app` tourne bien sur le port attendu (§12.3) et que `frontend-portail/.env.local` correspond |
 | Portail Next.js : upload de document échoue avec « Stockage impossible » | `S3_BUCKET`/`S3_ACCESS_KEY_ID`/`S3_SECRET_ACCESS_KEY` non renseignés dans `backend/.env` | Provisionner un bucket S3 (Scaleway Object Storage recommandé, voir §12.6) |
+| Frontend conseiller : redirigé vers `/login` en boucle après une connexion réussie | Cookie `access_token` non posé (HTTPS attendu par `secure: true` en production sur une origine HTTP, ou `BACKEND_URL` erroné côté `frontend-conseiller/.env.local`) | En dev, garder `NODE_ENV` non-production (cookie sans `secure`) ; vérifier `BACKEND_URL=http://localhost:8000` et que `backend/main.py` tourne (§12.3) |
+| Frontend conseiller : `502 {"detail":"Backend indisponible."}` sur toute page après connexion | `backend/main.py` non lancé, ou `BACKEND_URL` (`frontend-conseiller/.env.local`) ne pointe pas vers le bon port | Démarrer `uvicorn backend.main:app` (§12.3) et vérifier `BACKEND_URL` |
+| `POST /auth/login` renvoie **500** (pas 401) même avec le bon mot de passe | Migrations Alembic en retard : `login_tentatives` (rate limiting, migration `0014`) n'existe pas encore | `alembic upgrade head` (§12.2) — vérifier `alembic current` affiche `0016 (head)` |
+| `python -m backend.scripts.seed_admin` répond « contient déjà un compte » alors qu'on veut se connecter | La table `utilisateurs` n'est pas vide (compte déjà migré ou créé précédemment) — le script est volontairement idempotent, il ne réinitialise jamais un mot de passe existant | Consulter directement la table (`SELECT username, role FROM utilisateurs`) pour retrouver l'identifiant existant, ou réinitialiser son mot de passe manuellement en base si l'ancien est perdu |
 
 ---
 
@@ -420,7 +425,18 @@ Dépendances installées par `backend/requirements.txt` (en plus de `fastapi`/`s
 
 alembic upgrade head
 ```
-`alembic current` doit ensuite afficher `0006 (head)`. Applique dans l'ordre : `0001` (schéma initial), `0002` (mandats/documents), `0003` (`dossiers`, `tokens_publics`, `commissions`, `abonnements`), `0004` (factures analysées), `0005` (relances dossier), `0006` (mandats d'honoraires).
+`alembic current` doit ensuite afficher `0016 (head)`. Applique dans l'ordre : `0001` (schéma
+initial), `0002` (mandats/documents), `0003` (`dossiers`, `tokens_publics`, `commissions`,
+`abonnements`), `0004` (factures analysées), `0005` (relances dossier), `0006` (mandats
+d'honoraires), `0007` (`demarches`), `0008` (`tokens_publics.peut_renseigner_demarches`), `0009`
+(`dossiers.est_prospect`), `0010` (`comparaisons_offres`), `0011` (veille prix), `0012`
+(`documents_prospect`), `0013` (`parametres`), `0014` (`login_tentatives` — **requise pour que le
+login fonctionne**, cf. §12.7), `0015` (`tokens_publics.peut_transmettre_speedtest`), `0016`
+(`alertes_offres`).
+
+⚠️ Sur une base déjà provisionnée avant le 31/07/2026, vérifier `alembic current` : si elle affiche
+encore `0009` ou moins, relancer `alembic upgrade head` — sans les révisions `0010`-`0016`, le
+frontend conseiller (§12.7) ne peut pas se connecter (login en 500).
 
 Si l'URL Postgres pointe vers un endpoint **pooler** (Neon en pooler, PgBouncer...), garder `connect_args={"statement_cache_size": 0}` dans `backend/core/database.py` (déjà présent) pour éviter des erreurs intermittentes `prepared statement does not exist`.
 
@@ -500,6 +516,69 @@ curl -X POST http://localhost:8000/dossiers/1/token-client -H "Authorization: Be
 L'envoi automatique du lien par SMS/email réel est maintenant possible via `POST /dossiers/{id}/envoyer-lien-client` (§12.3) — sans compte OVH/Twilio/Resend renseigné dans `backend/.env`, il suffit encore de copier-coller l'URL ou le `message_sms_suggere` manuellement au client.
 
 Nécessite pour un test complet d'upload : un bucket S3 configuré (`backend/.env` → `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` — Scaleway Object Storage recommandé) et idéalement une vraie `ANTHROPIC_API_KEY` pour que la validation KYC automatique fonctionne (sinon chaque document uploadé reste en statut `erreur` — reçu mais non validé, sans bloquer l'upload).
+
+### 12.7 Frontend conseiller (`frontend-conseiller/`, Next.js) — socle auth + navigation, vérifié bout-en-bout
+
+Process Node **indépendant**, consomme le backend `backend/` (§12.3) en HTTP. Destiné cette fois au
+**conseiller** (pas au client final) : login par identifiant/mot de passe, JWT en cookie httpOnly
+posé par un BFF (voir `IA.CONSEIL.MD` §「Frontend conseiller」pour le détail du flux). À ce stade,
+seul le socle est livré (committé) : les 6 pages (Tableau de bord, Nouveau diagnostic, Prospects,
+Clients & contrats, Facturation, Admin) sont des **stubs**, sans logique métier.
+
+**Prérequis avant de lancer le backend contre Neon** : les migrations Alembic doivent être à jour
+(`alembic upgrade head` — voir §12.3). Le rate-limiting du login (`backend/core/security.py::
+compte_verrouille`) dépend de la table `login_tentatives` (migration `0014`) ; sans elle, **tout**
+login échoue en 500 (jamais en 401, même avec le bon mot de passe).
+
+**Installation :**
+```bash
+cd frontend-conseiller
+npm install
+cp .env.example .env.local   # si .env.local n'existe pas encore — BACKEND_URL=http://localhost:8000
+```
+
+**Lancer en dev :**
+```bash
+cd frontend-conseiller
+npm run dev
+```
+Ouvre `http://localhost:3001` (port 3001 : le portail client `frontend-portail/` occupe déjà 3000).
+
+**Build production :**
+```bash
+cd frontend-conseiller
+npm run build
+npm start
+```
+
+**Tester le parcours de bout en bout (nécessite un backend lancé, §12.3, avec au moins un utilisateur en base) :**
+1. `uvicorn backend.main:app --reload` (§12.3) dans un terminal.
+2. `cd frontend-conseiller && npm run dev` dans un second terminal.
+3. Ouvrir `http://localhost:3001/dashboard` **sans être connecté** → doit rediriger vers `/login?next=%2Fdashboard` (comportement du `middleware.ts`, vérifié en dev lors de la livraison de ce socle).
+4. Se connecter avec un compte existant côté `backend/` (table `utilisateurs`, distincte de la base
+   SQLite de Streamlit — un compte peut y exister déjà si `backend/scripts/
+   migrer_sqlite_vers_postgres.py` a déjà tourné). Sur une base neuve (table vide), créer le premier
+   compte admin :
+   ```bash
+   python -m backend.scripts.seed_admin
+   ```
+   Affiche le mot de passe généré **une seule fois** (`doit_changer_mdp=True` — changement exigé à
+   la première connexion). Ne fait rien (idempotent) si `utilisateurs` contient déjà une ligne — pas
+   de compte réinitialisé par erreur.
+   → doit rediriger vers `/dashboard`, Sidebar visible avec les 6 items (« Admin » visible uniquement si `role == "Admin"`).
+5. Naviguer vers chaque page stub (`/diagnostic`, `/prospects`, `/clients`, `/facturation`, et `/admin` si Admin) : aucune ne doit renvoyer vers `/login`.
+6. DevTools → Application → Cookies sur `localhost:3001` : `access_token`/`refresh_token` doivent apparaître marqués **HttpOnly**, et `document.cookie` dans la console ne doit rien renvoyer pour eux.
+7. Couper le backend (`Ctrl+C` sur le terminal `uvicorn`), recharger une page protégée → une erreur propre doit s'afficher (`502 Backend indisponible`), pas un crash Next.js.
+8. Se déconnecter (bouton dans le Header) → cookies supprimés, retour forcé sur `/login` ; retenter `/dashboard` par URL directe → redirection `/login` confirmée.
+
+Ce parcours (étapes 1 à 8) a été **entièrement rejoué** contre un backend réel et le Postgres Neon :
+login (mauvais mot de passe → 401, bon mot de passe → cookies `HttpOnly` confirmés dans le cookie
+jar), `/auth/me`, garde middleware (redirect 307 sans cookie / 200 avec), coupure backend en cours
+de session → `502 {"detail":"Backend indisponible."}` propre sur le proxy et sur le rendu de page
+(pas de crash Next.js), logout (cookies supprimés). Seule réserve : l'inspection visuelle des
+cookies dans les DevTools d'un vrai navigateur (étape 6) n'a été vérifiée qu'indirectement via les
+attributs du cookie jar `curl` (`HttpOnly` confirmé côté serveur) — pas encore via un navigateur
+réel.
 
 ---
 

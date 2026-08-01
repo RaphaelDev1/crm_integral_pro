@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 import boto3
+import filetype
 from botocore.client import Config as BotoConfig
 from botocore.exceptions import ClientError
 
@@ -205,3 +206,13 @@ def _deviner_mime(nom_fichier: str) -> str:
         "png": "image/png",
         "webp": "image/webp",
     }.get(ext, "application/octet-stream")
+
+
+def deviner_mime_reel(contenu: bytes) -> str | None:
+    """Détecte le vrai type MIME par magic bytes (contenu réel du fichier),
+    contrairement à `_deviner_mime` qui ne fait confiance qu'à l'extension du
+    nom de fichier. À utiliser partout où le fichier vient d'un tiers non fiable
+    (upload public) et où renommer un exécutable en `.pdf` ne doit pas suffire
+    à le faire accepter."""
+    kind = filetype.guess(contenu)
+    return kind.mime if kind else None

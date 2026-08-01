@@ -11,13 +11,22 @@ from enum import StrEnum
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.config import settings
 from backend.core.database import get_db
+from backend.models.login_tentative import LoginTentative
 from backend.models.user import User
 
 _PBKDF2_ITERATIONS = 260_000   # OWASP 2024 recommandation pour PBKDF2-SHA256
+
+# ── Rate limiting login — repris de src/auth.py (MAX_TENTATIVES/FENETRE_MINUTES),
+#    qui n'avait pas d'équivalent côté backend/ avant l'unification de l'auth. ──
+MAX_TENTATIVES = 5    # échecs consécutifs autorisés
+FENETRE_MINUTES = 15  # fenêtre glissante de blocage
+_PURGE_RETENTION_JOURS = 1   # historique des tentatives conservé (purge opportuniste)
+_FMT_TENTATIVE = "%Y-%m-%d %H:%M:%S"   # format triable lexicographiquement
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -50,6 +59,7 @@ def _creer_token(user: User, type_: TokenType, duree: timedelta) -> str:
     payload = {
         "sub": user.username,
         "user_id": user.id,
+        "nom_complet": user.nom_complet,  # requis par src/crm_api.py (current["nom_complet"]) — voir src/jwt_auth.py
         "role": user.role,
         "type": type_.value,
         "iat": maintenant,
@@ -109,3 +119,52 @@ def require_role(*roles: str):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Accès refusé pour ce rôle.")
         return user
     return _dependance
+
+
+async def _purger_vieilles_tentatives(db: AsyncSession) -> None:
+    seuil = (datetime.now(timezone.utc) - timedelta(days=_PURGE_RETENTION_JOURS)).strftime(_FMT_TENTATIVE)
+    await db.execute(delete(LoginTentative).where(LoginTentative.date_tentative < seuil))
+
+
+async def enregistrer_tentative(db: AsyncSession, identifiant: str, ip: str, succes: bool) -> None:
+    await _purger_vieilles_tentatives(db)
+    db.add(LoginTentative(
+        identifiant=identifiant.strip().lower(),
+        ip=ip or "",
+        succes=succes,
+        date_tentative=datetime.now(timezone.utc).strftime(_FMT_TENTATIVE),
+    ))
+    await db.commit()
+
+
+async def compte_verrouille(db: AsyncSession, identifiant: str, ip: str) -> tuple[bool, int]:
+    """Renvoie (verrouillé, minutes_restantes) selon les échecs consécutifs du
+    couple (identifiant, ip) sur la fenêtre glissante — logique reprise de
+    src/auth.py::_compte_verrouille. Un succès plus récent qu'un échec
+    réinitialise le compteur."""
+    seuil = (datetime.now(timezone.utc) - timedelta(minutes=FENETRE_MINUTES)).strftime(_FMT_TENTATIVE)
+    result = await db.execute(
+        select(LoginTentative.succes, LoginTentative.date_tentative)
+        .where(
+            LoginTentative.identifiant == identifiant.strip().lower(),
+            LoginTentative.ip == (ip or ""),
+            LoginTentative.date_tentative >= seuil,
+        )
+        .order_by(LoginTentative.date_tentative.desc())
+    )
+    echecs, plus_recent_echec = 0, None
+    for succes, date_tentative in result.all():
+        if succes:
+            break
+        echecs += 1
+        if plus_recent_echec is None:
+            plus_recent_echec = date_tentative
+
+    if echecs >= MAX_TENTATIVES and plus_recent_echec:
+        expiration = datetime.strptime(plus_recent_echec, _FMT_TENTATIVE).replace(tzinfo=timezone.utc) + timedelta(
+            minutes=FENETRE_MINUTES
+        )
+        restant_min = (expiration - datetime.now(timezone.utc)).total_seconds() / 60
+        if restant_min > 0:
+            return True, max(1, round(restant_min))
+    return False, 0

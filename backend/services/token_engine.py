@@ -21,6 +21,8 @@ from backend.models.token_public import TokenPublic
 
 
 DUREE_VALIDITE_PAR_DEFAUT = timedelta(days=30)
+# Même durée que src/prospects_engine.py::TOKEN_DOCUMENTS_DUREE_JOURS.
+DUREE_VALIDITE_DOCUMENTS_PROSPECT = timedelta(days=14)
 FORMAT_DATE = "%d/%m/%Y %H:%M"
 
 
@@ -40,23 +42,33 @@ def _parse_date(s: str | None) -> datetime | None:
 async def generer_token(
     db: AsyncSession,
     *,
-    client_id: int,
+    client_id: int | None = None,
+    prospect_id: int | None = None,
     dossier_id: int | None = None,
     cree_par: str | None = None,
     duree: timedelta = DUREE_VALIDITE_PAR_DEFAUT,
     peut_uploader_docs: bool = True,
     peut_signer_mandat: bool = True,
     peut_voir_suivi: bool = True,
+    peut_transmettre_speedtest: bool = True,
+    peut_renseigner_demarches: bool = True,
 ) -> TokenPublic:
-    """Génère un nouveau token public pour un client."""
+    """Génère un nouveau token public pour un client OU un prospect (exactement
+    l'un des deux — cf. contrainte XOR, migration 0019)."""
+    if (client_id is None) == (prospect_id is None):
+        raise ValueError("Fournir exactement un de client_id ou prospect_id.")
+
     now = datetime.now()
     token = TokenPublic(
         token=secrets.token_urlsafe(32),
         client_id=client_id,
+        prospect_id=prospect_id,
         dossier_id=dossier_id,
         peut_uploader_docs=peut_uploader_docs,
         peut_signer_mandat=peut_signer_mandat,
         peut_voir_suivi=peut_voir_suivi,
+        peut_transmettre_speedtest=peut_transmettre_speedtest,
+        peut_renseigner_demarches=peut_renseigner_demarches,
         date_creation=now.strftime(FORMAT_DATE),
         date_expiration=(now + duree).strftime(FORMAT_DATE),
         cree_par=cree_par,
@@ -65,6 +77,33 @@ async def generer_token(
     await db.commit()
     await db.refresh(token)
     return token
+
+
+async def generer_token_prospect_documents(
+    db: AsyncSession,
+    prospect_id: int,
+    *,
+    cree_par: str | None = None,
+    duree: timedelta = DUREE_VALIDITE_DOCUMENTS_PROSPECT,
+) -> TokenPublic:
+    """Génère un token pour qu'un prospect (pas encore client) transmette lui-même
+    sa facture/son test de débit — équivalent de
+    src/prospects_engine.py::creer_token_documents. Aucun dossier n'existe encore :
+    seul l'upload de documents est autorisé (les autres permissions sont désactivées,
+    ce qui suffit à exclure ce token des endpoints /suivi, /demarches, /speedtest sans
+    modifier leur code, cf. backend/routers/portail_public.py)."""
+    return await generer_token(
+        db,
+        prospect_id=prospect_id,
+        dossier_id=None,
+        cree_par=cree_par,
+        duree=duree,
+        peut_uploader_docs=True,
+        peut_signer_mandat=False,
+        peut_voir_suivi=False,
+        peut_transmettre_speedtest=False,
+        peut_renseigner_demarches=False,
+    )
 
 
 async def valider_token(

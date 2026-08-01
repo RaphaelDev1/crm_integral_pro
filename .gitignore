@@ -29,5 +29,10 @@ frontend-portail/node_modules
 frontend-portail/.next
 frontend-portail/.env.local
 
+# Frontend conseiller Next.js
+frontend-conseiller/node_modules
+frontend-conseiller/.next
+frontend-conseiller/.env.local
+
 # Fallback stockage local (dev uniquement, quand S3 n'est pas configuré)
 backend/_local_storage/

@@ -1,9 +1,23 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from backend.schemas.client import ClientOut
 from backend.schemas.dossier import DossierOut
 from backend.schemas.facture import FactureClientOut
 from backend.schemas.mandat_honoraires import MandatHonorairesOut, MandatOut
+
+
+class DocumentOut(BaseModel):
+    """Document KYC (CNI, justificatif de domicile, RIB...) transmis par le client via le
+    portail public — vue conseiller avec URL signée temporaire vers le fichier stocké."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    type_document: str | None = None
+    statut_kyc: str
+    motif_rejet: str | None = None
+    date_upload: str | None = None
+    url: str
 
 
 class ClientBriefingOut(BaseModel):
@@ -18,3 +32,4 @@ class ClientBriefingOut(BaseModel):
     nb_dossiers: int = 0
     mandat_representation: MandatOut | None = None
     mandat_honoraires: MandatHonorairesOut | None = None
+    documents: list[DocumentOut] = []

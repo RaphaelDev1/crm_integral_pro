@@ -12,6 +12,12 @@ FROM node:20-slim AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+# NEXT_PUBLIC_* est figé au build par Next.js (contrairement à BACKEND_URL,
+# lu au runtime côté serveur) — passer la vraie valeur via --build-arg en
+# prod, sans quoi Sentry reste silencieusement désactivé côté navigateur
+# (voir instrumentation-client.ts).
+ARG NEXT_PUBLIC_SENTRY_DSN=
+ENV NEXT_PUBLIC_SENTRY_DSN=$NEXT_PUBLIC_SENTRY_DSN
 RUN npm run build
 
 # `output: "standalone"` (next.config.js) : runtime minimal, sans node_modules complet.

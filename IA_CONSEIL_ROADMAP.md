@@ -1,7 +1,17 @@
 # IA Conseil — Roadmap & Plan d'Action Complet
 
 **Date :** 03/07/2026
-**Statut :** Document de travail — à cocher au fur et à mesure
+**Statut :** Document **historique** — phases 1 à 4 entièrement réalisées (voir cases ✅
+ci-dessous), à cocher au fur et à mesure pour la suite.
+
+> 📌 Depuis le 31/07/2026, un chantier **distinct** de ce document est en cours : la bascule de
+> l'outil **conseiller** hors Streamlit (`frontend-conseiller/`, Next.js) — à ne pas confondre avec
+> la section 5.2 ci-dessous, qui visait un **portail client** et a déjà été livrée séparément sous
+> `frontend-portail/` (Sprint 3 de `ROADMAP_EXECUTION.md`). Le socle (phase 04 sur 5 : auth JWT via
+> BFF, layout, navigation, proxy API) est **livré, committé et vérifié bout-en-bout** contre un vrai
+> backend/Postgres — reste le remplissage métier des 6 sections, section par section. Détail de ce
+> chantier : `IA.CONSEIL.MD` §「Frontend conseiller」et `IA_CONSEIL_UTILISATION.md` §12.7.
+
 ## PHASE 4 — Intelligence artificielle avancée (Mois 3-4)
 
 ### 4.1 — Chatbot client en façade

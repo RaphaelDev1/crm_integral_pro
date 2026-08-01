@@ -43,6 +43,14 @@ API_BASE_URL     = os.environ.get("CRM_API_URL", "http://127.0.0.1:8003")
 BACKEND_API_URL  = os.environ.get("BACKEND_API_URL", "http://127.0.0.1:8000")
 TIMEOUT      = float(os.environ.get("CRM_API_TIMEOUT", "3"))
 
+# Disjoncteur : quand une base (CRM_API_URL ou BACKEND_API_URL) ne répond pas,
+# on évite de la retenter à chaque appel réseau pendant ce délai — sinon une
+# seule page peut cumuler 10+ appels à 3s de timeout chacun (>30s d'attente)
+# tant que l'API correspondante n'est pas démarrée. Un appel qui réussit
+# efface immédiatement le disjoncteur (cf. _requete).
+_DISJONCTEUR_DELAI = float(os.environ.get("CRM_API_CIRCUIT_DELAI", "20"))
+_indisponible_depuis: dict[str, float] = {}
+
 
 class _ApiIndisponible(Exception):
     pass
@@ -84,12 +92,19 @@ def _signaler_repli(contexte: str):
 def _requete(methode: str, path: str, base: str = None, **kwargs):
     if not REQUESTS_OK:
         raise _ApiIndisponible("Bibliothèque 'requests' non installée.")
+    base = base or API_BASE_URL
+    import time
+    echec_depuis = _indisponible_depuis.get(base)
+    if echec_depuis is not None and (time.monotonic() - echec_depuis) < _DISJONCTEUR_DELAI:
+        raise _ApiIndisponible(f"{base} marqué indisponible (disjoncteur actif).")
     try:
-        reponse = requests.request(methode, f"{base or API_BASE_URL}{path}", headers=_headers(),
+        reponse = requests.request(methode, f"{base}{path}", headers=_headers(),
                                     timeout=TIMEOUT, **kwargs)
         reponse.raise_for_status()
+        _indisponible_depuis.pop(base, None)
         return reponse.json()
     except Exception as exc:
+        _indisponible_depuis[base] = time.monotonic()
         raise _ApiIndisponible(str(exc)) from exc
 
 
@@ -101,6 +116,62 @@ def _df_depuis_payload(payload) -> pd.DataFrame:
     if isinstance(payload, list):
         return pd.DataFrame(payload)
     return pd.DataFrame(payload["records"], columns=payload["columns"])
+
+
+# ------------------------------------------------------------------------------
+#  AUTH — login conseiller, bascule sur backend/ (Postgres). Remplace
+#  l'authentification locale SQLite (auth.py::authentifier_avec_limite,
+#  utilisé jusqu'ici par app.py) — voir jwt_auth.py pour la vérification des
+#  jetons côté crm_api.py, inchangée.
+# ------------------------------------------------------------------------------
+def login(username: str, password: str, ip: str = "") -> tuple[dict | None, str | None]:
+    """Authentifie un conseiller auprès de backend/ — POST /auth/login.
+
+    Même contrat que l'ancien auth.py::authentifier_avec_limite
+    (user_dict_ou_None, message_erreur_ou_None) pour un changement d'appel
+    minimal côté app.py. Contrairement aux autres fonctions de ce module, il
+    n'existe plus de repli SQLite : backend/ (Postgres) est désormais la
+    seule source de vérité pour les comptes utilisateurs.
+    """
+    if not REQUESTS_OK:
+        return None, "Bibliothèque 'requests' non installée."
+    if not username or not username.strip():
+        return None, "Identifiant ou mot de passe incorrect."
+
+    try:
+        reponse = requests.post(
+            f"{BACKEND_API_URL}/auth/login",
+            json={"username": username, "password": password},
+            timeout=TIMEOUT,
+        )
+    except Exception:
+        return None, ("Serveur d'authentification injoignable — le backend "
+                       "(uvicorn backend.main:app) doit être démarré.")
+
+    if reponse.status_code == 200:
+        donnees = reponse.json()
+        user = dict(donnees["user"])
+        user["access_token"] = donnees["access_token"]
+        user["refresh_token"] = donnees["refresh_token"]
+        return user, None
+
+    try:
+        detail = reponse.json().get("detail") or "Identifiant ou mot de passe incorrect."
+    except Exception:
+        detail = "Identifiant ou mot de passe incorrect."
+    return None, detail
+
+
+def changer_mot_de_passe(nouveau_mot_de_passe: str) -> tuple[bool, str | None]:
+    """Change le mot de passe de l'utilisateur actuellement connecté (jeton en
+    session) — POST /auth/change-password. Utilisé pour le changement forcé
+    au premier login (doit_changer_mdp). Renvoie (succes, message_erreur_ou_None)."""
+    try:
+        _requete("POST", "/auth/change-password", base=BACKEND_API_URL,
+                  json={"nouveau_mot_de_passe": nouveau_mot_de_passe})
+        return True, None
+    except _ApiIndisponible as exc:
+        return False, str(exc)
 
 
 # ------------------------------------------------------------------------------
@@ -351,7 +422,26 @@ def creer_dossier(client: dict, univers: str, fournisseur_cible: str = "",
         "univers": univers,
         "fournisseur_cible": fournisseur_cible or None,
         "economie_annuelle_estimee": economie_annuelle_estimee,
+        "est_prospect": entite == "prospect",
     })
+
+
+def marquer_dossiers_convertis_en_client(backend_client_id: int):
+    """À appeler une fois un prospect converti en client (cf. app.py::
+    finaliser_conversion_client) : bascule tous ses dossiers `est_prospect` à False,
+    pour que les documents KYC (CNI, RIB, justificatif de domicile) soient désormais
+    réclamés normalement (cf. dossier_engine.documents_requis_pour_univers). Best-effort —
+    une erreur ici ne doit pas bloquer la conversion elle-même."""
+    try:
+        dossiers = _requete("GET", "/dossiers", base=BACKEND_API_URL,
+                             params={"client_id": backend_client_id})
+    except _ApiIndisponible:
+        return
+    for d in dossiers:
+        try:
+            _requete("PUT", f"/dossiers/{d['id']}", base=BACKEND_API_URL, json={"est_prospect": False})
+        except _ApiIndisponible:
+            pass
 
 
 def lire_dossiers_client(client_id: int) -> list:

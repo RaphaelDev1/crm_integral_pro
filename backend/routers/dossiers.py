@@ -3,13 +3,15 @@
 # ==============================================================================
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.database import get_db
 from backend.core.security import get_current_user
+from backend.models.comparaison_offre import ComparaisonOffre
 from backend.models.dossier import Dossier
+from backend.models.parametre import Parametre
 from backend.models.user import User
 from backend.schemas.dossier import (
     DossierCreate,
@@ -38,6 +40,13 @@ async def lister_dossiers(
         query = query.where(Dossier.client_id == client_id)
     result = await db.execute(query)
     return result.scalars().all()
+
+
+@router.get("/stagnants", response_model=list[DossierOut])
+async def lister_dossiers_stagnants(db: AsyncSession = Depends(get_db)):
+    """Doit rester déclarée avant /{dossier_id} (typé int) pour ne pas être
+    masquée par cette route paramétrée."""
+    return await dossier_engine.dossiers_stagnants(db)
 
 
 @router.get("/{dossier_id}", response_model=DossierOut)
@@ -221,3 +230,61 @@ async def envoyer_lien_client(
         "sms_envoye": sms_envoye,
         "email_envoye": email_envoye,
     }
+
+
+@router.get("/{dossier_id}/pdf-restitution")
+async def obtenir_pdf_restitution(dossier_id: int, db: AsyncSession = Depends(get_db)):
+    """Génère à la volée le PDF de restitution « vendeur » (tableau
+    comparatif multi-offres + habillage configurable, voir
+    backend/services/restitution_pdf_engine.py) — outil conseiller, jamais
+    exposé côté portail client."""
+    from backend.models.client import Client
+    from backend.services import restitution_pdf_engine, storage_engine
+
+    dossier = await db.get(Dossier, dossier_id)
+    if dossier is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Dossier introuvable.")
+
+    client = await db.get(Client, dossier.client_id) if dossier.client_id else None
+    if client is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Client introuvable.")
+
+    comparaison = (
+        await db.execute(
+            select(ComparaisonOffre)
+            .where(ComparaisonOffre.client_id == client.id)
+            .order_by(ComparaisonOffre.id.desc())
+        )
+    ).scalars().first()
+    if comparaison is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "Aucune comparaison d'offres enregistrée pour ce client — créez-en une avant de générer le PDF.",
+        )
+
+    async def _parametre(cle: str) -> str | None:
+        p = await db.get(Parametre, cle)
+        return p.valeur if p else None
+
+    logo_bytes = None
+    cle_logo = await _parametre("pdf_logo_cle_stockage")
+    if cle_logo:
+        try:
+            logo_bytes = storage_engine.telecharger_document(cle_logo)
+        except storage_engine.StorageError:
+            logo_bytes = None
+
+    branding = {
+        "nom_societe": await _parametre("nom_societe"),
+        "couleur_primaire_hex": await _parametre("pdf_couleur_primaire_hex"),
+        "couleur_accent_hex": await _parametre("pdf_couleur_accent_hex"),
+        "logo_bytes": logo_bytes,
+    }
+
+    pdf_bytes = restitution_pdf_engine.generer_pdf_restitution_dossier(dossier, client, comparaison, branding)
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="restitution_dossier_{dossier_id}.pdf"'},
+    )

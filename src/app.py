@@ -70,10 +70,8 @@ from db import (
 )
 from auth import (
     hash_password, creer_utilisateur, creer_admin_par_defaut,
-    authentifier_utilisateur, authentifier_avec_limite,
     lire_utilisateurs, maj_utilisateur, supprimer_utilisateur,
 )
-import jwt_auth
 import secrets_config
 
 if secrets_config.sentry_dsn():
@@ -84,12 +82,15 @@ if secrets_config.sentry_dsn():
 # (crm_api.py, Roadmap 4.3) avec repli automatique et transparent sur un accès direct
 # à la base si l'API n'est pas démarrée — cf. api_client.py pour le détail du repli.
 from api_client import (
+    login as api_client_login,
+    changer_mot_de_passe,
     ajouter_prospect, lire_prospects, maj_prospect, supprimer_prospect,
     ajouter_client, lire_clients, maj_client, supprimer_client,
     ajouter_contrat, lire_contrats_client, maj_contrat, supprimer_contrat, lire_contrats_prospect,
     transferer_contrats_dossier_vers_client,
     ajouter_offre, lire_offres, maj_offre, supprimer_offre,
-    creer_dossier, lire_dossiers_client, envoyer_lien_client, obtenir_briefing_client, analyser_facture_client,
+    creer_dossier, lire_dossiers_client, marquer_dossiers_convertis_en_client,
+    envoyer_lien_client, obtenir_briefing_client, analyser_facture_client,
     obtenir_dossier, obtenir_timeline_dossier, ajouter_note_dossier,
     obtenir_mandat_honoraires, creer_mandat_honoraires, marquer_signe_honoraires,
     lister_demarches, creer_demarche, generer_demarche, envoyer_demarche,
@@ -98,8 +99,9 @@ from api_client import (
     comparer_offres, construire_recommandations,
 )
 from prospects_engine import (
-    widget_relance, recalculer_scores_prospects, indicateur_score, creer_token_documents,
+    widget_relance, recalculer_scores_prospects_si_necessaire, indicateur_score, creer_token_documents,
     expliquer_score_prospect, cout_reference_categorie, CATEGORIE_PAR_SERVICE_PRINCIPAL,
+    lire_documents_prospect, demande_documents_en_attente,
 )
 from notifications import envoyer_demande_documents_prospect
 from clients_engine import note_couverture_par_zone, meilleur_debit_par_zone, widget_relance_client
@@ -163,9 +165,9 @@ div[data-testid="stVerticalBlockBorderWrapper"] {
     border-radius: 12px !important;
     box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
 }
-/* Metrics : valeurs plus affirmées */
+/* Metrics : valeurs plus affirmées (couleur liée au thème actif, clair ou sombre) */
 div[data-testid="stMetric"] {
-    background: #F4F6F9;
+    background: var(--secondary-background-color);
     border-radius: 10px;
     padding: 0.6rem 0.9rem;
 }
@@ -173,11 +175,12 @@ div[data-testid="stMetricValue"] {
     font-size: 1.4rem;
 }
 /* Boutons : coins arrondis cohérents, transition douce au survol */
-.stButton > button, .stDownloadButton > button, .stFormSubmitButton > button {
+.stButton > button, .stDownloadButton > button, .stFormSubmitButton > button, .stLinkButton > a {
     border-radius: 8px;
     transition: filter 0.15s ease;
 }
-.stButton > button:hover, .stDownloadButton > button:hover, .stFormSubmitButton > button:hover {
+.stButton > button:hover, .stDownloadButton > button:hover, .stFormSubmitButton > button:hover,
+.stLinkButton > a:hover {
     filter: brightness(0.96);
 }
 /* Titres de section un peu plus espacés visuellement du contenu qui suit */
@@ -353,6 +356,7 @@ def _dialog_details_prospect(p):
     d2.write(f"**Ville :** {p.get('ville','')} ({p.get('code_postal','')})")
     st.write(f"**Statut :** {p.get('statut') or '—'}  ·  "
              f"**Prochaine relance :** {p.get('date_relance') or '—'}"
+             + (f"  ·  **Raison :** {p.get('motif_relance')}" if p.get('motif_relance') else "")
              + (f"  ·  **Fin d'engagement :** {p.get('date_fin_engagement')}"
                 if p.get('date_fin_engagement') else ""))
     if p.get("cree_par"):
@@ -445,6 +449,9 @@ def finaliser_conversion_client(pid: int, moi: str):
     d["cree_par"] = moi
     cid_nv = ajouter_client(d)
     transferer_contrats_dossier_vers_client(pid, cid_nv)
+    backend_id_prospect = p_row.get("backend_client_id")
+    if backend_id_prospect and not pd.isna(backend_id_prospect):
+        marquer_dossiers_convertis_en_client(int(backend_id_prospect))
     enregistrer_action("client", cid_nv, "Conversion automatique prospect→client",
                         f"Dossier signé — depuis prospect #{pid} "
                         f"({p_row.get('prenom','')} {p_row.get('nom','')})")
@@ -469,7 +476,7 @@ def _widget_etape_dossier(ctid: int, statut_actuel: str, key_prefix: str, on_tra
                 maj_contrat(int(ctid), "statut_contrat", prochaine_etape)
                 gere = on_transition(prochaine_etape) if on_transition else False
                 if not gere:
-                    st.success(f"Étape mise à jour : {prochaine_etape}."); st.rerun()
+                    st.toast(f"Étape mise à jour : {prochaine_etape}.", icon="✅"); st.rerun()
         else:
             st.success("✅ Contrat actif.")
     else:
@@ -484,7 +491,7 @@ def _widget_etape_dossier(ctid: int, statut_actuel: str, key_prefix: str, on_tra
             maj_contrat(int(ctid), "statut_contrat", nv_statut)
             gere = on_transition(nv_statut) if (on_transition and nv_statut == "Actif") else False
             if not gere:
-                st.success("Statut mis à jour."); st.rerun()
+                st.toast("Statut mis à jour.", icon="✅"); st.rerun()
 
 
 def _on_transition_dossier_prospect(nouveau_statut: str, pid: int, prenom_nom: str, moi: str) -> bool:
@@ -565,7 +572,7 @@ with st.sidebar:
         login_p = st.text_input("Mot de passe", type="password", key="sidebar_password")
         if st.button("Se connecter", type="primary", use_container_width=True):
             ip = str(st.context.ip_address or "")
-            user, err = authentifier_avec_limite(login_u, login_p, ip)
+            user, err = api_client_login(login_u, login_p, ip)
             if user:
                 st.session_state.auth_logged_in   = True
                 st.session_state.auth_user_id     = user["id"]
@@ -573,9 +580,10 @@ with st.sidebar:
                 st.session_state.auth_nom_complet = user["nom_complet"]
                 st.session_state.auth_role        = user["role"]
                 st.session_state.auth_doit_changer_mdp = bool(user.get("doit_changer_mdp"))
-                # Jeton JWT émis localement (sans appel réseau) pour authentifier les
-                # appels api_client.py vers l'API CRM interne au nom de cet utilisateur.
-                st.session_state.api_token        = jwt_auth.creer_token(user)
+                # Jeton JWT émis par backend/ (bascule de l'auth sur Postgres, cf.
+                # backend/routers/auth.py) — reste accepté par jwt_auth.py côté
+                # crm_api.py (même secret, mêmes champs sub/user_id/nom_complet/role).
+                st.session_state.api_token        = user["access_token"]
                 st.rerun()
             else:
                 st.error(err)
@@ -639,32 +647,126 @@ if st.session_state.auth_doit_changer_mdp:
         elif npwd1 != npwd2:
             st.error("Les deux mots de passe ne correspondent pas.")
         else:
-            maj_utilisateur(st.session_state.auth_user_id, "password_hash", hash_password(npwd1))
-            maj_utilisateur(st.session_state.auth_user_id, "doit_changer_mdp", 0)
-            st.session_state.auth_doit_changer_mdp = False
-            st.success("Mot de passe mis à jour.")
-            st.rerun()
+            # POST /auth/change-password sur backend/ (Postgres) — st.session_state.auth_user_id
+            # est désormais un id backend/, plus un id SQLite (cf. bascule du login sur
+            # backend/auth), donc maj_utilisateur(auth_user_id, ...) écrirait sur la mauvaise ligne.
+            succes, err = changer_mot_de_passe(npwd1)
+            if not succes:
+                st.error(err or "Échec de la mise à jour du mot de passe.")
+            else:
+                st.session_state.auth_doit_changer_mdp = False
+                st.toast("Mot de passe mis à jour.", icon="✅")
+                st.rerun()
     st.stop()
 
 menu = st.session_state.menu
 
 
-def _table_cliquable_vers_fiche(df_avec_id, cols_affiches, key, menu_cible, session_key_focus, id_col="id"):
+def _couleur_relance(date_parsee, today=None):
+    """Couleur de fond associée à une échéance de relance : rouge (retard de plus de 7
+    jours), orange (retard de 7 jours ou moins, jusqu'à aujourd'hui inclus), vert (à
+    venir — couvre notamment les relances anticipées avant fin d'engagement), ou None
+    (neutre/blanc) si aucune date n'est renseignée."""
+    if pd.isna(date_parsee):
+        return None
+    today = today or datetime.now().date()
+    delta = (today - date_parsee).days
+    if delta > 7:
+        return "rgba(239, 68, 68, 0.35)"
+    if delta >= 0:
+        return "rgba(245, 158, 11, 0.35)"
+    return "rgba(34, 197, 94, 0.30)"
+
+
+def _styler_relance(df_avec_date, cols_visibles, col_date="_date_parsed", today=None):
+    """Retourne un pandas Styler du sous-ensemble `cols_visibles` de `df_avec_date`,
+    avec une couleur de fond par ligne selon `_couleur_relance` — à passer directement
+    à st.dataframe (compatible avec on_select)."""
+    today = today or datetime.now().date()
+
+    def _style_ligne(row):
+        couleur = _couleur_relance(df_avec_date.loc[row.name, col_date], today)
+        return [f"background-color: {couleur}" if couleur else ""] * len(row)
+
+    return df_avec_date[cols_visibles].style.apply(_style_ligne, axis=1)
+
+
+def _table_cliquable_vers_fiche(df_avec_id, cols_affiches, key, menu_cible, session_key_focus,
+                                 id_col="id", col_date_couleur=None):
     """Affiche un tableau où cliquer sur une ligne ouvre la fiche détaillée
     correspondante (bascule vers `menu_cible`, en mémorisant l'id de la ligne
     cliquée — colonne `id_col` — dans `session_key_focus` pour que la fiche
-    présélectionne l'enregistrement)."""
+    présélectionne l'enregistrement). Si `col_date_couleur` est fourni (nom d'une
+    colonne date déjà parsée dans `df_avec_id`), les lignes sont colorées selon
+    l'échéance de relance (cf. _couleur_relance)."""
     if df_avec_id.empty:
         st.caption("Aucune")
         return
     cols_visibles = [c for c in cols_affiches if c != id_col]
-    evt = st.dataframe(df_avec_id[cols_visibles], hide_index=True, use_container_width=True,
+    donnees = (_styler_relance(df_avec_id, cols_visibles, col_date_couleur)
+               if col_date_couleur else df_avec_id[cols_visibles])
+    evt = st.dataframe(donnees, hide_index=True, use_container_width=True,
                         on_select="rerun", selection_mode="single-row", key=key)
     lignes = evt.selection.rows if evt and evt.selection else []
     if lignes:
         st.session_state[session_key_focus] = int(df_avec_id.iloc[lignes[0]][id_col])
         st.session_state.menu = menu_cible
         st.rerun()
+
+
+def _afficher_documents_transmis(briefing: dict | None, key_prefix: str):
+    """Documents KYC (CNI, justificatif de domicile, RIB...) transmis via le portail client,
+    plus le mandat de représentation signé s'il existe — depuis GET /clients/{id}/briefing
+    (backend/routers/clients.py::briefing_client). Rien n'est affiché si le backend est
+    indisponible ou si aucun document n'a encore été transmis."""
+    if not briefing:
+        return
+    documents = briefing.get("documents") or []
+    mandat_repr = briefing.get("mandat_representation") or {}
+    url_mandat_signe = mandat_repr.get("pdf_signe_url")
+    if not documents and not url_mandat_signe:
+        return
+    libelles_kyc = {"cni": "🪪 Pièce d'identité", "justificatif_domicile": "🏠 Justificatif de domicile",
+                     "rib": "🏦 RIB"}
+    libelles_statut = {"valide": "✅ Validé", "en_attente": "🕓 En attente",
+                        "rejete": "❌ Rejeté", "erreur": "⚠️ Erreur"}
+    with st.container(border=True):
+        st.markdown("##### 📎 Documents transmis")
+        for doc in documents:
+            dcol1, dcol2 = st.columns([3, 1])
+            libelle = libelles_kyc.get(doc.get("type_document"), doc.get("type_document") or "Document")
+            statut = libelles_statut.get(doc.get("statut_kyc"), doc.get("statut_kyc"))
+            dcol1.write(f"{libelle} — {statut}" + (f" · {doc['date_upload']}" if doc.get("date_upload") else ""))
+            dcol2.link_button("Ouvrir", doc["url"], key=f"{key_prefix}_doc_{doc['id']}")
+        if url_mandat_signe:
+            mcol1, mcol2 = st.columns([3, 1])
+            mcol1.write("📝 Mandat de représentation signé"
+                        + (f" · signé le {mandat_repr['date_signature']}" if mandat_repr.get("date_signature") else ""))
+            mcol2.link_button("Ouvrir", url_mandat_signe, key=f"{key_prefix}_mandat_signe")
+
+
+def _afficher_stepper_dossier(timeline: list[dict]):
+    """Affiche la timeline d'un dossier (« Où en est ce dossier ») sous forme de pastilles
+    colorées — vert (terminé), orange (étape en cours / en attente), blanc/gris (à venir) —
+    plutôt qu'un simple picto fixe, pour qu'on voie d'un coup d'œil où ça bloque."""
+    if not timeline:
+        return
+    couleurs_etape = {
+        "termine":  ("rgba(34, 197, 94, 0.30)",  "#15803d", "✅"),
+        "en_cours": ("rgba(245, 158, 11, 0.30)", "#b45309", "🕓"),
+        "a_venir":  ("rgba(148, 163, 184, 0.15)", "#64748b", "⚪"),
+    }
+    cols = st.columns(len(timeline))
+    for col, etape in zip(cols, timeline):
+        fond, texte, icone = couleurs_etape.get(etape["statut"], couleurs_etape["a_venir"])
+        with col:
+            st.markdown(
+                f'<div style="background:{fond}; color:{texte}; border-radius:8px; '
+                f'padding:0.5rem 0.4rem; text-align:center; font-size:0.85rem;">'
+                f'{icone}<br>{etape["label"]}'
+                + (f'<br><span style="font-size:0.75rem;">{etape["date"]}</span>' if etape.get("date") else "")
+                + '</div>',
+                unsafe_allow_html=True)
 
 
 def _champs_obligatoires_identite() -> dict:
@@ -784,7 +886,7 @@ if menu == "🧭 Nouveau diagnostic":
                     st.session_state.w_ener_fournisseur = cl_dispo.get("fournisseur_energie") or "Autre / Aucun"
                     st.session_state.w_ener_cout_elec   = safe_float(cl_dispo.get("cout_elec"))
                     st.session_state.w_ener_cout_gaz    = safe_float(cl_dispo.get("cout_gaz"))
-                    st.success(f"Fiche de {st.session_state.w_prenom} {st.session_state.w_nom} chargée.")
+                    st.toast(f"Fiche de {st.session_state.w_prenom} {st.session_state.w_nom} chargée.", icon="✅")
                     st.rerun()
 
         st.session_state.w_univers = st.multiselect(
@@ -1300,9 +1402,9 @@ if menu == "🧭 Nouveau diagnostic":
         elif not FPDF_OK:
             col1.caption("PDF indispo (pip install fpdf2)")
 
-        if col2.button("📧 Envoyer au client"):
+        if col2.button("📧 Envoyer au prospect"):
             if not st.session_state.w_email:
-                st.warning("Pas d'email client.")
+                st.warning("Pas d'email prospect.")
             elif total_eco <= 0:
                 st.warning("Aucune économie chiffrée à communiquer.")
             else:
@@ -1349,7 +1451,7 @@ elif menu == "📊 Tableau de bord":
     role = st.session_state.auth_role
     st.title(f"📊 Tableau de bord — {moi}")
 
-    recalculer_scores_prospects()
+    recalculer_scores_prospects_si_necessaire()
     df_p_all = lire_prospects()
     df_c_all = lire_clients()
 
@@ -1393,7 +1495,8 @@ elif menu == "📊 Tableau de bord":
         else:
             if "score" in relances.columns:
                 relances["priorité"] = relances["score"].apply(indicateur_score)
-            cols_rel = ["priorité","economie_estimee_an","nom","prenom","telephone","email"]
+            cols_rel = ["priorité","economie_estimee_an","nom","prenom","telephone","email",
+                        "date_relance","motif_relance"]
             cols_rel = [c for c in cols_rel if c in relances.columns]
 
             today_date = datetime.now().date()
@@ -1422,7 +1525,8 @@ elif menu == "📊 Tableau de bord":
                 st.markdown(f"#### {titre}")
                 _table_cliquable_vers_fiche(
                     groupe, ["id"] + cols_rel, key=f"tdb_relance_prospects_{cle_grp}",
-                    menu_cible="📇 Prospects", session_key_focus="_focus_prospect_id")
+                    menu_cible="📇 Prospects", session_key_focus="_focus_prospect_id",
+                    col_date_couleur="_date_parsed")
 
             # Actions rapides
             st.markdown("**Action rapide sur un prospect :**")
@@ -1431,7 +1535,7 @@ elif menu == "📊 Tableau de bord":
                 format_func=lambda i: f"{relances[relances['id']==i]['prenom'].values[0]} {relances[relances['id']==i]['nom'].values[0]} — {relances[relances['id']==i]['telephone'].values[0]}",
                 key="tdb_sel_prospect")
             if widget_relance(sel, "tdb_relance"):
-                st.success("Relance programmée."); st.rerun()
+                st.toast("Relance programmée.", icon="✅"); st.rerun()
             cb, cc = st.columns(2)
             if cb.button("📇 Voir la fiche", key="tdb_voir_fiche"):
                 st.session_state["_focus_prospect_id"] = int(sel)
@@ -1452,7 +1556,8 @@ elif menu == "📊 Tableau de bord":
             st.success("✅ Aucune relance client en attente.")
         else:
             cols_rel_c = ["prenom","nom","telephone","email","operateur_actuel",
-                          "cout_mensuel_actuel","economie_estimee_an","statut_relance","date_relance","cree_par"]
+                          "cout_mensuel_actuel","economie_estimee_an","statut_relance","date_relance",
+                          "motif_relance","cree_par"]
             cols_rel_c = [c for c in cols_rel_c if c in relances_c.columns]
 
             today_date_c = datetime.now().date()
@@ -1489,7 +1594,8 @@ elif menu == "📊 Tableau de bord":
                 if groupe.empty:
                     st.caption("Aucune")
                 else:
-                    st.dataframe(groupe[cols_rel_c], hide_index=True, use_container_width=True)
+                    st.dataframe(_styler_relance(groupe, cols_rel_c, "_date_parsed"),
+                                  hide_index=True, use_container_width=True)
 
             st.markdown("**Action rapide sur un client :**")
             ids_rel_c = relances_c["id"].tolist()
@@ -1497,7 +1603,7 @@ elif menu == "📊 Tableau de bord":
                 format_func=lambda i: f"{relances_c[relances_c['id']==i]['prenom'].values[0]} {relances_c[relances_c['id']==i]['nom'].values[0]} — {relances_c[relances_c['id']==i]['telephone'].values[0]}",
                 key="tdb_sel_client")
             if widget_relance_client(sel_c, "tdb_relance_client"):
-                st.success("Relance client programmée."); st.rerun()
+                st.toast("Relance client programmée.", icon="✅"); st.rerun()
 
     st.divider()
 
@@ -1627,7 +1733,7 @@ elif menu == "📊 Tableau de bord":
 # ==============================================================================
 elif menu == "📇 Prospects":
     st.title("📇 Prospects à relancer")
-    recalculer_scores_prospects()
+    recalculer_scores_prospects_si_necessaire()
     df = lire_prospects()
     if df.empty:
         st.info("Aucun prospect. Lancez un diagnostic puis « Enregistrer prospect ».")
@@ -1659,14 +1765,19 @@ elif menu == "📇 Prospects":
         if tri_score_actif and "economie_estimee_an" in dff.columns:
             dff = dff.sort_values("economie_estimee_an", ascending=False)
 
-        cols = ["priorité","score","ref","origine","prenom","nom","telephone","email","ville","univers_interesse",
-                "service_principal","operateur_actuel","cout_mensuel_actuel",
-                "satisfaction_reseau","veut_rester","economie_estimee_an","statut",
-                "cree_par","date_creation","date_relance"]
+        cols = ["priorité", "score", "date_relance", "ref", "univers_interesse",
+                "economie_estimee_an", "statut"]
         cols = [c for c in cols if c in dff.columns]
         st.dataframe(dff[cols], hide_index=True, use_container_width=True)
+        st.caption("Coordonnées, opérateur actuel, satisfaction réseau… détaillés dans la "
+                   "fiche prospect ci-dessous.")
 
-        excel_bytes = exporter_excel(dff[cols], nom_feuille="Prospects")
+        cols_export = ["priorité","score","ref","origine","prenom","nom","telephone","email","ville",
+                       "univers_interesse","service_principal","operateur_actuel","cout_mensuel_actuel",
+                       "satisfaction_reseau","veut_rester","economie_estimee_an","statut",
+                       "cree_par","date_creation","date_relance"]
+        cols_export = [c for c in cols_export if c in dff.columns]
+        excel_bytes = exporter_excel(dff[cols_export], nom_feuille="Prospects")
         if excel_bytes:
             st.download_button("📥 Exporter en Excel (.xlsx)", data=excel_bytes,
                                 file_name=f"prospects_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
@@ -1714,10 +1825,10 @@ elif menu == "📇 Prospects":
             with st.container(border=True):
                 st.markdown("##### 📄 Aperçu à partager")
                 b64_apercu = base64.b64encode(pdf_apercu).decode()
-                st.markdown(
-                    f'<iframe src="data:application/pdf;base64,{b64_apercu}" '
-                    f'width="100%" height="500"></iframe>',
-                    unsafe_allow_html=True)
+                st.link_button("🔍 Ouvrir le PDF (nouvel onglet)",
+                                f"data:application/pdf;base64,{b64_apercu}",
+                                type="primary", use_container_width=True,
+                                key=f"ouvrir_apercu_{choix}")
                 cd1, cd2, cd3 = st.columns(3)
                 cd1.download_button("📥 Télécharger", data=pdf_apercu,
                                      file_name=f"apercu_{p['prenom']}_{p['nom']}.pdf",
@@ -1751,6 +1862,8 @@ elif menu == "📇 Prospects":
                             (st.success if ok_sms else st.error)(
                                 "SMS envoyé." if ok_sms else
                                 "Échec de l'envoi du SMS (vérifiez la configuration).")
+
+        documents_p = lire_documents_prospect(int(choix))
 
         if p.get("offres_interet") and p.get("offres_interet") not in ("[]", None):
             st.markdown("##### ⭐ Offres qui intéressaient le client")
@@ -1786,12 +1899,38 @@ elif menu == "📇 Prospects":
 
         if peut_modifier():
             with st.container(border=True):
-                st.markdown("##### 📩 Demander facture + test de débit")
-                st.caption("Envoie un lien personnel par SMS et email pour que le prospect "
-                           "transmette lui-même sa facture et un test de débit — les champs "
-                           "opérateur/coût/débit de sa fiche se mettent à jour automatiquement, "
-                           "sans que vous ayez à les ressaisir.")
-                if st.button("📩 Envoyer la demande (SMS + email)", key=f"btn_demande_docs_{choix}"):
+                st.markdown("##### 📶🧾 Facture & test de débit")
+                st.caption("Les seuls documents utiles tant que ce contact est prospect — pas de "
+                           "CNI ni de justificatif de domicile à ce stade, ceux-ci ne seront "
+                           "demandés qu'une fois converti en client.")
+                types_doc = {"facture": "🧾 Facture", "speedtest": "📶 Test de débit"}
+                recus_par_type = {doc["type_document"]: doc for doc in documents_p}
+                demande_active = demande_documents_en_attente(int(choix))
+                cols_doc = st.columns(len(types_doc))
+                for col, (type_doc, libelle) in zip(cols_doc, types_doc.items()):
+                    doc_recu = recus_par_type.get(type_doc)
+                    if doc_recu:
+                        fond, texte, statut_txt = ("rgba(34, 197, 94, 0.30)", "#15803d",
+                                                    f"Reçu le {doc_recu['date_upload']}")
+                    elif demande_active:
+                        fond, texte, statut_txt = ("rgba(245, 158, 11, 0.30)", "#b45309",
+                                                    "Demandé — en attente")
+                    else:
+                        fond, texte, statut_txt = ("rgba(148, 163, 184, 0.15)", "#64748b",
+                                                    "Pas encore demandé")
+                    with col:
+                        st.markdown(
+                            f'<div style="background:{fond}; color:{texte}; border-radius:8px; '
+                            f'padding:0.5rem 0.4rem; text-align:center; font-size:0.85rem;">'
+                            f'{libelle}<br><span style="font-size:0.75rem;">{statut_txt}</span></div>',
+                            unsafe_allow_html=True)
+                        if doc_recu:
+                            st.download_button(
+                                "📥 Télécharger", data=doc_recu["contenu"], file_name=doc_recu["nom_fichier"],
+                                mime=doc_recu.get("mime") or "application/octet-stream",
+                                key=f"dl_doc_prospect_{doc_recu['id']}", use_container_width=True)
+                if st.button("📩 Envoyer / relancer la demande (SMS + email)",
+                             key=f"btn_demande_docs_{choix}", use_container_width=True):
                     tok = creer_token_documents(int(choix))
                     url = f"{secrets_config.portail_prospect_base_url()}/portail/{tok['token']}"
                     resultat = envoyer_demande_documents_prospect(p.to_dict(), url)
@@ -1823,7 +1962,7 @@ elif menu == "📇 Prospects":
                         for champ, val in valeurs.items():
                             v = safe_float(val) if champ == "cout_mensuel_actuel" else val
                             maj_prospect(int(choix), champ, v)
-                        st.success("Prospect mis à jour."); st.rerun()
+                        st.toast("Prospect mis à jour.", icon="✅"); st.rerun()
 
             with st.expander("⭐ Modifier les offres qui intéressent le client"):
                 st.caption("Cochez les offres que le client souhaite finalement retenir "
@@ -1903,7 +2042,7 @@ elif menu == "📇 Prospects":
                     total_eco_nv = economie_totale_groupee(nouvelles_offres)
                     maj_prospect(int(choix), "offres_interet", json.dumps(nouvelles_offres, ensure_ascii=False))
                     maj_prospect(int(choix), "economie_estimee_an", total_eco_nv)
-                    st.success(f"Offres mises à jour — économie recalculée : {total_eco_nv} €/an."); st.rerun()
+                    st.toast(f"Offres mises à jour — économie recalculée : {total_eco_nv} €/an.", icon="✅"); st.rerun()
 
             st.markdown("##### 📑 Autres contrats du prospect")
             st.caption("Services déjà souscrits ailleurs par le prospect (appris au fil des "
@@ -1937,7 +2076,7 @@ elif menu == "📇 Prospects":
                             maj_contrat(int(ctpid), "cout_mensuel", nv_cout_p)
                             maj_contrat(int(ctpid), "date_fin_engagement",
                                         nv_fin_eng_p.strftime("%d/%m/%Y") if nv_fin_eng_p else "")
-                            st.success("Contrat mis à jour."); st.rerun()
+                            st.toast("Contrat mis à jour.", icon="✅"); st.rerun()
                         if cyp.button("🗑️ Supprimer ce contrat", key=f"ctp_del_{choix}"):
                             supprimer_contrat(int(ctpid)); st.warning("Contrat supprimé."); st.rerun()
 
@@ -1961,35 +2100,34 @@ elif menu == "📇 Prospects":
                             "notes": "Contrat existant du prospect (appris par le conseiller)",
                             "cree_par": st.session_state.auth_nom_complet,
                         })
-                        st.success("Contrat ajouté."); st.rerun()
+                        st.toast("Contrat ajouté.", icon="✅"); st.rerun()
 
-            st.markdown("##### 📂 Dossier en cours")
-            st.caption("Tant que ce dossier n'est pas signé (statut « Actif »), le prospect "
-                       "reste ici — il devient client automatiquement dès la signature.")
-            dossiers_p = tous_contrats_p[tous_contrats_p["type_contrat"] == "dossier_cmr"] \
-                if not tous_contrats_p.empty and "type_contrat" in tous_contrats_p.columns \
-                else tous_contrats_p.iloc[0:0]
-            if dossiers_p.empty:
-                creer_dossier_prospect_ui(p, "fiche_dossier", st.session_state.auth_nom_complet)
-            else:
-                prenom_nom_p = f"{p.get('prenom','')} {p.get('nom','')}"
-                for _, ctd in dossiers_p.iterrows():
-                    with st.container(border=True):
-                        st.write(f"**{ctd['univers']} – {ctd['categorie']} : "
-                                 f"{ctd['nom_offre']} ({ctd['fournisseur']})** · "
-                                 f"{ctd['cout_mensuel']} €/mois")
-                        _widget_etape_dossier(
-                            int(ctd["id"]), ctd.get("statut_contrat"), f"fiche_dossier_{choix}",
-                            on_transition=lambda s, _pid=int(choix), _nom=prenom_nom_p:
-                                _on_transition_dossier_prospect(s, _pid, _nom, st.session_state.auth_nom_complet))
+            with st.expander("📂 Dossier en cours (avancement interne)", expanded=False):
+                st.caption("Devient client automatiquement dès que ce dossier passe à « Actif ».")
+                dossiers_p = tous_contrats_p[tous_contrats_p["type_contrat"] == "dossier_cmr"] \
+                    if not tous_contrats_p.empty and "type_contrat" in tous_contrats_p.columns \
+                    else tous_contrats_p.iloc[0:0]
+                if dossiers_p.empty:
+                    creer_dossier_prospect_ui(p, "fiche_dossier", st.session_state.auth_nom_complet)
+                else:
+                    prenom_nom_p = f"{p.get('prenom','')} {p.get('nom','')}"
+                    for _, ctd in dossiers_p.iterrows():
+                        with st.container(border=True):
+                            st.write(f"**{ctd['univers']} – {ctd['categorie']} : "
+                                     f"{ctd['nom_offre']} ({ctd['fournisseur']})** · "
+                                     f"{ctd['cout_mensuel']} €/mois")
+                            _widget_etape_dossier(
+                                int(ctd["id"]), ctd.get("statut_contrat"), f"fiche_dossier_{choix}",
+                                on_transition=lambda s, _pid=int(choix), _nom=prenom_nom_p:
+                                    _on_transition_dossier_prospect(s, _pid, _nom, st.session_state.auth_nom_complet))
 
-            st.divider()
             st.markdown("##### 📄 Où en est ce dossier")
             st.caption("Dossier de suivi, stepper, mandats (représentation + honoraires) et historique "
                        "horodaté — un seul endroit, plus besoin de croiser plusieurs écrans.")
             backend_id_prospect = p.get("backend_client_id")
             try:
-                dossiers_p_backend = lire_dossiers_client(int(backend_id_prospect) if backend_id_prospect else -1)
+                dossiers_p_backend = lire_dossiers_client(
+                    int(backend_id_prospect) if backend_id_prospect and not pd.isna(backend_id_prospect) else -1)
             except ApiIndisponible:
                 dossiers_p_backend = None
             if dossiers_p_backend is None:
@@ -2107,15 +2245,7 @@ elif menu == "📇 Prospects":
                         st.error(f"Backend indisponible : {exc}")
                         timeline_p, dossier_detail_p = [], None
 
-                    if timeline_p:
-                        icones_etape_p = {"termine": "✅", "en_cours": "🕓", "a_venir": "⚪"}
-                        cols_step_p = st.columns(len(timeline_p))
-                        for col, etape in zip(cols_step_p, timeline_p):
-                            with col:
-                                st.markdown(icones_etape_p.get(etape["statut"], "⚪"))
-                                st.caption(etape["label"])
-                                if etape.get("date"):
-                                    st.caption(etape["date"])
+                    _afficher_stepper_dossier(timeline_p)
 
                     try:
                         briefing_mandats_p = obtenir_briefing_client(int(backend_id_prospect)) \
@@ -2150,7 +2280,7 @@ elif menu == "📇 Prospects":
                                              key=f"btn_signer_hon_prospect_{dossier_id_sel_p}") and signataire_p:
                                     try:
                                         marquer_signe_honoraires(dossier_id_sel_p, signataire_p)
-                                        st.success("Mandat d'honoraires marqué signé.")
+                                        st.toast("Mandat d'honoraires marqué signé.", icon="✅")
                                         st.rerun()
                                     except ApiIndisponible as exc:
                                         st.error(f"Backend indisponible : {exc}")
@@ -2166,10 +2296,12 @@ elif menu == "📇 Prospects":
                                              key=f"btn_creer_hon_prospect_{dossier_id_sel_p}"):
                                     try:
                                         creer_mandat_honoraires(dossier_id_sel_p, montant_hon_p, taux_hon_p)
-                                        st.success("Mandat d'honoraires créé.")
+                                        st.toast("Mandat d'honoraires créé.", icon="✅")
                                         st.rerun()
                                     except ApiIndisponible as exc:
                                         st.error(f"Backend indisponible : {exc}")
+
+                    _afficher_documents_transmis(briefing_mandats_p, f"fiche_dossier_p_{choix}")
 
                     st.markdown("**📮 Démarches**")
                     try:
@@ -2184,15 +2316,18 @@ elif menu == "📇 Prospects":
                                          key=f"btn_creer_dem_prospect_{dossier_id_sel_p}_{requise_p['type_demarche']}"):
                                 try:
                                     creer_demarche(dossier_id_sel_p, requise_p["type_demarche"])
-                                    st.success("Démarche créée.")
+                                    st.toast("Démarche créée.", icon="✅")
                                     st.rerun()
                                 except ApiIndisponible as exc:
                                     st.error(f"Backend indisponible : {exc}")
 
                     for dem_p in demarches_info_p["existantes"]:
-                        with st.expander(f"{dem_p['type_demarche']} — statut : {dem_p['statut']}"):
-                            champs_vides_p = {c: v for c, v in (dem_p.get("donnees_requises") or {}).items()
-                                              if v.get("requis") and not v.get("valeur")}
+                        champs_vides_p = {c: v for c, v in (dem_p.get("donnees_requises") or {}).items()
+                                          if v.get("requis") and not v.get("valeur")}
+                        libelle_dem_p = f"{dem_p['type_demarche']} — statut : {dem_p['statut']}"
+                        if champs_vides_p:
+                            libelle_dem_p += f" · ⚠️ {len(champs_vides_p)} champ(s) manquant(s) (ex. numéro, RIO)"
+                        with st.expander(libelle_dem_p, expanded=bool(champs_vides_p)):
                             if champs_vides_p and peut_modifier():
                                 saisies_p = {c: st.text_input(v["label"], key=f"champ_dem_prospect_{dem_p['id']}_{c}")
                                              for c, v in champs_vides_p.items()}
@@ -2200,7 +2335,7 @@ elif menu == "📇 Prospects":
                                              key=f"btn_champs_dem_prospect_{dem_p['id']}") and all(saisies_p.values()):
                                     try:
                                         renseigner_champs_demarche(dem_p["id"], saisies_p)
-                                        st.success("Champs enregistrés.")
+                                        st.toast("Champs enregistrés.", icon="✅")
                                         st.rerun()
                                     except ApiIndisponible as exc:
                                         st.error(f"Backend indisponible : {exc}")
@@ -2255,13 +2390,13 @@ elif menu == "📇 Prospects":
                                 and note_txt_p:
                             try:
                                 ajouter_note_dossier(dossier_id_sel_p, note_txt_p)
-                                st.success("Note ajoutée.")
+                                st.toast("Note ajoutée.", icon="✅")
                                 st.rerun()
                             except ApiIndisponible as exc:
                                 st.error(f"Backend indisponible : {exc}")
 
             if widget_relance(choix, f"fiche_relance_{choix}"):
-                st.success("Relance programmée."); st.rerun()
+                st.toast("Relance programmée.", icon="✅"); st.rerun()
             with st.expander("🗑️ Supprimer ce prospect"):
                 st.warning(f"Cette action est irréversible. Le prospect **{p.get('prenom','')} {p.get('nom','')}** sera définitivement supprimé.")
                 if st.button("✅ Confirmer la suppression", key="confirm_del_prospect"):
@@ -2343,11 +2478,12 @@ elif menu == "👥 Clients & contrats":
 
             st.markdown("##### ⏰ Relance")
             st.write(f"**Statut :** {cl.get('statut_relance') or 'Aucune'}  ·  "
-                     f"**Prochaine relance :** {cl.get('date_relance') or '—'}")
+                     f"**Prochaine relance :** {cl.get('date_relance') or '—'}"
+                     + (f"  ·  **Raison :** {cl.get('motif_relance')}" if cl.get('motif_relance') else ""))
             if peut_modifier():
                 with st.expander("📅 Programmer / reprogrammer une relance"):
                     if widget_relance_client(int(choix), f"fiche_relance_client_{choix}"):
-                        st.success("Relance programmée."); st.rerun()
+                        st.toast("Relance programmée.", icon="✅"); st.rerun()
 
             if peut_modifier():
                 with st.expander("✏️ Modifier les informations du client"):
@@ -2363,7 +2499,7 @@ elif menu == "👥 Clients & contrats":
                             for champ, val in valeurs_c.items():
                                 v = float(val) if champ == "cout_mensuel_actuel" else val
                                 maj_client(int(choix), champ, v)
-                            st.success("Client mis à jour."); st.rerun()
+                            st.toast("Client mis à jour.", icon="✅"); st.rerun()
 
             st.markdown("##### 📑 Contrats du client")
             contrats = lire_contrats_client(int(choix))
@@ -2406,7 +2542,7 @@ elif menu == "👥 Clients & contrats":
                             maj_contrat(int(ctid), "cout_mensuel",   nv_cout)
                             maj_contrat(int(ctid), "date_fin_engagement",
                                         nv_fin_eng.strftime("%d/%m/%Y") if nv_fin_eng else "")
-                            st.success("Contrat mis à jour."); st.rerun()
+                            st.toast("Contrat mis à jour.", icon="✅"); st.rerun()
                         if cy.button("🗑️ Supprimer ce contrat"):
                             supprimer_contrat(int(ctid)); st.warning("Contrat supprimé."); st.rerun()
 
@@ -2436,7 +2572,7 @@ elif menu == "👥 Clients & contrats":
                             "notes": "Ajout manuel",
                             "cree_par": st.session_state.auth_nom_complet,
                         })
-                        st.success("Contrat ajouté."); st.rerun()
+                        st.toast("Contrat ajouté.", icon="✅"); st.rerun()
 
                 with st.expander("🗑️ Supprimer ce client"):
                     st.error(f"⚠️ Supprime **{cl.get('prenom','')} {cl.get('nom','')}** ET tous ses contrats. Irréversible.")
@@ -2568,15 +2704,7 @@ elif menu == "👥 Clients & contrats":
                         st.error(f"Backend indisponible : {exc}")
                         timeline, dossier_detail = [], None
 
-                    if timeline:
-                        icones_etape = {"termine": "✅", "en_cours": "🕓", "a_venir": "⚪"}
-                        cols_step = st.columns(len(timeline))
-                        for col, etape in zip(cols_step, timeline):
-                            with col:
-                                st.markdown(icones_etape.get(etape["statut"], "⚪"))
-                                st.caption(etape["label"])
-                                if etape.get("date"):
-                                    st.caption(etape["date"])
+                    _afficher_stepper_dossier(timeline)
 
                     try:
                         briefing_mandats = obtenir_briefing_client(int(choix))
@@ -2609,7 +2737,7 @@ elif menu == "👥 Clients & contrats":
                                              key=f"btn_signer_hon_{dossier_id_sel}") and signataire:
                                     try:
                                         marquer_signe_honoraires(dossier_id_sel, signataire)
-                                        st.success("Mandat d'honoraires marqué signé.")
+                                        st.toast("Mandat d'honoraires marqué signé.", icon="✅")
                                         st.rerun()
                                     except ApiIndisponible as exc:
                                         st.error(f"Backend indisponible : {exc}")
@@ -2624,10 +2752,12 @@ elif menu == "👥 Clients & contrats":
                                              key=f"btn_creer_hon_{dossier_id_sel}"):
                                     try:
                                         creer_mandat_honoraires(dossier_id_sel, montant_hon, taux_hon)
-                                        st.success("Mandat d'honoraires créé.")
+                                        st.toast("Mandat d'honoraires créé.", icon="✅")
                                         st.rerun()
                                     except ApiIndisponible as exc:
                                         st.error(f"Backend indisponible : {exc}")
+
+                    _afficher_documents_transmis(briefing_mandats, f"fiche_dossier_c_{choix}")
 
                     st.markdown("**📮 Démarches**")
                     try:
@@ -2642,15 +2772,18 @@ elif menu == "👥 Clients & contrats":
                                          key=f"btn_creer_dem_{dossier_id_sel}_{requise['type_demarche']}"):
                                 try:
                                     creer_demarche(dossier_id_sel, requise["type_demarche"])
-                                    st.success("Démarche créée.")
+                                    st.toast("Démarche créée.", icon="✅")
                                     st.rerun()
                                 except ApiIndisponible as exc:
                                     st.error(f"Backend indisponible : {exc}")
 
                     for dem in demarches_info["existantes"]:
-                        with st.expander(f"{dem['type_demarche']} — statut : {dem['statut']}"):
-                            champs_vides = {c: v for c, v in (dem.get("donnees_requises") or {}).items()
-                                            if v.get("requis") and not v.get("valeur")}
+                        champs_vides = {c: v for c, v in (dem.get("donnees_requises") or {}).items()
+                                        if v.get("requis") and not v.get("valeur")}
+                        libelle_dem = f"{dem['type_demarche']} — statut : {dem['statut']}"
+                        if champs_vides:
+                            libelle_dem += f" · ⚠️ {len(champs_vides)} champ(s) manquant(s) (ex. numéro, RIO)"
+                        with st.expander(libelle_dem, expanded=bool(champs_vides)):
                             if champs_vides and peut_modifier():
                                 saisies = {c: st.text_input(v["label"], key=f"champ_dem_{dem['id']}_{c}")
                                            for c, v in champs_vides.items()}
@@ -2658,7 +2791,7 @@ elif menu == "👥 Clients & contrats":
                                              key=f"btn_champs_dem_{dem['id']}") and all(saisies.values()):
                                     try:
                                         renseigner_champs_demarche(dem["id"], saisies)
-                                        st.success("Champs enregistrés.")
+                                        st.toast("Champs enregistrés.", icon="✅")
                                         st.rerun()
                                     except ApiIndisponible as exc:
                                         st.error(f"Backend indisponible : {exc}")
@@ -2712,7 +2845,7 @@ elif menu == "👥 Clients & contrats":
                         if st.button("Ajouter la note", key=f"btn_note_dos_{dossier_id_sel}") and note_txt:
                             try:
                                 ajouter_note_dossier(dossier_id_sel, note_txt)
-                                st.success("Note ajoutée.")
+                                st.toast("Note ajoutée.", icon="✅")
                                 st.rerun()
                             except ApiIndisponible as exc:
                                 st.error(f"Backend indisponible : {exc}")
@@ -2732,7 +2865,7 @@ elif menu == "👥 Clients & contrats":
                             enregistrer_action(
                                 "client", int(choix), "Facture analysée",
                                 f"{resultat_f.get('operateur','—')} — {resultat_f.get('prix_ttc',0)} €/mois TTC")
-                            st.success("Facture analysée et enregistrée.")
+                            st.toast("Facture analysée et enregistrée.", icon="✅")
                             st.session_state["briefing_client_id"] = int(choix)
                             st.rerun()
                         except ApiIndisponible as exc:
@@ -2833,7 +2966,7 @@ elif menu == "🧾 Facturation":
                         "montant_honoraires": montant,   "statut": "Devis envoyé",
                         "cree_par": st.session_state.auth_nom_complet,
                     })
-                    st.success(f"Devis créé — dossier #{fid}."); st.rerun()
+                    st.toast(f"Devis créé — dossier #{fid}.", icon="✅"); st.rerun()
 
     st.divider()
     st.markdown("#### 📂 Fiche devis/facture")
@@ -2877,7 +3010,7 @@ elif menu == "🧾 Facturation":
                             "Terminé": "🏁 Marquer terminé"}
                 if st.button(labels.get(prochain, f"➡️ {prochain}"), key=f"statut_next_{fid_choix}"):
                     changer_statut(int(fid_choix), prochain)
-                    st.success(f"Statut mis à jour : {prochain}."); st.rerun()
+                    st.toast(f"Statut mis à jour : {prochain}.", icon="✅"); st.rerun()
             else:
                 st.success("✅ Dossier terminé.")
 
@@ -2892,7 +3025,7 @@ elif menu == "🧾 Facturation":
                     date_sign = st.date_input("Date de signature", value=datetime.now().date())
                     if st.form_submit_button("✅ Marquer le mandat comme signé"):
                         marquer_mandat_signe(int(fid_choix), nom_sign, date_sign.strftime("%d/%m/%Y"))
-                        st.success("Mandat marqué comme signé."); st.rerun()
+                        st.toast("Mandat marqué comme signé.", icon="✅"); st.rerun()
 
         if f.get("statut") in ("Payé", "Démarches en cours", "Terminé"):
             st.markdown("##### 📄 Restitution complète (post-paiement)")
@@ -2926,6 +3059,13 @@ elif menu == "🛠️ Admin":
     # ---- UTILISATEURS (NOUVEAU Étape 1) ----
     with tab_users:
         st.markdown("### Gestion des utilisateurs")
+        st.warning(
+            "⚠️ Ce panneau gère encore la table `utilisateurs` SQLite locale. Depuis la "
+            "bascule du login sur backend/ (Postgres), ce n'est plus elle qui contrôle "
+            "l'accès réel à l'application : créer, désactiver ou supprimer un compte ici "
+            "n'a aucun effet sur la connexion. Une API d'administration des utilisateurs "
+            "côté backend/ reste à construire — voir le suivi \"01 Socle transverse\"."
+        )
         df_u = lire_utilisateurs()
         if not df_u.empty:
             st.dataframe(df_u, hide_index=True, use_container_width=True)
@@ -2983,7 +3123,7 @@ elif menu == "🛠️ Admin":
                         else:
                             maj_utilisateur(int(uid_sel), "password_hash", hash_password(nv_pwd))
                             st.success("Mot de passe mis à jour.")
-                    st.success("Compte mis à jour."); st.rerun()
+                    st.toast("Compte mis à jour.", icon="✅"); st.rerun()
 
             if st.button("🗑️ Supprimer ce compte", key="btn_del_user"):
                 if uid_sel == st.session_state.auth_user_id:
@@ -3017,7 +3157,7 @@ elif menu == "🛠️ Admin":
                     c1.warning("⚠️ Prix inhabituellement élevé pour cet univers — vérifiez qu'il n'y a "
                                "pas une erreur de saisie avant d'enregistrer.")
                 if c1.button("💾 MàJ prix"):
-                    maj_offre(oid, "prix_mensuel", nv_prix); st.success("OK."); st.rerun()
+                    maj_offre(oid, "prix_mensuel", nv_prix); st.toast("OK.", icon="✅"); st.rerun()
                 if c2.button("🔁 Activer/Désactiver"):
                     etat = int(df_o[df_o["id"]==oid]["actif"].values[0])
                     maj_offre(oid, "actif", 0 if etat else 1); st.rerun()
@@ -3034,7 +3174,7 @@ elif menu == "🛠️ Admin":
                 if st.button("💾 MàJ lien affilié", key="btn_maj_lien_affilie"):
                     maj_offre(oid, "url_souscription", nv_url)
                     maj_offre(oid, "code_affiliation", nv_code)
-                    st.success("Lien affilié mis à jour."); st.rerun()
+                    st.toast("Lien affilié mis à jour.", icon="✅"); st.rerun()
 
         # -- Sources à ingérer (catalogue auto-alimenté) --
         with sous_cat_sources:
@@ -3062,7 +3202,7 @@ elif menu == "🛠️ Admin":
                         "univers": cat_u, "categorie": cat_cat, "fournisseur": cat_fourn,
                         "url": cat_url, "type_source": cat_type, "methode": cat_methode,
                     })
-                    st.success("Source ajoutée."); st.rerun()
+                    st.toast("Source ajoutée.", icon="✅"); st.rerun()
                 else:
                     st.warning("L'URL est obligatoire.")
 
@@ -3088,8 +3228,9 @@ elif menu == "🛠️ Admin":
                 if ccs1.button("🔎 Ingérer maintenant", type="primary", key="btn_ingerer_source"):
                     with st.spinner("Récupération et extraction en cours…"):
                         resume = ingerer_source(int(cat_sid), api_key=secrets_config.anthropic_api_key())
-                    st.success(f"Détectées : {resume['detectees']} · Changements : {resume['changements']} · "
-                               f"À vérifier : {resume['a_verifier']} · Doublons ignorés : {resume['doublons']}")
+                    st.toast(f"Détectées : {resume['detectees']} · Changements : {resume['changements']} · "
+                             f"À vérifier : {resume['a_verifier']} · Doublons ignorés : {resume['doublons']}",
+                             icon="✅")
                     st.rerun()
                 if ccs2.button("🔁 Activer/Désactiver", key="btn_toggle_source_catalogue"):
                     etat = int(df_cat_src[df_cat_src["id"] == cat_sid]["actif"].values[0])
@@ -3179,7 +3320,7 @@ elif menu == "🛠️ Admin":
         st.caption("Ajoute un jeu d'offres types pour tester immédiatement. Vous pourrez tout modifier.")
         if st.button("⚡ Charger les offres de démo", type="primary"):
             inserer_offres_demo()
-            st.success("Catalogue de démonstration chargé !"); st.rerun()
+            st.toast("Catalogue de démonstration chargé !", icon="✅"); st.rerun()
 
     # ---- EMAIL ----
     with tab_mail:
@@ -3250,7 +3391,7 @@ elif menu == "🛠️ Admin":
                                   value=taux_actuel, step=1.0, key="admin_taux_honoraires")
         if st.button("💾 Enregistrer le taux", key="btn_taux_save"):
             ecrire_parametre("taux_honoraires_defaut", nv_taux)
-            st.success("Taux par défaut mis à jour."); st.rerun()
+            st.toast("Taux par défaut mis à jour.", icon="✅"); st.rerun()
 
     # ---- OCR VISION (NOUVEAU) ----
     with tab_ocr:
@@ -3324,7 +3465,7 @@ elif menu == "🛠️ Admin":
                         "nom_offre": v_nom, "offre_id": offre_id_liee,
                         "url": v_url, "selecteur_prix": v_sel,
                     })
-                    st.success("Source ajoutée."); st.rerun()
+                    st.toast("Source ajoutée.", icon="✅"); st.rerun()
                 else:
                     st.warning("Fournisseur, URL et sélecteur CSS sont obligatoires.")
 
@@ -3346,7 +3487,7 @@ elif menu == "🛠️ Admin":
                         st.warning(f"{len(nouvelles)} changement(s) de prix détecté(s) — "
                                    f"voir l'onglet « Alertes en attente ».")
                     else:
-                        st.success("Vérification terminée — aucun changement détecté.")
+                        st.toast("Vérification terminée — aucun changement détecté.", icon="✅")
                     st.rerun()
 
                 sid_sel = st.selectbox("Source à gérer", df_src["id"].tolist(),

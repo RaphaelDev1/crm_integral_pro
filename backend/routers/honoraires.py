@@ -22,6 +22,18 @@ from backend.schemas.mandat_honoraires import (
 
 router = APIRouter(prefix="/dossiers", tags=["honoraires"], dependencies=[Depends(get_current_user)])
 
+# Prefix distinct de /dossiers exprès : évite toute collision d'ordre de route
+# avec GET /dossiers/{dossier_id} (voir routers/dossiers.py) pour lister tous
+# les mandats d'honoraires (aucune vue globale n'existait jusqu'ici, seulement
+# un mandat par dossier).
+router_liste = APIRouter(prefix="/honoraires", tags=["honoraires"], dependencies=[Depends(get_current_user)])
+
+
+@router_liste.get("", response_model=list[MandatHonorairesOut])
+async def lister_mandats_honoraires(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(MandatHonoraires).order_by(MandatHonoraires.id.desc()))
+    return result.scalars().all()
+
 
 @router.get("/{dossier_id}/mandat-honoraires", response_model=MandatHonorairesOut | None)
 async def obtenir_mandat_honoraires(dossier_id: int, db: AsyncSession = Depends(get_db)):

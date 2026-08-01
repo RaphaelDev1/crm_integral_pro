@@ -19,13 +19,17 @@ from backend.models.document import Document
 from backend.models.dossier import Dossier
 from backend.models.mandat import Mandat
 from backend.services import (
+    alertes_offres_engine,
+    catalogue_engine,
     demarches_engine,
     dossier_engine,
     dossier_notifications,
     kyc_engine,
     lre_engine,
+    notification_engine,
     signature_engine,
     storage_engine,
+    veille_engine,
 )
 from backend.workers.celery_app import celery_app
 
@@ -306,3 +310,73 @@ def verifier_accuses_lre_en_attente() -> int:
     pas de webhook aussi fiable que Yousign pour ce cas d'usage — le polling
     régulier est le repli le plus sûr par défaut."""
     return _run(_verifier_accuses_lre_en_attente())
+
+
+async def _lancer_veille_periodique() -> int:
+    async with AsyncSessionLocal() as db:
+        alertes = await veille_engine.lancer_veille(db)
+        if alertes:
+            await notification_engine.notifier_changement_prix(db, alertes)
+        return len(alertes)
+
+
+@celery_app.task(name="backend.workers.tasks.lancer_veille_periodique")
+def lancer_veille_periodique() -> int:
+    """Tâche périodique (voir `celery_app.beat_schedule`) : relève les prix
+    des sources actives (scraping Playwright), remplace le script cron/schtasks
+    externe src/veille_prix_engine.py. Ne modifie jamais le catalogue
+    directement — une alerte 'en_attente' est créée par changement détecté,
+    à valider dans Admin > Veille prix."""
+    return _run(_lancer_veille_periodique())
+
+
+async def _ingerer_catalogue_periodique() -> dict:
+    async with AsyncSessionLocal() as db:
+        resume = await catalogue_engine.ingerer_toutes_sources_actives(db)
+        await notification_engine.notifier_nouvelles_offres_staging(db, resume)
+        return resume
+
+
+@celery_app.task(name="backend.workers.tasks.ingerer_catalogue_periodique")
+def ingerer_catalogue_periodique() -> dict:
+    """Tâche périodique (voir `celery_app.beat_schedule`) : ingère les sources
+    catalogue actives (scraping + extraction LLM), remplace le script cron/
+    schtasks externe src/catalogue_engine.py. Ne modifie jamais le catalogue
+    directement — chaque offre détectée attend une validation admin dans
+    Admin > Catalogue > Offres détectées."""
+    return _run(_ingerer_catalogue_periodique())
+
+
+async def _detecter_offres_moins_cheres_periodique() -> int:
+    async with AsyncSessionLocal() as db:
+        alertes = await alertes_offres_engine.detecter_offres_moins_cheres(db)
+        if alertes:
+            await notification_engine.notifier_offres_moins_cheres(db, alertes)
+        return len(alertes)
+
+
+@celery_app.task(name="backend.workers.tasks.detecter_offres_moins_cheres_periodique")
+def detecter_offres_moins_cheres_periodique() -> int:
+    """Tâche périodique (voir `celery_app.beat_schedule`) : compare le contrat
+    actif de chaque client au catalogue d'offres, crée une alerte 'en_attente'
+    par opportunité d'économie détectée au-delà du seuil configuré — à valider
+    dans Admin > Alertes offres avant tout envoi au client."""
+    return _run(_detecter_offres_moins_cheres_periodique())
+
+
+async def _envoyer_digest_quotidien() -> dict:
+    async with AsyncSessionLocal() as db:
+        # Le résumé hebdomadaire (comptage prospects/clients, économies
+        # totales) est ajouté au digest du lundi uniquement, plutôt que de
+        # dupliquer une deuxième entrée de planification comme le faisait
+        # le script cron d'origine (0 8 * * * + 0 8 * * 1).
+        resume_hebdo = datetime.now().weekday() == 0
+        return await notification_engine.envoyer_digest_quotidien(db, resume_hebdo=resume_hebdo)
+
+
+@celery_app.task(name="backend.workers.tasks.envoyer_digest_quotidien")
+def envoyer_digest_quotidien() -> dict:
+    """Tâche périodique (voir `celery_app.beat_schedule`) : digest matinal
+    admin (relances du jour + fins d'engagement + résumé hebdo le lundi),
+    remplace le script cron/schtasks externe src/notifications.py."""
+    return _run(_envoyer_digest_quotidien())

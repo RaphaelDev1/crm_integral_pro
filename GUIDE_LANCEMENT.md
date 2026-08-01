@@ -1,9 +1,10 @@
 # Guide de lancement — IA Conseil
 
 > Référence opérationnelle : comment configurer, lancer, tester et vérifier chaque brique du projet
-> (Streamlit conseiller, backend FastAPI, Celery, portail client Next.js, Docker).
-> Écrit après audit du code réel le 2026-07-24 — voir `SETUP_STATUS.md` et `ROADMAP_EXECUTION.md`
-> pour l'avancement fonctionnel détaillé par sprint/chantier.
+> (Streamlit conseiller — en cours d'extinction, voir `frontend-conseiller/LANCEMENT.md` pour son
+> remplaçant Next.js —, backend FastAPI, Celery, portail client Next.js, Docker).
+> Écrit après audit du code réel le 2026-07-24, mis à jour le 2026-08-01 — voir `SETUP_STATUS.md` et
+> `ROADMAP_EXECUTION.md` pour l'avancement fonctionnel détaillé par sprint/chantier.
 
 ---
 
@@ -31,11 +32,14 @@
 
 ```powershell
 python -m alembic upgrade head
-python -m alembic current   # doit afficher "0008 (head)"
+python -m alembic current   # doit afficher "0020 (head)"
 ```
-Sans cette étape, les tables des derniers chantiers (`demarches`, `tokens_publics`) n'existent pas sur Postgres.
+Sans cette étape, les tables des derniers chantiers (`demarches`, `tokens_publics`, `veille`,
+`catalogue_sources`/`offres_staging`, etc.) n'existent pas sur Postgres.
 
-> ✅ Appliqué le 2026-07-24 sur le Neon du projet — `alembic current` renvoie bien `0008 (head)`.
+> ⚠️ Migrations 0009 à 0020 ajoutées le 2026-08-01 (conversion prospect, veille prix, documents
+> prospect, paramètres, login_tentatives, speedtest, alertes offres, historique actions, catalogue)
+> — pas encore appliquées/vérifiées sur le Neon du projet à cette date, à faire avant tout test.
 
 ## 2. Lancer chaque brique en local (sans Docker)
 
@@ -84,10 +88,10 @@ Vérif : `http://localhost:5555` (Flower) doit montrer le worker actif et les t�
 
 ```powershell
 cd src
-python -m pytest -q          # 194 tests attendus verts
+python -m pytest -q          # 203 tests attendus verts
 
 cd ..
-python -m pytest backend/tests -q   # 84 tests attendus verts
+python -m pytest backend/tests -q   # 221 tests attendus verts
 
 ruff check backend           # lint (scope backend/ uniquement, voir pyproject.toml)
 ```

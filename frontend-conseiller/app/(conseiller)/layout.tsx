@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 
+import { CommandPalette } from "@/components/layout/CommandPalette";
 import { Header } from "@/components/layout/Header";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { useAuth } from "@/contexts/AuthContext";
@@ -31,6 +32,7 @@ export default function ConseillerLayout({ children }: { children: React.ReactNo
         <Header />
         <main className="flex-1 p-6">{children}</main>
       </div>
+      <CommandPalette />
     </div>
   );
 }
