@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { apiFetch } from "@/lib/api";
+import { apiFetch, downloadBackendFile } from "@/lib/api";
 import type { MandatHonoraires } from "@/lib/types";
 
 export function useMandatHonoraires(dossierId: number | undefined) {
@@ -20,6 +20,16 @@ export function useMandatsHonorairesListe() {
   });
 }
 
+// Taux par défaut réglable par l'admin (panneau Admin > Paramètres > Réglages,
+// clé "taux_honoraires_defaut") — voir backend/routers/honoraires.py.
+export function useTauxHonorairesDefaut() {
+  return useQuery({
+    queryKey: ["honoraires", "taux-defaut"],
+    queryFn: () => apiFetch<{ taux: number }>("/honoraires/taux-defaut"),
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
 export function useCreerMandatHonoraires() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -33,6 +43,29 @@ export function useCreerMandatHonoraires() {
       queryClient.invalidateQueries({ queryKey: ["honoraires", "detail", variables.dossierId] });
       queryClient.invalidateQueries({ queryKey: ["honoraires", "list"] });
     },
+  });
+}
+
+export function useTelechargerMandatHonoraires() {
+  return useMutation({
+    mutationFn: (dossierId: number) =>
+      downloadBackendFile(`/dossiers/${dossierId}/mandat-honoraires/pdf`, `mandat_honoraires_dossier_${dossierId}.pdf`),
+  });
+}
+
+interface EnvoiMandatHonorairesResultat {
+  email_envoye: boolean;
+  sms_envoye: boolean;
+}
+
+export function useEnvoyerMandatHonoraires() {
+  return useMutation({
+    mutationFn: ({ dossierId, canal }: { dossierId: number; canal: "email" | "sms" }) =>
+      apiFetch<EnvoiMandatHonorairesResultat>(`/dossiers/${dossierId}/mandat-honoraires/envoyer`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ canal }),
+      }),
   });
 }
 

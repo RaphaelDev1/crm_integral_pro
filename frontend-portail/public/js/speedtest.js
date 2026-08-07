@@ -319,7 +319,13 @@ Speedtest.prototype = {
    */
   start: function() {
     if (this._state == 3) throw "Test already running";
-    this.worker = new Worker("speedtest_worker.js?r=" + Math.random());
+    // Chemin absolu (pas relatif à la page courante) : new Worker() résout les
+    // URL relatives par rapport à la page qui l'appelle, pas au fichier
+    // speedtest.js — sur une route comme /dossier/{token}/speedtest, une URL
+    // relative pointait vers un speedtest_worker.js inexistant à cet endroit
+    // (404 silencieux : le Worker ne poste alors jamais aucun message, le test
+    // reste bloqué sur "en cours" sans jamais appeler /speedtest-backend/*).
+    this.worker = new Worker("/js/speedtest_worker.js?r=" + Math.random());
     this.worker.onmessage = function(e) {
       if (e.data === this._prevData) return;
       else this._prevData = e.data;

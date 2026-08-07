@@ -35,7 +35,7 @@ from backend.schemas.portail_public import (
     TokenPublicContexte,
     UploadResultOut,
 )
-from backend.services import demarches_engine, dossier_engine, storage_engine, token_engine
+from backend.services import demarches_engine, dossier_engine, notification_engine, storage_engine, token_engine
 from backend.services.kyc_engine import KycError, valider_document
 
 router = APIRouter(prefix="/portail", tags=["portail_public"])
@@ -53,6 +53,19 @@ async def _resoudre_token(
     return token_obj
 
 
+DOCUMENTS_PROSPECT = (
+    {"type_document": "facture", "label_affiche": "Facture actuelle (opérateur / fournisseur)"},
+)
+# Le test de débit n'est volontairement PAS dans cette liste : le proposer ici,
+# à côté de la facture, sur la page générique "Envoyer mes documents", faisait
+# considérer le speedtest comme fait dès l'envoi des documents — le client
+# n'avait alors plus jamais l'occasion de cliquer sur "Tester mon débit" (le
+# vrai test en direct). Le speedtest garde son propre parcours dédié (section
+# "Votre débit internet" + page /speedtest, qui offre aussi un repli par
+# upload de capture via le même type_document "speedtest", voir
+# soumettre_speedtest ci-dessous).
+
+
 async def _contexte_token_prospect(token_obj: TokenPublic, db: AsyncSession) -> TokenPublicContexte:
     """Contexte réduit servi à un prospect (pas encore client, pas de dossier) —
     seul l'upload de facture/speedtest lui est proposé, cf.
@@ -60,6 +73,23 @@ async def _contexte_token_prospect(token_obj: TokenPublic, db: AsyncSession) -> 
     prospect = await db.get(Prospect, token_obj.prospect_id)
     if prospect is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Prospect introuvable.")
+
+    docs_existants = (await db.execute(
+        select(DocumentProspect).where(DocumentProspect.prospect_id == token_obj.prospect_id)
+    )).scalars().all()
+    docs_par_type = {d.type_document: d for d in docs_existants}
+
+    documents_a_fournir = [
+        DocumentDemandeOut(
+            type_document=demande["type_document"],
+            label_affiche=demande["label_affiche"],
+            statut="recu" if demande["type_document"] in docs_par_type else "a_fournir",
+            date_upload=docs_par_type[demande["type_document"]].date_upload
+            if demande["type_document"] in docs_par_type else None,
+        )
+        for demande in DOCUMENTS_PROSPECT
+    ]
+    speedtest_fait = bool(prospect.speed_down) or bool(prospect.speed_up) or "speedtest" in docs_par_type
 
     return TokenPublicContexte(
         prenom_client=prospect.prenom or "",
@@ -70,13 +100,14 @@ async def _contexte_token_prospect(token_obj: TokenPublic, db: AsyncSession) -> 
         economie_annuelle_estimee=0.0,
         statut_dossier=None,
         conseiller_nom=prospect.cree_par,
-        documents_a_fournir=[],
+        documents_a_fournir=documents_a_fournir,
         mandat_statut=None,
         peut_uploader_docs=token_obj.peut_uploader_docs,
         peut_signer_mandat=False,
         demarches_a_completer=[],
         peut_renseigner_demarches=False,
-        peut_transmettre_speedtest=False,
+        peut_transmettre_speedtest=token_obj.peut_transmettre_speedtest,
+        speedtest_fait=speedtest_fait,
     )
 
 
@@ -100,8 +131,7 @@ async def contexte_token(
         dossier = await db.get(Dossier, token_obj.dossier_id)
 
     univers = dossier.univers if dossier else "telecom_mobile"
-    types_requis = dossier_engine.documents_requis_pour_univers(
-        univers, est_prospect=dossier.est_prospect if dossier else False)
+    types_requis = dossier_engine.documents_requis_pour_univers(univers)
 
     docs_existants = (await db.execute(
         select(Document).where(Document.client_id == client.id)
@@ -144,6 +174,8 @@ async def contexte_token(
                 continue
             demarches_a_completer.append(_vers_demarche_a_fournir(demarche, manquants))
 
+    speedtest_fait = bool(client.speed_down) or bool(client.speed_up) or "speedtest" in docs_par_type
+
     return TokenPublicContexte(
         prenom_client=client.prenom or "",
         nom_client=client.nom or "",
@@ -160,6 +192,7 @@ async def contexte_token(
         demarches_a_completer=demarches_a_completer,
         peut_renseigner_demarches=token_obj.peut_renseigner_demarches,
         peut_transmettre_speedtest=token_obj.peut_transmettre_speedtest,
+        speedtest_fait=speedtest_fait,
     )
 
 
@@ -280,6 +313,11 @@ async def uploader_document(
     await db.commit()
     await db.refresh(document)
 
+    if token_obj.dossier_id:
+        dossier = await db.get(Dossier, token_obj.dossier_id)
+        if dossier:
+            await notification_engine.creer_notification_document(db, dossier)
+
     return UploadResultOut(
         document_id=document.id,
         type_detecte=type_detecte,
@@ -314,7 +352,10 @@ async def suivi_dossier(
     if dossier is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Dossier introuvable.")
 
-    etapes_dict = dossier_engine.construire_timeline(dossier)
+    documents_recus = (
+        await db.execute(select(Document.id).where(Document.client_id == dossier.client_id).limit(1))
+    ).scalar_one_or_none() is not None
+    etapes_dict = dossier_engine.construire_timeline(dossier, documents_recus=documents_recus)
     etapes = [SuiviEtape(**e) for e in etapes_dict]
 
     return SuiviDossierOut(
@@ -383,12 +424,25 @@ async def soumettre_speedtest(
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Transmission du test de débit non autorisée.")
 
     if download_mbps is not None and upload_mbps is not None:
-        client = await db.get(Client, token_obj.client_id)
-        if client is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "Client introuvable.")
-        client.speed_down = download_mbps
-        client.speed_up = upload_mbps
+        if token_obj.prospect_id is not None:
+            prospect = await db.get(Prospect, token_obj.prospect_id)
+            if prospect is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "Prospect introuvable.")
+            prospect.speed_down = download_mbps
+            prospect.speed_up = upload_mbps
+        else:
+            client = await db.get(Client, token_obj.client_id)
+            if client is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "Client introuvable.")
+            client.speed_down = download_mbps
+            client.speed_up = upload_mbps
         await db.commit()
+        if token_obj.dossier_id:
+            dossier = await db.get(Dossier, token_obj.dossier_id)
+            if dossier:
+                await notification_engine.creer_notification_conseiller(
+                    db, dossier, f"Test de débit reçu pour le dossier #{dossier.id}."
+                )
         return SpeedtestResultatOut(
             speed_down=download_mbps, speed_up=upload_mbps,
             message="Test de débit enregistré, merci !",
@@ -406,6 +460,15 @@ async def soumettre_speedtest(
             raise HTTPException(
                 status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
                 "Type de fichier non autorisé (PDF, JPG, PNG ou WEBP uniquement, quelle que soit l'extension).",
+            )
+
+        if token_obj.prospect_id is not None:
+            resultat = await _uploader_document_prospect(
+                token_obj, "speedtest", contenu, fichier.filename, db,
+            )
+            return SpeedtestResultatOut(
+                document_id=resultat.document_id,
+                message="Capture reçue, votre conseiller vérifiera les résultats.",
             )
 
         try:
@@ -428,6 +491,12 @@ async def soumettre_speedtest(
         db.add(document)
         await db.commit()
         await db.refresh(document)
+        if token_obj.dossier_id:
+            dossier = await db.get(Dossier, token_obj.dossier_id)
+            if dossier:
+                await notification_engine.creer_notification_conseiller(
+                    db, dossier, f"Capture de test de débit reçue pour le dossier #{dossier.id}."
+                )
         return SpeedtestResultatOut(
             document_id=document.id,
             message="Capture reçue, votre conseiller vérifiera les résultats.",

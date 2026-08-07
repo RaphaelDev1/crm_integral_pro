@@ -7,6 +7,8 @@ class OffreCompareeItem(BaseModel):
     fournisseur: str | None = None
     prix_mensuel: float | None = None
     economie_mensuelle: float | None = None
+    frais_annexes_total: float | None = None
+    comparable: bool = True
 
 
 class ComparaisonOffreCreate(BaseModel):

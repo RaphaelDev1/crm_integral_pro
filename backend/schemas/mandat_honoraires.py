@@ -17,7 +17,7 @@ class MandatOut(BaseModel):
 
 class MandatHonorairesCreate(BaseModel):
     montant: float = 0.0
-    taux: float = 0.0
+    taux: float = 20.0
 
 
 class MandatHonorairesOut(BaseModel):
@@ -35,3 +35,12 @@ class MandatHonorairesOut(BaseModel):
 
 class MarquerSigneHonoraires(BaseModel):
     signataire: str
+
+
+class EnvoiMandatHonoraires(BaseModel):
+    canal: str  # "email" | "sms"
+
+
+class EnvoiMandatHonorairesResultat(BaseModel):
+    email_envoye: bool = False
+    sms_envoye: bool = False

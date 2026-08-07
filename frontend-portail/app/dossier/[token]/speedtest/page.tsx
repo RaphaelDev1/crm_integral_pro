@@ -9,7 +9,7 @@ import {
   soumettreSpeedtestFichier,
   TokenContexte,
 } from "@/lib/api";
-import { ArrowLeft, Gauge, Loader2, Upload, Wifi } from "lucide-react";
+import { AlertTriangle, ArrowLeft, CheckCircle2, Loader2, Upload, Wifi } from "lucide-react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -32,6 +32,7 @@ export default function SpeedtestPage({ params }: { params: { token: string } })
   const [donnees, setDonnees] = useState<DonneesTest | null>(null);
   const [resultatMessage, setResultatMessage] = useState<string | null>(null);
   const [uploadingFichier, setUploadingFichier] = useState(false);
+  const [wifiConfirme, setWifiConfirme] = useState(false);
   const donneesRef = useRef<DonneesTest | null>(null);
 
   useEffect(() => {
@@ -89,6 +90,10 @@ export default function SpeedtestPage({ params }: { params: { token: string } })
         });
         setResultatMessage(resultat.message);
         setEtat("done");
+        // Voir documents/page.tsx : sans ce refresh(), revenir à la page
+        // d'accueil montre encore l'ancien statut pendant ~30s (cache routeur
+        // App Router côté client).
+        router.refresh();
       } catch (e: any) {
         setError(e.message);
         setEtat("error");
@@ -105,6 +110,7 @@ export default function SpeedtestPage({ params }: { params: { token: string } })
       const resultat = await soumettreSpeedtestFichier(params.token, file);
       setResultatMessage(resultat.message);
       setEtat("done");
+      router.refresh();
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -127,6 +133,14 @@ export default function SpeedtestPage({ params }: { params: { token: string } })
       </main>
     );
   }
+
+  const estMobile = ctx.univers === "telecom_mobile";
+  const estBox = ctx.univers === "telecom_box";
+  // Sur une offre mobile, le Wi-Fi fausse le test (il faudrait tester le
+  // réseau mobile, pas la box) ; sur une offre box testée depuis un
+  // téléphone, c'est l'inverse. On bloque le lancement tant que le client
+  // n'a pas confirmé être dans la bonne configuration.
+  const wifiAConfirmer = estMobile || estBox;
 
   return (
     <main>
@@ -158,11 +172,57 @@ export default function SpeedtestPage({ params }: { params: { token: string } })
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 mb-6 text-center">
         {etat === "done" ? (
           <div className="text-accent">
-            <Gauge className="w-10 h-10 mx-auto mb-3" />
+            <CheckCircle2 className="w-10 h-10 mx-auto mb-3" />
             <p className="font-semibold">{resultatMessage}</p>
+            <p className="text-sm text-slate-600 mt-2">
+              C'est tout bon, vous n'avez plus rien à faire. Votre conseiller retrouvera cette
+              information et reviendra vers vous avec la suite.
+            </p>
           </div>
         ) : (
           <>
+            {estMobile && (
+              <div className="flex items-start gap-3 text-left bg-orange-50 border border-orange-200 rounded-lg p-4 mb-4">
+                <AlertTriangle className="w-5 h-5 text-orange-600 shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-medium text-orange-900">Désactivez votre Wi-Fi avant de lancer le test</p>
+                  <p className="text-sm text-orange-800 mt-1">
+                    Ce test concerne votre forfait mobile : s'il passe par votre Wi-Fi, le résultat ne
+                    reflètera pas votre réseau mobile.
+                  </p>
+                  <label className="flex items-center gap-2 mt-3 text-sm text-orange-900">
+                    <input
+                      type="checkbox"
+                      checked={wifiConfirme}
+                      onChange={(e) => setWifiConfirme(e.target.checked)}
+                    />
+                    J&apos;ai désactivé mon Wi-Fi
+                  </label>
+                </div>
+              </div>
+            )}
+
+            {estBox && (
+              <div className="flex items-start gap-3 text-left bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
+                <Wifi className="w-5 h-5 text-primary shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-medium text-blue-900">Connectez-vous au Wi-Fi de votre box avant de lancer le test</p>
+                  <p className="text-sm text-blue-800 mt-1">
+                    Ce test concerne votre box internet : si votre téléphone est en 4G/5G, le résultat ne
+                    reflètera pas votre box.
+                  </p>
+                  <label className="flex items-center gap-2 mt-3 text-sm text-blue-900">
+                    <input
+                      type="checkbox"
+                      checked={wifiConfirme}
+                      onChange={(e) => setWifiConfirme(e.target.checked)}
+                    />
+                    Je suis connecté au Wi-Fi de ma box
+                  </label>
+                </div>
+              </div>
+            )}
+
             <div className="grid grid-cols-2 gap-4 mb-6">
               <Mesure label="Download" valeur={donnees?.dlStatus} unite="Mbit/s" />
               <Mesure label="Upload" valeur={donnees?.ulStatus} unite="Mbit/s" />
@@ -171,7 +231,7 @@ export default function SpeedtestPage({ params }: { params: { token: string } })
             </div>
             <button
               onClick={lancerTest}
-              disabled={!scriptReady || etat === "running" || etat === "submitting"}
+              disabled={!scriptReady || etat === "running" || etat === "submitting" || (wifiAConfirmer && !wifiConfirme)}
               className="w-full bg-primary text-white py-3 rounded-lg font-semibold hover:bg-primary/90 transition disabled:opacity-50"
             >
               {etat === "running" && "Test en cours..."}

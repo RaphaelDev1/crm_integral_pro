@@ -57,6 +57,17 @@ def _chemin_local(cle: str) -> Path:
     return LOCAL_STORAGE_DIR / cle
 
 
+def resoudre_fichier_local(cle: str) -> Path | None:
+    """Résout `cle` vers un fichier existant sous LOCAL_STORAGE_DIR, ou None si
+    absent / si `cle` tente d'en sortir (`../..`) — utilisé par
+    backend/routers/stockage_local.py, seul point d'entrée HTTP qui sert ces
+    fichiers (repli dev uniquement, voir _stockage_local_actif)."""
+    chemin = _chemin_local(cle).resolve()
+    if LOCAL_STORAGE_DIR.resolve() not in chemin.parents:
+        return None
+    return chemin if chemin.is_file() else None
+
+
 def _client_s3():
     if not settings.s3_bucket:
         raise StorageError("S3 non configuré (voir .env : S3_ENDPOINT_URL, S3_BUCKET, S3_ACCESS_KEY_ID...).")
@@ -172,7 +183,11 @@ def telecharger_document(cle: str) -> bytes:
 
 def url_signee(cle: str, duree_secondes: int = 3600) -> str:
     if _stockage_local_actif():
-        return f"local://{cle}"
+        # `local://{cle}` n'était pas une URL ouvrable par un navigateur (aucun
+        # gestionnaire de ce pseudo-schéma) — le lien "Voir" ne faisait donc
+        # jamais rien en dev. On sert le fichier via un vrai endpoint HTTP, voir
+        # backend/routers/stockage_local.py.
+        return f"{settings.backend_public_base_url}/stockage-local/{cle}"
 
     s3 = _client_s3()
     try:

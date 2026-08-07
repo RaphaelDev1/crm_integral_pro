@@ -67,7 +67,12 @@ async def generer_demarche(demarche_id: int, db: AsyncSession = Depends(get_db))
     demarche = await db.get(Demarche, demarche_id)
     if demarche is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Démarche introuvable.")
-    generer_document_demarche.delay(demarche_id)
+    try:
+        generer_document_demarche.delay(demarche_id)
+    except Exception as exc:  # noqa: BLE001 — broker Redis/Celery indisponible
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, f"Génération indisponible pour le moment : {exc}"
+        ) from exc
     return demarche
 
 
@@ -80,7 +85,12 @@ async def envoyer_demarche(demarche_id: int, db: AsyncSession = Depends(get_db))
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Démarche introuvable.")
     if demarche.statut != "generee":
         raise HTTPException(status.HTTP_409_CONFLICT, "Le document doit être généré avant d'être envoyé.")
-    envoyer_demarche_lre.delay(demarche_id)
+    try:
+        envoyer_demarche_lre.delay(demarche_id)
+    except Exception as exc:  # noqa: BLE001 — broker Redis/Celery indisponible
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, f"Envoi indisponible pour le moment : {exc}"
+        ) from exc
     return demarche
 
 

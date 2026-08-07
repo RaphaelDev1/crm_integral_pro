@@ -6,7 +6,7 @@
 # ==============================================================================
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
@@ -25,14 +25,17 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"], dependencies=[Depend
 # Statuts qui sortent définitivement du pipeline — le reste (y compris "actif", qui peut
 # encore transiter vers "facture") compte comme "en cours" pour le KPI.
 STATUTS_DOSSIER_TERMINAUX = ("facture", "echec", "annule")
-FORMAT_DATE_RELANCE = "%d/%m/%Y"
 
 
 def _parse_date_relance(valeur: str | None) -> date | None:
+    """`date_relance` est écrit en ISO (YYYY-MM-DD) partout — les champs
+    `<input type="date">` du frontend et `POST /prospects/{id}/relance-effectuee`
+    produisent ce format nativement. Ne pas confondre avec le format d/m/Y
+    utilisé ailleurs (dates d'action, de signature...)."""
     if not valeur:
         return None
     try:
-        return datetime.strptime(valeur, FORMAT_DATE_RELANCE).date()
+        return date.fromisoformat(valeur.strip())
     except ValueError:
         return None
 

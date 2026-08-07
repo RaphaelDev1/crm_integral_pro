@@ -13,6 +13,8 @@ export interface Client {
   ville: string | null;
   adresse: string | null;
   type_client: string | null;
+  raison_sociale: string | null;
+  effectif: string | null;
   operateur_actuel: string | null;
   techno: string | null;
   data_go: string | null;
@@ -20,6 +22,7 @@ export interface Client {
   cout_mensuel_actuel: number | null;
   satisfaction_reseau: string | null;
   veut_rester: string | null;
+  defaut_technique: string | null;
   speed_down: number | null;
   speed_up: number | null;
   fournisseur_energie: string | null;
@@ -31,6 +34,7 @@ export interface Client {
   cree_par: string | null;
   date_relance: string | null;
   statut_relance: string | null;
+  conseiller_id: number | null;
 }
 
 export interface Contrat {
@@ -72,6 +76,7 @@ export interface Dossier {
   reference_fournisseur: string | null;
   offre_cible_id: number | null;
   economie_annuelle_estimee: number;
+  frais_annexes_cible: number;
   commission_attendue: number;
   commission_recue: number;
   date_creation: string | null;
@@ -81,6 +86,16 @@ export interface Dossier {
   date_derniere_transition: string | null;
   conseiller_responsable: string | null;
   notes_workflow: NoteWorkflowEntry[] | null;
+  documents_requis: string[];
+  offre_nom: string | null;
+}
+
+export interface Notification {
+  id: number;
+  dossier_id: number;
+  message: string;
+  lu: boolean;
+  date_creation: string | null;
 }
 
 export interface EtapeTimeline {
@@ -176,6 +191,8 @@ export interface Prospect {
   ville: string | null;
   adresse: string | null;
   type_client: string | null;
+  raison_sociale: string | null;
+  effectif: string | null;
   univers_interesse: string | null;
   service_principal: string | null;
   operateur_actuel: string | null;
@@ -185,6 +202,7 @@ export interface Prospect {
   offre_actuelle: string | null;
   satisfaction_reseau: string | null;
   veut_rester: string | null;
+  defaut_technique: string | null;
   speed_down: number | null;
   speed_up: number | null;
   cout_elec: number | null;
@@ -203,6 +221,7 @@ export interface Prospect {
   cree_par: string | null;
   client_id: number | null;
   converti_at: string | null;
+  dernier_contact: string | null;
 }
 
 export interface DetailScoreProspect {
@@ -235,12 +254,17 @@ export interface OffreComparee {
   univers: string | null;
   prix_mensuel: number;
   frais_activation: number;
+  frais_sim: number;
+  frais_resiliation: number;
+  frais_portabilite: number;
+  frais_annexes_total: number;
   engagement: number;
   caracteristiques: string;
   commission: number;
   data_go: number;
   economie_mensuelle: number;
   economie_annuelle: number;
+  economie_annee_1: number;
   cout_1_an: number;
   url_souscription: string;
   code_affiliation: string;
@@ -248,6 +272,7 @@ export interface OffreComparee {
 
 export interface BlocRecommandation {
   titre: string;
+  categorie: string;
   offres: OffreComparee[];
 }
 
@@ -262,6 +287,8 @@ export interface OffreCompareeItem {
   fournisseur: string | null;
   prix_mensuel: number | null;
   economie_mensuelle: number | null;
+  frais_annexes_total?: number | null;
+  comparable?: boolean;
 }
 
 export interface ComparaisonOffre {
@@ -315,6 +342,7 @@ export interface User {
   username: string;
   nom_complet: string;
   role: string;
+  telephone: string | null;
   actif: boolean;
   doit_changer_mdp: boolean;
 }

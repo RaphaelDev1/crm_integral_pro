@@ -10,14 +10,16 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
-import { downloadBackendFile } from "@/lib/api";
-import { CATEGORIES_ENERGIE } from "@/lib/diagnosticConstants";
+import { apiFetch, ApiError, downloadBackendFile } from "@/lib/api";
+import { CATEGORIES_ENERGIE, parseGoMinimal } from "@/lib/diagnosticConstants";
 import { useLancerAudit } from "@/lib/hooks/useAuditAgent";
-import { useConvertirProspect } from "@/lib/hooks/useProspects";
+import { clientsResource } from "@/lib/hooks/useClients";
+import { contratsResource } from "@/lib/hooks/useContrats";
+import { prospectsResource, useClientMiroirProspect } from "@/lib/hooks/useProspects";
 import { useCreerDossier, useEnvoyerLienClientDossier } from "@/lib/hooks/useDossiers";
 import type { DiagnosticDispatch, DiagnosticState, PanierItem } from "@/lib/hooks/useDiagnosticWizard";
 import { useCreerComparaisonOffre, useOffresComparees, useRecommandationsTelecom } from "@/lib/hooks/useOffres";
-import type { AuditResult, OffreComparee } from "@/lib/types";
+import type { AuditResult, OffreComparee, Prospect } from "@/lib/types";
 
 interface EtapeRecommandationsProps {
   state: DiagnosticState;
@@ -31,7 +33,11 @@ interface EtapeRecommandationsProps {
 // un Dossier = un univers, voir décision prise en amont de ce module).
 export function EtapeRecommandations({ state, dispatch, onTermine }: EtapeRecommandationsProps) {
   const router = useRouter();
-  const convertirProspect = useConvertirProspect();
+  const clientMiroirProspect = useClientMiroirProspect();
+  const creerClient = clientsResource.useCreate();
+  const majClient = clientsResource.useUpdate();
+  const majProspect = prospectsResource.useUpdate();
+  const creerContrat = contratsResource.useCreate();
   const creerComparaison = useCreerComparaisonOffre();
   const creerDossier = useCreerDossier();
   const envoyerLienEmail = useEnvoyerLienClientDossier();
@@ -47,8 +53,21 @@ export function EtapeRecommandations({ state, dispatch, onTermine }: EtapeRecomm
       ? state.telecom.operateurActuel
       : undefined;
 
-  function ajouterAuPanier(univers: string, categorie: string, coutActuelMensuel: number, offre: OffreComparee) {
-    const item: PanierItem = { id: `${univers}-${categorie}-${offre.id}`, univers, categorie, coutActuelMensuel, offre };
+  function ajouterAuPanier(
+    univers: string,
+    categorie: string,
+    coutActuelMensuel: number,
+    offre: OffreComparee,
+    comparable = true
+  ) {
+    const item: PanierItem = {
+      id: `${univers}-${categorie}-${offre.id}`,
+      univers,
+      categorie,
+      coutActuelMensuel,
+      offre,
+      comparable,
+    };
     dispatch({ type: "ADD_PANIER", item });
     toast.success(`${offre.nom} ajoutée au panier de restitution.`);
   }
@@ -67,12 +86,12 @@ export function EtapeRecommandations({ state, dispatch, onTermine }: EtapeRecomm
           ville: state.identite.ville || undefined,
           operateur_actuel: state.telecom.operateurActuel || undefined,
           satisfaction_reseau: state.telecom.satisfactionReseau || undefined,
-          veut_rester: state.telecom.veutRester ? "Oui" : "Non",
+          veut_rester: state.telecom.veutRester || undefined,
           cout_elec: state.energie.coutElec || 0,
           cout_gaz: state.energie.coutGaz || 0,
           fournisseur_energie: state.energie.fournisseurEnergie || undefined,
           abonnements: state.abonnements.map((a) => ({ nom: a.nom, categorie: a.categorie, cout: a.cout })),
-          data_go_min: state.telecom.dataGoMin ? Number(state.telecom.dataGoMin) : undefined,
+          data_go_min: parseGoMinimal(state.telecom.dataGoMin),
         },
       });
 
@@ -86,6 +105,10 @@ export function EtapeRecommandations({ state, dispatch, onTermine }: EtapeRecomm
           categorie,
           coutActuelMensuel: reco.offre.prix_mensuel + reco.offre.economie_mensuelle,
           offre: reco.offre,
+          // L'agent d'audit ne recommande que des offres dont le coût de
+          // référence est réellement comparable (voir audit_agent.py::
+          // outil_cout_reference_categorie), donc toujours comparable ici.
+          comparable: true,
         };
         dispatch({ type: "ADD_PANIER", item });
       }
@@ -109,11 +132,58 @@ export function EtapeRecommandations({ state, dispatch, onTermine }: EtapeRecomm
     setGenererEnCours(true);
     try {
       let clientId = state.identite.entiteType === "client" ? state.identite.entiteId : null;
+      const estProspect = state.identite.entiteType === "prospect";
 
-      if (state.identite.entiteType === "prospect" && state.identite.entiteId) {
-        const client = await convertirProspect.mutateAsync(state.identite.entiteId);
+      if (estProspect && state.identite.entiteId) {
+        // Crée seulement un client "miroir" — le prospect reste actionnable
+        // dans /prospects tant que le mandat de représentation n'est pas
+        // signé (la vraie conversion se déclenche à la signature, pas ici).
+        try {
+          const client = await clientMiroirProspect.mutateAsync(state.identite.entiteId);
+          clientId = client.id;
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 404) {
+            // Le prospect référencé par ce brouillon n'existe plus (brouillon
+            // repris depuis le localStorage après suppression du prospect, ou
+            // après un diagnostic précédent resté inachevé) — mieux vaut
+            // repartir d'un wizard vierge que de laisser l'utilisateur
+            // ré-essayer indéfiniment sur un identifiant mort.
+            onTermine();
+            toast.error(
+              "Ce prospect n'existe plus (fiche supprimée ou brouillon périmé) — le diagnostic a été réinitialisé, recommencez."
+            );
+            return;
+          }
+          if (err instanceof ApiError && err.status === 409) {
+            // Le prospect a déjà été converti depuis ce brouillon (mandat signé
+            // entre-temps, voir mandat_engine.traiter_mandat_signe) : le
+            // client-miroir n'a plus de raison d'être créé, on réutilise
+            // directement le client déjà rattaché au prospect.
+            const prospect = await apiFetch<Prospect>(`/prospects/${state.identite.entiteId}`);
+            if (!prospect.client_id) throw err;
+            clientId = prospect.client_id;
+            toast.info("Ce prospect a déjà été converti en client — la fiche client existante est utilisée.");
+          } else {
+            throw err;
+          }
+        }
+      } else if (!clientId && state.identite.mode === "nouveau") {
+        // Diagnostic fait en direct, sans prospect/client pré-enregistré : on
+        // crée directement la fiche client à partir de la saisie de l'étape 2
+        // (un Dossier a toujours besoin d'un client_id, voir backend/models/dossier.py).
+        const client = await creerClient.mutateAsync({
+          prenom: state.identite.prenom,
+          nom: state.identite.nom,
+          telephone: state.identite.telephone,
+          email: state.identite.email || undefined,
+          code_postal: state.identite.codePostal || undefined,
+          ville: state.identite.ville || undefined,
+          adresse: state.identite.adresse || undefined,
+          type_client: state.identite.typeClient,
+          raison_sociale: state.identite.raisonSociale || undefined,
+          effectif: state.identite.effectif || undefined,
+        });
         clientId = client.id;
-        dispatch({ type: "SET_IDENTITE", values: { entiteType: "client", entiteId: client.id } });
       }
 
       if (!clientId) {
@@ -121,9 +191,19 @@ export function EtapeRecommandations({ state, dispatch, onTermine }: EtapeRecomm
         return;
       }
 
+      let totalEconomieAnnuelle = 0;
+
       for (const univers of universPanier) {
         const items = state.panier.filter((p) => p.univers === univers);
-        const meilleur = items.reduce((a, b) => (b.offre.economie_annuelle > a.offre.economie_annuelle ? b : a));
+        // Seules les offres comparables (même catégorie que ce que le client
+        // paie déjà) entrent dans le calcul de l'économie mise en avant — une
+        // offre cross-sell (ex. Box proposée alors qu'il a un forfait Mobile)
+        // n'est pas comparable financièrement à son coût actuel, voir
+        // PanierItem.comparable et OffreCard plus bas.
+        const comparables = items.filter((i) => i.comparable !== false);
+        const meilleur = (comparables.length > 0 ? comparables : items).reduce((a, b) =>
+          b.offre.economie_annuelle > a.offre.economie_annuelle ? b : a
+        );
 
         // Le coût actuel mensuel n'est pas la somme des offres du panier (un
         // même abonnement téléphonique peut apparaître dans plusieurs blocs
@@ -143,8 +223,40 @@ export function EtapeRecommandations({ state, dispatch, onTermine }: EtapeRecomm
             .reduce((sum, a) => sum + a.cout, 0);
         }
 
-        const economieMensuelle = items.reduce((sum, i) => sum + i.offre.economie_mensuelle, 0);
-        const economieAnnuelle = items.reduce((sum, i) => sum + i.offre.economie_annuelle, 0);
+        // Économie totale = celle de la meilleure offre comparable, pas la
+        // somme de tout le panier (une offre cross-sell "négative" ne doit
+        // pas venir grever l'économie réelle de l'offre principale).
+        const economieMensuelle = comparables.length > 0 ? meilleur.offre.economie_mensuelle : 0;
+        const economieAnnuelle = comparables.length > 0 ? meilleur.offre.economie_annuelle : 0;
+        totalEconomieAnnuelle += economieAnnuelle;
+
+        // Enregistre la situation ACTUELLE du client dans ses contrats (pas
+        // l'offre recommandée) — pour qu'on retrouve sur sa fiche exactement
+        // ce qu'il a aujourd'hui, avec quel fournisseur et à quel prix.
+        let fournisseurActuel: string | undefined;
+        let nomOffreActuelle: string | undefined;
+        if (univers === "Télécom") {
+          fournisseurActuel = state.telecom.operateurActuel || undefined;
+          nomOffreActuelle = state.telecom.offreActuelle || undefined;
+        } else if (univers === "Énergie") {
+          fournisseurActuel = state.energie.fournisseurEnergie || undefined;
+        } else if (univers === "Abonnements") {
+          const categories = new Set(items.map((i) => i.categorie));
+          const abonnementsConcernes = state.abonnements.filter((a) => categories.has(a.categorie));
+          fournisseurActuel = abonnementsConcernes.map((a) => a.nom).join(", ") || undefined;
+        }
+        if (fournisseurActuel && coutActuelMensuel > 0) {
+          await creerContrat.mutateAsync({
+            client_id: clientId,
+            univers,
+            categorie: meilleur.categorie,
+            fournisseur: fournisseurActuel,
+            nom_offre: nomOffreActuelle,
+            cout_mensuel: coutActuelMensuel,
+            statut_contrat: "Actuel",
+            date_fin_engagement: univers === "Télécom" ? state.telecom.finEngagement || undefined : undefined,
+          });
+        }
 
         await creerComparaison.mutateAsync({
           client_id: clientId,
@@ -158,6 +270,8 @@ export function EtapeRecommandations({ state, dispatch, onTermine }: EtapeRecomm
             fournisseur: i.offre.fournisseur,
             prix_mensuel: i.offre.prix_mensuel,
             economie_mensuelle: i.offre.economie_mensuelle,
+            frais_annexes_total: i.offre.frais_annexes_total,
+            comparable: i.comparable !== false,
           })),
           economie_mensuelle_estimee: economieMensuelle,
           economie_annuelle_estimee: economieAnnuelle,
@@ -170,6 +284,8 @@ export function EtapeRecommandations({ state, dispatch, onTermine }: EtapeRecomm
           fournisseur_cible: meilleur.offre.fournisseur ?? undefined,
           offre_cible_id: meilleur.offre.id,
           economie_annuelle_estimee: economieAnnuelle,
+          frais_annexes_cible: meilleur.offre.frais_annexes_total,
+          est_prospect: estProspect,
         });
 
         await downloadBackendFile(
@@ -182,9 +298,45 @@ export function EtapeRecommandations({ state, dispatch, onTermine }: EtapeRecomm
         }
       }
 
+      // Reporte l'économie totale identifiée sur la fiche source — c'est ce
+      // qui alimente "économie estimée" dans les listes prospects/relances
+      // (et, pour un prospect, son score qui en dépend). On reporte aussi la
+      // situation "réseau actuel" saisie à l'étape 3 (opérateur, satisfaction,
+      // souhait de rester) : sans ça, ces infos existaient bien quelque part
+      // (contrat créé plus haut) mais jamais sur la fiche prospect/client
+      // elle-même, obligeant à les ressaisir à la main dans "Réseau actuel".
+      const situationReseau = state.univers.includes("Télécom")
+        ? {
+            operateur_actuel: state.telecom.operateurActuel || undefined,
+            techno: state.telecom.techno || undefined,
+            cout_mensuel_actuel: state.telecom.coutMensuelActuel || undefined,
+            satisfaction_reseau: state.telecom.satisfactionReseau || undefined,
+            veut_rester: state.telecom.veutRester || undefined,
+            defaut_technique: state.telecom.defautTechnique || undefined,
+          }
+        : {};
+      if (estProspect && state.identite.entiteId) {
+        await majProspect.mutateAsync({
+          id: state.identite.entiteId,
+          values: { economie_estimee_an: totalEconomieAnnuelle, ...situationReseau },
+        });
+      } else if (!estProspect) {
+        await majClient.mutateAsync({
+          id: clientId,
+          values: { economie_estimee_an: totalEconomieAnnuelle, ...situationReseau },
+        });
+      }
+
       toast.success("Restitution générée — dossier(s) créé(s) et PDF téléchargé(s).");
       onTermine();
-      router.push(`/clients/${clientId}`);
+      // Un prospect reste un prospect tant qu'il n'est pas réellement converti
+      // (mandat signé) — même si un client "miroir" existe déjà en base pour
+      // porter le(s) dossier(s), on ne redirige pas vers /clients.
+      if (estProspect && state.identite.entiteId) {
+        router.push(`/prospects/${state.identite.entiteId}`);
+      } else {
+        router.push(`/clients/${clientId}`);
+      }
     } catch {
       toast.error("Échec de la génération de la restitution — voir le détail dans les notifications.");
     } finally {
@@ -196,7 +348,7 @@ export function EtapeRecommandations({ state, dispatch, onTermine }: EtapeRecomm
     <div className="space-y-6">
       <div>
         <h2 className="text-lg font-semibold">Recommandations pour {nomComplet}</h2>
-        {state.telecom.veutRester && (
+        {state.telecom.veutRester === "Oui" && (
           <p className="text-sm text-amber-600">
             ⚠️ Le client souhaite rester chez {state.telecom.operateurActuel || "son opérateur actuel"} — adaptez votre
             argumentaire.
@@ -300,8 +452,12 @@ export function EtapeRecommandations({ state, dispatch, onTermine }: EtapeRecomm
               {state.panier.map((item) => (
                 <li key={item.id} className="flex items-center justify-between rounded-md border px-3 py-2">
                   <span>
-                    <strong>{item.univers}</strong> — {item.offre.nom} ({item.offre.fournisseur}) — économie{" "}
-                    {item.offre.economie_annuelle.toFixed(2)} €/an
+                    <strong>{item.univers}</strong> — {item.offre.nom} ({item.offre.fournisseur}){" "}
+                    {item.comparable !== false ? (
+                      <>— économie {item.offre.economie_annuelle.toFixed(2)} €/an</>
+                    ) : (
+                      <>— {item.offre.prix_mensuel.toFixed(2)} €/mois (non comparable)</>
+                    )}
                   </span>
                   <Button type="button" variant="ghost" size="sm" onClick={() => dispatch({ type: "REMOVE_PANIER", id: item.id })}>
                     Retirer
@@ -336,10 +492,12 @@ export function EtapeRecommandations({ state, dispatch, onTermine }: EtapeRecomm
 function OffreCard({
   offre,
   auPanier,
+  comparable = true,
   onAjouter,
 }: {
   offre: OffreComparee;
   auPanier: boolean;
+  comparable?: boolean;
   onAjouter: () => void;
 }) {
   return (
@@ -349,10 +507,14 @@ function OffreCard({
         <p className="text-sm text-muted-foreground">
           {offre.fournisseur} · {offre.caracteristiques}
         </p>
-        <p className="text-sm">
-          💶 {offre.prix_mensuel.toFixed(2)} €/mois — économie{" "}
-          <strong className="text-emerald-700">{offre.economie_annuelle.toFixed(2)} €/an</strong>
-        </p>
+        {comparable ? (
+          <p className="text-sm">
+            💶 {offre.prix_mensuel.toFixed(2)} €/mois — économie{" "}
+            <strong className="text-emerald-700">{offre.economie_annuelle.toFixed(2)} €/an</strong>
+          </p>
+        ) : (
+          <p className="text-sm">💶 {offre.prix_mensuel.toFixed(2)} €/mois</p>
+        )}
       </div>
       <Button type="button" size="sm" variant={auPanier ? "secondary" : "outline"} onClick={onAjouter} disabled={auPanier}>
         {auPanier ? "Dans le panier" : "⭐ Ajouter au panier"}
@@ -374,14 +536,14 @@ function BlocTelecom({
   fournisseurExclu: string | undefined;
   dataGoMin: string;
   estAuPanier: (id: number) => boolean;
-  onAjouter: (univers: string, categorie: string, coutActuel: number, offre: OffreComparee) => void;
+  onAjouter: (univers: string, categorie: string, coutActuel: number, offre: OffreComparee, comparable?: boolean) => void;
 }) {
   const query = useRecommandationsTelecom(
     {
       service_principal: servicePrincipal,
       cout_tel: coutTel,
       fournisseur_exclu: fournisseurExclu,
-      data_go_min: dataGoMin ? Number(dataGoMin) : undefined,
+      data_go_min: parseGoMinimal(dataGoMin),
     },
     coutTel > 0
   );
@@ -389,8 +551,6 @@ function BlocTelecom({
   if (coutTel <= 0) return null;
   if (query.isLoading) return <Skeleton className="h-32 w-full" />;
   if (!query.data) return null;
-
-  const categorieDe = (titre: string) => titre.replace(/^[^\wÀ-ÿ]+/u, "").trim();
 
   return (
     <Card>
@@ -411,7 +571,8 @@ function BlocTelecom({
               key={offre.id}
               offre={offre}
               auPanier={estAuPanier(offre.id)}
-              onAjouter={() => onAjouter("Télécom", categorieDe(query.data!.principal.titre), coutTel, offre)}
+              comparable
+              onAjouter={() => onAjouter("Télécom", query.data!.principal.categorie, coutTel, offre, true)}
             />
           ))
         )}
@@ -421,12 +582,16 @@ function BlocTelecom({
           .map((bloc) => (
             <div key={bloc.titre} className="space-y-2 border-t pt-3">
               <p className="text-sm font-medium text-muted-foreground">{bloc.titre}</p>
+              <p className="text-xs text-muted-foreground">
+                Autre type de service — non comparable financièrement à votre abonnement actuel.
+              </p>
               {bloc.offres.map((offre) => (
                 <OffreCard
                   key={offre.id}
                   offre={offre}
                   auPanier={estAuPanier(offre.id)}
-                  onAjouter={() => onAjouter("Télécom", categorieDe(bloc.titre), coutTel, offre)}
+                  comparable={false}
+                  onAjouter={() => onAjouter("Télécom", bloc.categorie, coutTel, offre, false)}
                 />
               ))}
             </div>

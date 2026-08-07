@@ -1,18 +1,24 @@
 "use client";
 
+import type { ColumnDef } from "@tanstack/react-table";
 import { useParams, useRouter } from "next/navigation";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
+import { ContratsTab } from "@/components/clients/ContratsTab";
 import { ProspectForm, prospectToFormValues } from "@/components/prospects/ProspectForm";
 import { ScoringPanel } from "@/components/prospects/ScoringPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { DataTable } from "@/components/ui/data-table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { AEnvoyerBadge, RecuBadge } from "@/components/ui/recu-badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { formatDateRelance } from "@/lib/dateRelance";
+import { useDossiersClient } from "@/lib/hooks/useDossiers";
 import {
   prospectsResource,
   useConvertirProspect,
@@ -20,10 +26,12 @@ import {
   useGenererLienDocumentsProspect,
   useProspectDocuments,
   useProspectHistorique,
+  useProspectScore,
+  useRelanceEffectuee,
+  useSupprimerDocumentProspect,
 } from "@/lib/hooks/useProspects";
 import type { ProspectUpdateInput } from "@/lib/schemas/prospect";
-
-const SEUIL_CONVERSION = 40;
+import type { Dossier } from "@/lib/types";
 
 export default function ProspectDetailPage() {
   const params = useParams<{ id: string }>();
@@ -53,14 +61,19 @@ export default function ProspectDetailPage() {
         <h1 className="text-xl font-bold text-primary">
           {prospect.prenom} {prospect.nom}
         </h1>
-        {prospect.client_id != null && <Badge variant="secondary">Converti en client</Badge>}
+        {prospect.converti_at != null && <Badge variant="secondary">Converti en client</Badge>}
       </div>
+
+      <TableauBordProspect prospectId={prospectId} prospect={prospect} />
+
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
           <Tabs defaultValue="infos">
             <TabsList>
               <TabsTrigger value="infos">Infos</TabsTrigger>
               <TabsTrigger value="scoring">Scoring</TabsTrigger>
+              {prospect.client_id != null && <TabsTrigger value="dossiers">Dossiers</TabsTrigger>}
+              <TabsTrigger value="contrats">Contrats</TabsTrigger>
               <TabsTrigger value="documents">Documents</TabsTrigger>
               <TabsTrigger value="historique">Historique</TabsTrigger>
             </TabsList>
@@ -70,8 +83,24 @@ export default function ProspectDetailPage() {
             <TabsContent value="scoring">
               <ScoringPanel prospectId={prospectId} />
             </TabsContent>
+            {prospect.client_id != null && (
+              <TabsContent value="dossiers">
+                <DossiersTab clientId={prospect.client_id} />
+              </TabsContent>
+            )}
+            <TabsContent value="contrats">
+              {prospect.client_id != null ? (
+                <ContratsTab clientId={prospect.client_id} />
+              ) : (
+                <Card>
+                  <CardContent className="pt-6 text-sm text-muted-foreground">
+                    Les contrats apparaîtront ici une fois une fiche client associée (après un premier diagnostic).
+                  </CardContent>
+                </Card>
+              )}
+            </TabsContent>
             <TabsContent value="documents">
-              <DocumentsTab prospectId={prospectId} />
+              <DocumentsTab prospectId={prospectId} speedDown={prospect.speed_down} speedUp={prospect.speed_up} />
             </TabsContent>
             <TabsContent value="historique">
               <HistoriqueTab prospectId={prospectId} />
@@ -81,12 +110,45 @@ export default function ProspectDetailPage() {
         <div className="lg:col-span-1">
           <ActionsCard
             prospectId={prospectId}
-            score={prospect.score}
-            dejaConverti={prospect.client_id != null}
+            dejaConverti={prospect.converti_at != null}
+            clientId={prospect.client_id}
+            convertiLe={prospect.converti_at}
             onSuppression={() => router.push("/prospects")}
           />
         </div>
       </div>
+    </div>
+  );
+}
+
+// Bandeau "dashboard" en tête de fiche — les indicateurs que le conseiller
+// veut voir d'un coup d'œil pour prioriser : économie estimée, prochaine
+// relance programmée, dernier contact enregistré, température du score.
+function TableauBordProspect({ prospectId, prospect }: { prospectId: number; prospect: import("@/lib/types").Prospect }) {
+  const scoreQuery = useProspectScore(prospectId);
+
+  const tuiles = [
+    { label: "Économie estimée", valeur: prospect.economie_estimee_an != null ? `${prospect.economie_estimee_an.toFixed(0)} €/an` : "—" },
+    {
+      label: "Prochaine relance",
+      valeur: prospect.date_relance ? formatDateRelance(prospect.date_relance) : "Non planifiée",
+      sousTitre: prospect.statut || undefined,
+    },
+    { label: "Dernier contact", valeur: prospect.dernier_contact || "Jamais" },
+    { label: "Priorité", valeur: scoreQuery.data?.indicateur ?? "—" },
+  ];
+
+  return (
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      {tuiles.map((tuile) => (
+        <Card key={tuile.label}>
+          <CardContent className="pt-4 pb-3">
+            <p className="text-xs text-muted-foreground">{tuile.label}</p>
+            <p className="text-lg font-bold text-primary">{tuile.valeur}</p>
+            {tuile.sousTitre && <p className="text-xs text-muted-foreground">{tuile.sousTitre}</p>}
+          </CardContent>
+        </Card>
+      ))}
     </div>
   );
 }
@@ -112,12 +174,97 @@ function InfosTab({ prospectId, defaultValues }: { prospectId: number; defaultVa
   );
 }
 
-function DocumentsTab({ prospectId }: { prospectId: number }) {
+function DossiersTab({ clientId }: { clientId: number }) {
+  const router = useRouter();
+  const dossiersQuery = useDossiersClient(clientId);
+
+  const columns = useMemo<ColumnDef<Dossier>[]>(
+    () => [
+      { id: "numero", header: "N° dossier", accessorFn: (d) => `#${d.id}` },
+      { accessorKey: "univers", header: "Univers" },
+      {
+        id: "statut",
+        header: "Statut",
+        cell: ({ row }) => <Badge variant="secondary">{row.original.statut}</Badge>,
+      },
+      { accessorKey: "fournisseur_cible", header: "Fournisseur cible" },
+      { accessorKey: "date_creation", header: "Date création" },
+      {
+        id: "economie",
+        header: "Économie annuelle estimée",
+        accessorFn: (d) => `${d.economie_annuelle_estimee ?? 0} €`,
+      },
+    ],
+    []
+  );
+
+  return (
+    <Card>
+      <CardContent className="pt-6">
+        {dossiersQuery.isLoading ? (
+          <Skeleton className="h-48 w-full" />
+        ) : (
+          <DataTable
+            columns={columns}
+            data={dossiersQuery.data ?? []}
+            emptyMessage="Aucun dossier en cours."
+            onRowClick={(dossier) => router.push(`/dossiers/${dossier.id}`)}
+          />
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+const LABELS_TYPE_DOCUMENT_PROSPECT: Record<string, string> = {
+  facture: "Facture actuelle (opérateur / fournisseur)",
+  speedtest: "Test de débit",
+};
+
+function DocumentsTab({
+  prospectId,
+  speedDown,
+  speedUp,
+}: {
+  prospectId: number;
+  speedDown: number | null;
+  speedUp: number | null;
+}) {
   const documentsQuery = useProspectDocuments(prospectId);
+  const supprimerMutation = useSupprimerDocumentProspect(prospectId);
+  const typesRecus = new Set((documentsQuery.data ?? []).map((doc) => doc.type_document));
+
+  const handleSupprimer = (documentId: number, label: string) => {
+    if (!window.confirm(`Supprimer le document "${label}" ? Le prospect devra le retransmettre.`)) return;
+    supprimerMutation.mutate(documentId, { onSuccess: () => toast.success("Document supprimé.") });
+  };
 
   return (
     <Card>
       <CardContent className="space-y-2 pt-6">
+        <ul className="divide-y mb-2">
+          {Object.entries(LABELS_TYPE_DOCUMENT_PROSPECT).map(([type, label]) => {
+            const mesure = type === "speedtest" && (speedDown != null || speedUp != null);
+            return (
+              <li key={type} className="flex items-center justify-between py-2 text-sm">
+                <span className="font-medium">{label}</span>
+                {mesure ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-emerald-900">
+                      ↓ {speedDown != null ? `${speedDown.toFixed(1)} Mbit/s` : "—"} · ↑{" "}
+                      {speedUp != null ? `${speedUp.toFixed(1)} Mbit/s` : "—"}
+                    </span>
+                    <RecuBadge label="Mesuré" />
+                  </div>
+                ) : typesRecus.has(type) ? (
+                  <RecuBadge />
+                ) : (
+                  <AEnvoyerBadge />
+                )}
+              </li>
+            );
+          })}
+        </ul>
         {documentsQuery.isLoading ? (
           <Skeleton className="h-48 w-full" />
         ) : !documentsQuery.data?.length ? (
@@ -130,9 +277,19 @@ function DocumentsTab({ prospectId }: { prospectId: number }) {
                   <p className="font-medium">{doc.type_document || doc.nom_fichier || "Document"}</p>
                   <p className="text-muted-foreground">{doc.date_upload}</p>
                 </div>
-                <a href={doc.url} target="_blank" rel="noreferrer" className="text-primary underline">
-                  Voir
-                </a>
+                <div className="flex items-center gap-3">
+                  <a href={doc.url} target="_blank" rel="noreferrer" className="text-primary underline">
+                    Voir
+                  </a>
+                  <button
+                    type="button"
+                    className="text-destructive underline disabled:opacity-50"
+                    disabled={supprimerMutation.isPending}
+                    onClick={() => handleSupprimer(doc.id, doc.type_document || doc.nom_fichier || "Document")}
+                  >
+                    Supprimer
+                  </button>
+                </div>
               </li>
             ))}
           </ul>
@@ -173,34 +330,37 @@ function HistoriqueTab({ prospectId }: { prospectId: number }) {
 
 function ActionsCard({
   prospectId,
-  score,
   dejaConverti,
+  clientId,
+  convertiLe,
   onSuppression,
 }: {
   prospectId: number;
-  score: number | null;
   dejaConverti: boolean;
+  clientId: number | null;
+  convertiLe: string | null;
   onSuppression: () => void;
 }) {
   const router = useRouter();
-  const [convertirOpen, setConvertirOpen] = useState(false);
   const [lienOpen, setLienOpen] = useState(false);
   const [lienUrl, setLienUrl] = useState<string | null>(null);
 
-  const convertirMutation = useConvertirProspect();
   const lienMutation = useGenererLienDocumentsProspect();
   const envoyerLienMutation = useEnvoyerLienDocumentsProspect();
   const deleteMutation = prospectsResource.useDelete();
-
-  const scoreInsuffisant = (score ?? 0) < SEUIL_CONVERSION;
+  const relanceMutation = useRelanceEffectuee();
+  const convertirMutation = useConvertirProspect();
 
   const handleConvertir = () => {
     convertirMutation.mutate(prospectId, {
-      onSuccess: (client) => {
-        toast.success("Prospect converti en client.");
-        setConvertirOpen(false);
-        router.push(`/clients/${client.id}`);
-      },
+      onSuccess: () => toast.success("Prospect converti en client."),
+      onError: () => toast.error("Échec de la conversion — vérifiez que les documents requis sont validés."),
+    });
+  };
+
+  const handleRelanceEffectuee = () => {
+    relanceMutation.mutate(prospectId, {
+      onSuccess: () => toast.success("Relance enregistrée — prochaine relance programmée dans 7 jours."),
     });
   };
 
@@ -241,38 +401,51 @@ function ActionsCard({
         <CardTitle>Actions</CardTitle>
       </CardHeader>
       <CardContent className="space-y-2">
-        <span title={scoreInsuffisant ? "Score trop faible pour convertir" : undefined} className="block">
-          <Button
-            className="w-full"
-            onClick={() => setConvertirOpen(true)}
-            disabled={scoreInsuffisant || dejaConverti}
-          >
-            {dejaConverti ? "Déjà converti" : "Convertir en client"}
-          </Button>
-        </span>
+        {dejaConverti ? (
+          <div className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
+            <p className="font-medium">Converti en client{convertiLe ? ` le ${convertiLe}` : ""}</p>
+            {clientId != null && (
+              <button type="button" className="underline" onClick={() => router.push(`/clients/${clientId}`)}>
+                Voir la fiche client →
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-2 rounded-md border px-3 py-2 text-sm text-muted-foreground">
+            <p>
+              Sera converti automatiquement en client à la signature de son mandat de représentation, une fois tous
+              les documents requis validés (voir le dossier associé).
+            </p>
+            {clientId != null && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full"
+                onClick={handleConvertir}
+                disabled={convertirMutation.isPending}
+              >
+                {convertirMutation.isPending ? "Conversion…" : "Convertir en client maintenant"}
+              </Button>
+            )}
+          </div>
+        )}
         <Button variant="outline" className="w-full" onClick={handleEnvoyerLien} disabled={lienMutation.isPending}>
           Envoyer lien collecte docs
+        </Button>
+        <Button variant="outline" className="w-full" onClick={handleRelanceEffectuee} disabled={relanceMutation.isPending}>
+          Relance effectuée ce jour
+        </Button>
+        <Button
+          variant="outline"
+          className="w-full"
+          onClick={() => router.push(`/diagnostic?entiteType=prospect&entiteId=${prospectId}`)}
+        >
+          Nouveau diagnostic
         </Button>
         <Button variant="destructive" className="w-full" onClick={handleSupprimer} disabled={deleteMutation.isPending}>
           Supprimer
         </Button>
       </CardContent>
-
-      <Dialog open={convertirOpen} onOpenChange={setConvertirOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Convertir ce prospect en client ?</DialogTitle>
-          </DialogHeader>
-          <p className="text-sm text-muted-foreground">
-            Cette action crée un client à partir des informations du prospect et redirige vers sa fiche.
-          </p>
-          <div className="flex justify-end">
-            <Button onClick={handleConvertir} disabled={convertirMutation.isPending}>
-              {convertirMutation.isPending ? "Conversion…" : "Confirmer la conversion"}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
 
       <Dialog open={lienOpen} onOpenChange={setLienOpen}>
         <DialogContent>

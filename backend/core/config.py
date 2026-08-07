@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     s3_access_key_id: str = ""
     s3_secret_access_key: str = ""
 
+    # -- Stockage local de secours (dev, quand S3_BUCKET n'est pas configuré) --
+    # Sert à construire une URL absolue et réellement ouvrable pour
+    # backend/services/storage_engine.py::url_signee (le frontend tourne sur un
+    # autre port que le backend, une URL relative pointerait au mauvais endroit).
+    backend_public_base_url: str = "http://localhost:8000"
+
     # -- Stripe (facturation client) --
     stripe_api_key: str = ""
     stripe_webhook_secret: str = ""

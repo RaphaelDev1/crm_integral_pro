@@ -18,12 +18,17 @@ class OffreCompareeOut(BaseModel):
     univers: str | None = None
     prix_mensuel: float
     frais_activation: float
+    frais_sim: float
+    frais_resiliation: float
+    frais_portabilite: float
+    frais_annexes_total: float
     engagement: int
     caracteristiques: str
     commission: float
     data_go: float
     economie_mensuelle: float
     economie_annuelle: float
+    economie_annee_1: float
     cout_1_an: float
     url_souscription: str
     code_affiliation: str
@@ -39,6 +44,7 @@ class RecommandationsRequest(BaseModel):
 
 class BlocRecommandationOut(BaseModel):
     titre: str
+    categorie: str
     offres: list[OffreCompareeOut]
 
 

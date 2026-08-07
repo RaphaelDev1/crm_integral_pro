@@ -17,6 +17,7 @@ class User(Base):
     nom_complet: Mapped[str] = mapped_column(String, nullable=False)
     password_hash: Mapped[str] = mapped_column(String, nullable=False)
     role: Mapped[str] = mapped_column(String, default="Conseiller", server_default="Conseiller")
+    telephone: Mapped[str | None] = mapped_column(String, nullable=True)
     actif: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     date_creation: Mapped[str | None] = mapped_column(String, nullable=True)
     doit_changer_mdp: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")

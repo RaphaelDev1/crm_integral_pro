@@ -20,7 +20,7 @@ class MandatHonoraires(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     dossier_id: Mapped[int] = mapped_column(ForeignKey("dossiers.id"), nullable=False, unique=True)
     montant: Mapped[float] = mapped_column(Float, default=0.0)
-    taux: Mapped[float] = mapped_column(Float, default=0.0)
+    taux: Mapped[float] = mapped_column(Float, default=20.0)
     statut: Mapped[str] = mapped_column(String, default="brouillon", server_default="brouillon")
     signataire: Mapped[str | None] = mapped_column(String, nullable=True)
     date_signature: Mapped[str | None] = mapped_column(String, nullable=True)

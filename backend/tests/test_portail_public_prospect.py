@@ -17,14 +17,33 @@ from backend.models.prospect import Prospect
 from backend.models.token_public import TokenPublic
 
 
+class _FakeResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self._value
+
+
 class FakeSession:
     def __init__(self):
         self.get_map = {}
         self.committed = False
         self.added = []
+        self.execute_queue = []
+
+    def queue_result(self, value):
+        self.execute_queue.append(value)
 
     async def get(self, model, id_):
         return self.get_map.get((model, id_))
+
+    async def execute(self, _query):
+        value = self.execute_queue.pop(0) if self.execute_queue else []
+        return _FakeResult(value)
 
     def add(self, obj):
         self.added.append(obj)
@@ -64,6 +83,7 @@ def _token_prospect(**kwargs):
 
 def test_contexte_token_prospect_renvoie_un_contexte_reduit(api_client, fake_db):
     fake_db.get_map[(Prospect, 1)] = Prospect(id=1, prenom="Jean", nom="Dupont", cree_par="Alice")
+    fake_db.queue_result([])  # aucun DocumentProspect déjà transmis
 
     with patch("backend.routers.portail_public.token_engine.valider_token",
                new=AsyncMock(return_value=_token_prospect())):
@@ -75,7 +95,15 @@ def test_contexte_token_prospect_renvoie_un_contexte_reduit(api_client, fake_db)
     assert corps["nom_client"] == "Dupont"
     assert corps["dossier_id"] is None
     assert corps["peut_signer_mandat"] is False
-    assert corps["documents_a_fournir"] == []
+    # Le lien prospect propose la facture à l'upload (auparavant vide par
+    # erreur — voir _contexte_token_prospect). Le test de débit n'y figure
+    # volontairement pas : il a son propre parcours dédié (section "Votre
+    # débit internet" + page /speedtest) pour laisser au client l'occasion
+    # de cliquer sur "Tester mon débit" plutôt que de le marquer fait
+    # automatiquement dès l'envoi des documents.
+    types_proposes = {d["type_document"] for d in corps["documents_a_fournir"]}
+    assert types_proposes == {"facture"}
+    assert all(d["statut"] == "a_fournir" for d in corps["documents_a_fournir"])
 
 
 def test_contexte_token_prospect_introuvable(api_client, fake_db):

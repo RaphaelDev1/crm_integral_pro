@@ -103,7 +103,16 @@ function DevisHonorairesTab() {
 
   return (
     <Card>
-      <CardContent className="pt-6">
+      <CardContent className="pt-6 space-y-3">
+        {!mandatsQuery.isLoading && !mandatsQuery.data?.length && (
+          <p className="text-sm text-muted-foreground">
+            Aucun devis d&apos;honoraires pour le moment — créez-en un depuis la fiche d&apos;un{" "}
+            <Link href="/dossiers" className="text-primary underline">
+              dossier client
+            </Link>{" "}
+            (section « Mandat honoraires »).
+          </p>
+        )}
         {mandatsQuery.isLoading ? (
           <Skeleton className="h-64 w-full" />
         ) : (

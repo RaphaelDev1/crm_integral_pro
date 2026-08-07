@@ -1,9 +1,19 @@
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict
 
 from backend.schemas.client import ClientOut
 from backend.schemas.dossier import DossierOut
 from backend.schemas.facture import FactureClientOut
 from backend.schemas.mandat_honoraires import MandatHonorairesOut, MandatOut
+
+
+class DocumentStatutUpdate(BaseModel):
+    """Validation/rejet manuel d'un document par le conseiller (en plus de la
+    validation automatique KYC — voir backend/services/kyc_engine.py)."""
+
+    statut_kyc: Literal["valide", "rejete"]
+    motif_rejet: str | None = None
 
 
 class DocumentOut(BaseModel):

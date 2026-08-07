@@ -13,6 +13,7 @@ from PIL import Image
 from backend.core.database import get_db
 from backend.main import app
 from backend.models.client import Client
+from backend.models.prospect import Prospect
 from backend.models.token_public import TokenPublic
 
 
@@ -53,7 +54,13 @@ def api_client(fake_db):
 
 
 def _token(**kwargs):
-    base = dict(id=1, token="x" * 32, client_id=1, peut_transmettre_speedtest=True)
+    base = dict(id=1, token="x" * 32, client_id=1, prospect_id=None, peut_transmettre_speedtest=True)
+    base.update(kwargs)
+    return TokenPublic(**base)
+
+
+def _token_prospect(**kwargs):
+    base = dict(id=2, token="y" * 32, client_id=None, prospect_id=1, peut_transmettre_speedtest=True)
     base.update(kwargs)
     return TokenPublic(**base)
 
@@ -80,6 +87,26 @@ def test_soumettre_speedtest_numerique_met_a_jour_le_client(api_client, fake_db)
     assert corps["speed_down"] == 123.4
     assert corps["speed_up"] == 45.6
     assert fake_db.get_map[(Client, 1)].speed_down == 123.4
+    assert fake_db.committed
+
+
+def test_soumettre_speedtest_numerique_met_a_jour_le_prospect(api_client, fake_db):
+    """Un lien prospect (pas encore client) doit aussi pouvoir transmettre un
+    test de débit mesuré en direct — voir
+    token_engine.generer_token_prospect_documents (peut_transmettre_speedtest=True)."""
+    fake_db.get_map[(Prospect, 1)] = Prospect(id=1, prenom="Jean", nom="Dupont")
+
+    with patch("backend.routers.portail_public.token_engine.valider_token",
+               new=AsyncMock(return_value=_token_prospect())):
+        reponse = api_client.post(
+            f"/portail/{'y' * 32}/speedtest",
+            data={"download_mbps": "80.0", "upload_mbps": "20.0"},
+        )
+
+    assert reponse.status_code == 200
+    corps = reponse.json()
+    assert corps["speed_down"] == 80.0
+    assert fake_db.get_map[(Prospect, 1)].speed_down == 80.0
     assert fake_db.committed
 
 

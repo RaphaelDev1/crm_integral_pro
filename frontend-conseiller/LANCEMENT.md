@@ -7,6 +7,13 @@
 > `access_token`/`refresh_token` et les transmet au backend FastAPI avec le header `Authorization`.
 > C'est pourquoi le backend n'a pas besoin d'autoriser `http://localhost:3001` en CORS.
 
+> ⚠️ Certaines actions déclenchées depuis frontend-conseiller (ex. « Envoyer lien collecte docs »
+> sur une fiche prospect, ou le bouton équivalent dans le wizard `/diagnostic`) génèrent un lien
+> vers `frontend-portail` (`http://localhost:3000/dossier/{token}`) — une appli Next.js séparée qui
+> **doit tourner en parallèle** pour que ce lien s'ouvre. Le plus simple : `docker compose up
+> frontend-portail` à la racine du dépôt (voir `docker-compose.yml`). Sans ça, cliquer le lien
+> donne `ERR_CONNECTION_RESET` (voir §11).
+
 ---
 
 ## 0. Pré-requis
@@ -32,7 +39,19 @@ pip install -r backend/requirements-dev.txt
 # 1c. Migrations Alembic (obligatoire avant tout)
 python -m alembic upgrade head
 python -m alembic current   # doit afficher "0020 (head)"
+```
 
+> ⚠️ `Copy-Item` ci-dessus copie le fichier tel quel, `DATABASE_URL` reste **vide** tant qu'on n'a
+> pas édité `backend/.env` à la main. Avec une URL vide, `alembic upgrade head` échoue avec
+> `sqlalchemy.exc.ArgumentError: Could not parse SQLAlchemy URL from given URL string` (le driver
+> async `asyncpg` ne peut rien parser d'une chaîne vide). Éditer `backend/.env` et renseigner :
+> ```
+> DATABASE_URL=postgresql+asyncpg://user:password@host/dbname
+> ```
+> (URL Neon en dev, ou Postgres local via `docker compose --profile local-db up` — voir
+> `backend/.env.example` pour le format complet).
+
+```powershell
 # 1d. Créer le tout premier compte admin (table utilisateurs vide uniquement)
 python -m backend.scripts.seed_admin
 # Affiche l'identifiant "admin" et un mot de passe généré une seule fois — le noter.
@@ -208,7 +227,9 @@ vraie valeur via `-e BACKEND_URL=...` selon l'environnement cible.
 
 | Symptôme | Cause | Solution |
 |---|---|---|
+| `sqlalchemy.exc.ArgumentError: Could not parse SQLAlchemy URL from given URL string` lors de `alembic upgrade head` | `DATABASE_URL` vide ou mal formée dans `backend/.env` (copie brute de `.env.example` jamais éditée) | Éditer `backend/.env`, renseigner `DATABASE_URL=postgresql+asyncpg://user:password@host/dbname` (voir étape 1a) |
 | Boucle infinie vers `/login` | Backend arrêté ou `DATABASE_URL` invalide | Vérifier `http://localhost:8000/health` |
 | Connexion échoue avec identifiant/mot de passe corrects | Pas de compte encore créé | Relancer `python -m backend.scripts.seed_admin` (table `utilisateurs` vide requise) |
 | Le JS ne s'exécute pas du tout en dev, aucune requête au clic sur "Se connecter" | CSP trop stricte sans `unsafe-eval` | Déjà géré : `next.config.js` ajoute `'unsafe-eval'` uniquement quand `NODE_ENV !== "production"` (Fast Refresh) |
 | 401 en boucle après connexion | Horloge système désynchronisée ou `CRM_API_SECRET` différent entre lancements backend | Vérifier que `backend/.env` n'a pas changé de `CRM_API_SECRET` entre deux sessions |
+| `ERR_CONNECTION_RESET` en cliquant un lien de collecte de documents | `frontend-portail` (port 3000) n'est pas lancé | `docker compose up frontend-portail` depuis la racine du dépôt (ou `docker compose up -d frontend-portail` en arrière-plan) |

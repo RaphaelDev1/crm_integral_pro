@@ -6,31 +6,33 @@ import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { ClientForm, clientToFormValues } from "@/components/clients/ClientForm";
-import { ContratForm, contratToFormValues } from "@/components/clients/ContratForm";
+import { ContratsTab } from "@/components/clients/ContratsTab";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DataTable } from "@/components/ui/data-table";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useAuth } from "@/contexts/AuthContext";
+import { ApiError } from "@/lib/api";
+import { formatDateRelance } from "@/lib/dateRelance";
 import {
   clientsResource,
-  useClientAlertes,
   useClientDocuments,
   useClientHistorique,
   useEnvoyerRelance,
   useGenererLienPortail,
+  useValiderDocumentClient,
 } from "@/lib/hooks/useClients";
-import { contratsResource, useContratsClient } from "@/lib/hooks/useContrats";
+import { useContratsClient } from "@/lib/hooks/useContrats";
 import { useCreerDossier, useDossiersClient } from "@/lib/hooks/useDossiers";
 import type { ClientUpdateInput } from "@/lib/schemas/client";
-import type { ContratCreateInput, ContratUpdateInput } from "@/lib/schemas/contrat";
-import type { Contrat, Dossier } from "@/lib/types";
+import type { Dossier } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 const UNIVERS_OPTIONS = [
   { value: "telecom_mobile", label: "Télécom mobile" },
@@ -59,7 +61,14 @@ export default function ClientDetailPage() {
   }
 
   if (!clientQuery.data) {
-    return <p className="text-sm text-slate-500">Client introuvable.</p>;
+    const accesRefuse = clientQuery.error instanceof ApiError && clientQuery.error.status === 403;
+    return (
+      <p className="text-sm text-slate-500">
+        {accesRefuse
+          ? "Accès refusé — cette fiche appartient à un autre conseiller. Un responsable peut vous en donner l'accès."
+          : "Client introuvable."}
+      </p>
+    );
   }
 
   const client = clientQuery.data;
@@ -69,6 +78,9 @@ export default function ClientDetailPage() {
       <h1 className="text-xl font-bold text-primary">
         {client.prenom} {client.nom}
       </h1>
+
+      <TableauBordClient clientId={clientId} client={client} />
+
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
           <Tabs defaultValue="infos">
@@ -104,148 +116,103 @@ export default function ClientDetailPage() {
   );
 }
 
+// Bandeau "dashboard" en tête de fiche — même principe que TableauBordProspect
+// (prospects/[id]/page.tsx) : les indicateurs à voir d'un coup d'œil pour
+// prioriser. Réutilise uniquement des champs déjà en base (pas de migration) :
+// pas de score/motif dédié côté Client, le statut de relance sert d'indicateur
+// de priorité, complété par le nombre de dossiers en cours (non actif/échec/annulé).
+function TableauBordClient({ clientId, client }: { clientId: number; client: import("@/lib/types").Client }) {
+  const dossiersQuery = useDossiersClient(clientId);
+  const dossiersEnCours = (dossiersQuery.data ?? []).filter(
+    (d) => !["actif", "echec", "annule"].includes(d.statut)
+  ).length;
+
+  // Économies réellement faites : différence entre le coût mensuel des
+  // contrats "Actuel" (situation d'avant, capturée au diagnostic) et celui
+  // des contrats "Actif" (nouveaux contrats souscrits), annualisée — plus
+  // fiable qu'une estimation figée, ça bouge avec les contrats du client.
+  const contratsQuery = useContratsClient(clientId);
+  const contrats = contratsQuery.data ?? [];
+  const contratsActifs = contrats.filter((c) => c.statut_contrat === "Actif");
+  const totalActuelMensuel = contrats
+    .filter((c) => c.statut_contrat === "Actuel")
+    .reduce((sum, c) => sum + (c.cout_mensuel ?? 0), 0);
+  const totalActifMensuel = contratsActifs.reduce((sum, c) => sum + (c.cout_mensuel ?? 0), 0);
+  const gainAnnuel = contratsActifs.length > 0 ? Math.max(0, (totalActuelMensuel - totalActifMensuel) * 12) : null;
+
+  const tuiles = [
+    {
+      label: "Économies faites",
+      valeur: gainAnnuel != null ? `${gainAnnuel.toFixed(0)} €/an` : "—",
+    },
+    { label: "Prochaine relance", valeur: client.date_relance ? formatDateRelance(client.date_relance) : "Non planifiée" },
+    { label: "Statut de relance", valeur: client.statut_relance || "Aucune" },
+    { label: "Dossiers en cours", valeur: String(dossiersEnCours) },
+    {
+      label: "Opérateur actuel",
+      valeur: client.operateur_actuel || "—",
+      sousTitre: [
+        client.satisfaction_reseau,
+        client.veut_rester ? `Rester : ${client.veut_rester}` : null,
+        client.defaut_technique ? `Défaut technique : ${client.defaut_technique}` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ") || undefined,
+    },
+  ];
+
+  return (
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+      {tuiles.map((tuile) => (
+        <Card key={tuile.label}>
+          <CardContent className="pt-4 pb-3">
+            <p className="text-xs text-muted-foreground">{tuile.label}</p>
+            <p className="text-lg font-bold text-primary">{tuile.valeur}</p>
+            {tuile.sousTitre && <p className="text-xs text-muted-foreground">{tuile.sousTitre}</p>}
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
 function InfosTab({ clientId, defaultValues }: { clientId: number; defaultValues: ClientUpdateInput }) {
+  const { estAdmin } = useAuth();
+  const verrouille = !estAdmin();
   const updateMutation = clientsResource.useUpdate({
     onSuccess: () => toast.success("Client mis à jour."),
   });
 
   return (
     <Card>
-      <CardContent className="pt-6">
-        <ClientForm
-          mode="edit"
-          defaultValues={defaultValues}
-          onSubmit={(values) => updateMutation.mutate({ id: clientId, values: values as ClientUpdateInput })}
-          submitError={updateMutation.error}
-          submitLabel="Enregistrer"
-          isSubmitting={updateMutation.isPending}
-        />
-      </CardContent>
-    </Card>
-  );
-}
-
-function ContratsTab({ clientId }: { clientId: number }) {
-  const contratsQuery = useContratsClient(clientId);
-  const alertesQuery = useClientAlertes(clientId);
-  const [createOpen, setCreateOpen] = useState(false);
-  const [editing, setEditing] = useState<Contrat | null>(null);
-
-  const createMutation = contratsResource.useCreate({
-    onSuccess: () => {
-      toast.success("Contrat ajouté.");
-      setCreateOpen(false);
-    },
-  });
-  const updateMutation = contratsResource.useUpdate({
-    onSuccess: () => {
-      toast.success("Contrat mis à jour.");
-      setEditing(null);
-    },
-  });
-  const deleteMutation = contratsResource.useDelete({
-    onSuccess: () => toast.success("Contrat supprimé."),
-  });
-
-  const columns = useMemo<ColumnDef<Contrat>[]>(
-    () => [
-      { id: "type", header: "Type", accessorFn: (c) => c.categorie || c.univers || "—" },
-      { accessorKey: "fournisseur", header: "Fournisseur" },
-      {
-        id: "cout_mensuel",
-        header: "Prix mensuel",
-        accessorFn: (c) => (c.cout_mensuel != null ? `${c.cout_mensuel} €` : "—"),
-      },
-      {
-        id: "statut_contrat",
-        header: "Statut",
-        cell: ({ row }) => <Badge variant="secondary">{row.original.statut_contrat || "—"}</Badge>,
-      },
-      { accessorKey: "date_fin_engagement", header: "Date fin engagement" },
-    ],
-    []
-  );
-
-  const alertesEconomie = (alertesQuery.data ?? []).reduce((total, a) => total + (a.economie_mensuelle ?? 0), 0);
-
-  const handleDelete = (contrat: Contrat) => {
-    if (!window.confirm(`Supprimer le contrat ${contrat.fournisseur ?? ""} ?`)) return;
-    deleteMutation.mutate(contrat.id);
-  };
-
-  return (
-    <Card>
-      <CardContent className="space-y-4 pt-6">
-        {!!alertesQuery.data?.length && (
-          <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-            {alertesQuery.data.length} offre(s) moins chère(s) détectée(s) — économie potentielle estimée à{" "}
-            {alertesEconomie.toFixed(2)} €/mois.
-          </div>
+      <CardContent className="pt-6 space-y-3">
+        {verrouille && (
+          <p className="rounded-md border bg-muted px-3 py-2 text-sm text-muted-foreground">
+            Fiche verrouillée — une fois enregistrée, seule un responsable peut modifier les informations du client.
+          </p>
         )}
-        <div className="flex justify-end">
-          <Button onClick={() => setCreateOpen(true)}>Ajouter contrat</Button>
-        </div>
-        {contratsQuery.isLoading ? (
-          <Skeleton className="h-48 w-full" />
-        ) : (
-          <DataTable
-            columns={columns}
-            data={contratsQuery.data ?? []}
-            emptyMessage="Aucun contrat rattaché."
-            rowActions={(contrat) => (
-              <>
-                <DropdownMenuItem onSelect={() => setEditing(contrat)}>Modifier</DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => handleDelete(contrat)} className="text-destructive">
-                  Supprimer
-                </DropdownMenuItem>
-              </>
-            )}
+        <fieldset disabled={verrouille} className={cn(verrouille && "opacity-60")}>
+          <ClientForm
+            mode="edit"
+            defaultValues={defaultValues}
+            onSubmit={(values) => updateMutation.mutate({ id: clientId, values: values as ClientUpdateInput })}
+            submitError={updateMutation.error}
+            submitLabel="Enregistrer"
+            isSubmitting={updateMutation.isPending}
           />
-        )}
+        </fieldset>
       </CardContent>
-
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Ajouter un contrat</DialogTitle>
-          </DialogHeader>
-          <ContratForm
-            mode="create"
-            defaultValues={{ client_id: clientId, fournisseur: "" } as ContratCreateInput}
-            onSubmit={(values) => createMutation.mutate({ ...(values as ContratCreateInput), client_id: clientId })}
-            submitError={createMutation.error}
-            submitLabel="Ajouter"
-            isSubmitting={createMutation.isPending}
-          />
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={editing !== null} onOpenChange={(open) => !open && setEditing(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Modifier le contrat</DialogTitle>
-          </DialogHeader>
-          {editing && (
-            <ContratForm
-              mode="edit"
-              defaultValues={contratToFormValues(editing)}
-              onSubmit={(values) => updateMutation.mutate({ id: editing.id, values: values as ContratUpdateInput })}
-              submitError={updateMutation.error}
-              submitLabel="Enregistrer"
-              isSubmitting={updateMutation.isPending}
-            />
-          )}
-        </DialogContent>
-      </Dialog>
     </Card>
   );
 }
 
 function DossiersTab({ clientId }: { clientId: number }) {
+  const router = useRouter();
   const dossiersQuery = useDossiersClient(clientId);
 
   const columns = useMemo<ColumnDef<Dossier>[]>(
     () => [
+      { id: "numero", header: "N° dossier", accessorFn: (d) => `#${d.id}` },
       { accessorKey: "univers", header: "Univers" },
       {
         id: "statut",
@@ -269,7 +236,12 @@ function DossiersTab({ clientId }: { clientId: number }) {
         {dossiersQuery.isLoading ? (
           <Skeleton className="h-48 w-full" />
         ) : (
-          <DataTable columns={columns} data={dossiersQuery.data ?? []} emptyMessage="Aucun dossier en cours." />
+          <DataTable
+            columns={columns}
+            data={dossiersQuery.data ?? []}
+            emptyMessage="Aucun dossier en cours."
+            onRowClick={(dossier) => router.push(`/dossiers/${dossier.id}`)}
+          />
         )}
       </CardContent>
     </Card>
@@ -278,6 +250,30 @@ function DossiersTab({ clientId }: { clientId: number }) {
 
 function DocumentsTab({ clientId }: { clientId: number }) {
   const documentsQuery = useClientDocuments(clientId);
+  const validerMutation = useValiderDocumentClient(clientId);
+  const [rejetCible, setRejetCible] = useState<{ id: number; label: string } | null>(null);
+  const [motifRejet, setMotifRejet] = useState("");
+
+  const handleValider = (documentId: number) => {
+    validerMutation.mutate(
+      { documentId, statutKyc: "valide" },
+      { onSuccess: () => toast.success("Document validé.") }
+    );
+  };
+
+  const handleConfirmerRejet = () => {
+    if (!rejetCible) return;
+    validerMutation.mutate(
+      { documentId: rejetCible.id, statutKyc: "rejete", motifRejet },
+      {
+        onSuccess: () => {
+          toast.success("Document rejeté, un signalement a été créé.");
+          setRejetCible(null);
+          setMotifRejet("");
+        },
+      }
+    );
+  };
 
   return (
     <Card>
@@ -299,12 +295,48 @@ function DocumentsTab({ clientId }: { clientId: number }) {
                   <a href={doc.url} target="_blank" rel="noreferrer" className="text-primary underline">
                     Voir
                   </a>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={doc.statut_kyc === "valide" || validerMutation.isPending}
+                    onClick={() => handleValider(doc.id)}
+                  >
+                    Valider
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-destructive"
+                    disabled={validerMutation.isPending}
+                    onClick={() => setRejetCible({ id: doc.id, label: doc.type_document || "Document" })}
+                  >
+                    Rejeter
+                  </Button>
                 </div>
               </li>
             ))}
           </ul>
         )}
       </CardContent>
+
+      <Dialog open={rejetCible !== null} onOpenChange={(open) => !open && setRejetCible(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Rejeter « {rejetCible?.label} »</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Motif du rejet</Label>
+              <Input value={motifRejet} onChange={(e) => setMotifRejet(e.target.value)} placeholder="Document illisible, information manquante…" />
+            </div>
+            <div className="flex justify-end">
+              <Button variant="destructive" onClick={handleConfirmerRejet} disabled={validerMutation.isPending}>
+                {validerMutation.isPending ? "Enregistrement…" : "Confirmer le rejet"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }
@@ -339,6 +371,7 @@ function HistoriqueTab({ clientId }: { clientId: number }) {
 }
 
 function ActionsCard({ clientId, onSuppression }: { clientId: number; onSuppression: () => void }) {
+  const router = useRouter();
   const [lienOpen, setLienOpen] = useState(false);
   const [lienUrl, setLienUrl] = useState<string | null>(null);
   const [devisOpen, setDevisOpen] = useState(false);
@@ -410,6 +443,13 @@ function ActionsCard({ clientId, onSuppression }: { clientId: number; onSuppress
         </Button>
         <Button variant="outline" className="w-full" onClick={() => setRelanceOpen(true)}>
           Nouvelle relance
+        </Button>
+        <Button
+          variant="outline"
+          className="w-full"
+          onClick={() => router.push(`/diagnostic?entiteType=client&entiteId=${clientId}`)}
+        >
+          Nouveau diagnostic
         </Button>
         <Button variant="destructive" className="w-full" onClick={handleSupprimer} disabled={deleteMutation.isPending}>
           Supprimer

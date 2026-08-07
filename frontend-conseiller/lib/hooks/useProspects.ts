@@ -34,6 +34,17 @@ export function useProspectDocuments(prospectId: number | undefined) {
   });
 }
 
+export function useSupprimerDocumentProspect(prospectId: number | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (documentId: number) =>
+      apiFetch<void>(`/prospects/${prospectId}/documents/${documentId}`, { method: "DELETE" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["prospects", "documents", prospectId ?? ""] });
+    },
+  });
+}
+
 export function useProspectHistorique(prospectId: number | undefined) {
   return useQuery({
     queryKey: ["prospects", "historique", prospectId ?? ""],
@@ -51,6 +62,16 @@ export function useConvertirProspect() {
       queryClient.invalidateQueries({ queryKey: prospectsResource.keys.detail(prospectId) });
       queryClient.invalidateQueries({ queryKey: ["clients", "list"] });
     },
+  });
+}
+
+// Crée (ou réutilise) le client "miroir" du prospect sans finaliser la
+// conversion — utilisé par le diagnostic pour créer un dossier avant la
+// signature du mandat, qui déclenchera la vraie conversion (voir
+// EtapeRecommandations.tsx).
+export function useClientMiroirProspect() {
+  return useMutation({
+    mutationFn: (prospectId: number) => apiFetch<Client>(`/prospects/${prospectId}/client-miroir`, { method: "POST" }),
   });
 }
 
@@ -84,5 +105,22 @@ export function useEnvoyerLienDocumentsProspect() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ canal }),
       }),
+  });
+}
+
+// Marque la relance du jour comme faite : journalise l'action (source du
+// "dernier contact" affiché) et programme la prochaine relance à +7 jours —
+// voir backend/routers/prospects.py::relance_effectuee.
+export function useRelanceEffectuee() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (prospectId: number) =>
+      apiFetch<Prospect>(`/prospects/${prospectId}/relance-effectuee`, { method: "POST" }),
+    onSuccess: (_data, prospectId) => {
+      queryClient.invalidateQueries({ queryKey: prospectsResource.keys.detail(prospectId) });
+      queryClient.invalidateQueries({ queryKey: prospectsResource.keys.lists() });
+      queryClient.invalidateQueries({ queryKey: ["prospects", "score", prospectId] });
+      queryClient.invalidateQueries({ queryKey: ["prospects", "historique", prospectId] });
+    },
   });
 }

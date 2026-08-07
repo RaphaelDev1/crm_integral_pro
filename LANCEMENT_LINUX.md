@@ -3,7 +3,9 @@
 > Adaptation Linux/bash de `GUIDE_LANCEMENT.md` et `frontend-conseiller/LANCEMENT.md` (écrits en
 > PowerShell pour Windows). Périmètre couvert ici : backend FastAPI + `frontend-conseiller`
 > (l'outil interne conseiller en Next.js), suffisant pour travailler au quotidien depuis un
-> Chromebook avec le conteneur Linux (Crostini) activé.
+> Chromebook avec le conteneur Linux (Crostini) activé. Le portail client (`frontend-portail`,
+> nécessaire uniquement pour ouvrir les liens de collecte de documents envoyés aux clients/prospects)
+> est couvert en option à l'étape 7 — pas nécessaire pour le travail quotidien conseiller.
 
 ---
 
@@ -29,12 +31,17 @@ python3.11 --version   # Python 3.11.x
 node --version         # v20.x
 ```
 
-Docker est optionnel (utile pour Redis/Postgres local) — sur Chromebook, `docker.io` fonctionne
-dans Crostini :
+Docker est optionnel (utile pour Redis/Postgres local, et pour lancer `frontend-portail`, voir
+étape 7) — sur Chromebook, `docker.io` fonctionne dans Crostini :
 
 ```bash
-sudo apt install -y docker.io
+sudo apt install -y docker.io docker-compose-plugin
 sudo usermod -aG docker $USER   # puis se déconnecter/reconnecter du terminal Linux
+```
+
+Vérifier que la commande `docker compose` (v2, avec espace — pas `docker-compose`) fonctionne :
+```bash
+docker compose version
 ```
 
 ## 1. Récupérer le projet
@@ -65,6 +72,12 @@ cp backend/.env.example backend/.env
 #   - CRM_API_SECRET (générer avec : python -c "import secrets; print(secrets.token_urlsafe(48))")
 #   - ANTHROPIC_API_KEY (si besoin de l'agent d'audit / diagnostic)
 ```
+
+> ⚠️ Le `cp` ci-dessus copie le fichier tel quel : `DATABASE_URL` reste **vide** tant que
+> `backend/.env` n'est pas édité. Avec une URL vide, l'étape suivante (`alembic upgrade head`)
+> échoue avec `sqlalchemy.exc.ArgumentError: Could not parse SQLAlchemy URL from given URL string`.
+> Format attendu : `DATABASE_URL=postgresql+asyncpg://user:password@host/dbname` (voir
+> `backend/.env.example`).
 
 ## 3. Migrations Alembic (obligatoire avant tout)
 
@@ -119,14 +132,39 @@ Démarre sur **`http://localhost:3001`**.
 > redirige automatiquement les ports du conteneur Linux vers `localhost` côté ChromeOS, pas de
 > configuration réseau supplémentaire nécessaire.
 
-## 7. Se connecter
+## 7. (Optionnel) Lancer le portail client — liens de collecte de documents
+
+Nécessaire uniquement pour tester/ouvrir un lien de collecte de documents (« Envoyer lien collecte
+docs » depuis une fiche prospect, ou le wizard `/diagnostic`) — ce lien pointe vers
+`http://localhost:3000/dossier/{token}`, servi par `frontend-portail` (appli Next.js séparée). Sans
+ça, cliquer le lien donne `ERR_CONNECTION_RESET`.
+
+Dans un troisième terminal, à la racine du dépôt :
+
+```bash
+docker compose up frontend-portail
+```
+
+Premier lancement un peu long (installe les dépendances npm dans l'image). Démarre en hot-reload
+sur `http://localhost:3000`. Pour le laisser tourner en arrière-plan :
+
+```bash
+docker compose up -d frontend-portail
+docker compose logs -f frontend-portail   # suivre les logs
+docker compose down                       # arrêter
+```
+
+> Après un `npm install` dans `frontend-portail/` (nouvelle dépendance) : reconstruire l'image
+> avec `docker compose build frontend-portail` avant de relancer.
+
+## 8. Se connecter
 
 1. `http://localhost:3001` → redirection vers `/login`.
 2. Identifiant/mot de passe `admin` généré à l'étape 4.
 3. Changement de mot de passe exigé à la première connexion.
 4. Redirection vers `/dashboard`.
 
-## 8. Tests / lint (optionnel)
+## 9. Tests / lint (optionnel)
 
 ```bash
 # Backend
@@ -141,17 +179,20 @@ npm test
 npm run test:e2e   # nécessite le backend déjà lancé (étape 5)
 ```
 
-## 9. Problèmes fréquents
+## 10. Problèmes fréquents
 
 | Symptôme | Cause | Solution |
 |---|---|---|
 | `command not found: python3.11` | Paquet non installé | `sudo apt install python3.11 python3.11-venv` |
+| `sqlalchemy.exc.ArgumentError: Could not parse SQLAlchemy URL from given URL string` lors de `alembic upgrade head` | `DATABASE_URL` vide ou mal formée dans `backend/.env` (copie brute de `.env.example` jamais éditée) | Éditer `backend/.env`, renseigner `DATABASE_URL=postgresql+asyncpg://user:password@host/dbname` (voir étape 2) |
 | Boucle infinie vers `/login` | Backend arrêté ou `DATABASE_URL` invalide | Vérifier `http://localhost:8000/health` |
 | Connexion échoue avec identifiant/mot de passe corrects | Pas de compte encore créé | Relancer `python -m backend.scripts.seed_admin` |
 | Port déjà utilisé (`EADDRINUSE`) | Une instance précédente tourne encore | `lsof -i :8000` / `lsof -i :3001` puis `kill <PID>` |
 | npm install très lent ou échoue | Version Node incorrecte | Vérifier `node --version` → doit être v20.x (`nvm use 20`) |
+| `ERR_CONNECTION_RESET` sur un lien de collecte de documents | `frontend-portail` non lancé | `docker compose up frontend-portail` (voir étape 7) |
+| `docker: 'compose' is not a docker command` | Plugin compose v2 absent | `sudo apt install -y docker-compose-plugin` |
 
-## 10. Reprendre le travail le lendemain
+## 11. Reprendre le travail le lendemain
 
 ```bash
 cd cmr_integral_pro
@@ -164,4 +205,7 @@ uvicorn backend.main:app --reload --port 8000
 # Terminal 2
 cd frontend-conseiller
 npm run dev
+
+# Terminal 3 (optionnel — uniquement pour tester les liens de collecte de documents)
+docker compose up frontend-portail
 ```

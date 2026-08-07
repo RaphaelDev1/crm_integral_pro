@@ -22,7 +22,13 @@ interface UserFormProps {
 }
 
 export function userToFormValues(user: User): UserUpdateInput {
-  return { nom_complet: user.nom_complet, role: user.role as UserUpdateInput["role"], actif: user.actif, password: "" };
+  return {
+    nom_complet: user.nom_complet,
+    role: user.role as UserUpdateInput["role"],
+    telephone: user.telephone ?? "",
+    actif: user.actif,
+    password: "",
+  };
 }
 
 export function UserForm({ mode, defaultValues, onSubmit, submitError, submitLabel, isSubmitting }: UserFormProps) {
@@ -80,6 +86,19 @@ export function UserForm({ mode, defaultValues, onSubmit, submitError, submitLab
                     ))}
                   </SelectContent>
                 </Select>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name="telephone"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Téléphone (affiché sur les PDF de restitution)</FormLabel>
+                <FormControl>
+                  <Input {...field} />
+                </FormControl>
                 <FormMessage />
               </FormItem>
             )}

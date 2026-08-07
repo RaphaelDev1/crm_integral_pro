@@ -25,6 +25,18 @@ export const STATUTS_CONTRAT = [
   "Résilié",
 ];
 
+// Type de contrat (stocké dans Contrat.categorie) — même vocabulaire que la
+// colonne "Type" affichée dans ContratsTab.
+export const TYPES_CONTRAT = [
+  "Forfait mobile",
+  "Forfait box",
+  "Énergie électricité",
+  "Énergie gaz",
+  "Assurance habitation",
+  "Abonnement",
+  "Autre",
+];
+
 export function contratToFormValues(contrat: Contrat): ContratUpdateInput {
   return {
     univers: contrat.univers ?? "",
@@ -68,6 +80,30 @@ export function ContratForm({
           <div className="grid grid-cols-2 gap-4">
             <FormField
               control={form.control}
+              name="categorie"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Type</FormLabel>
+                  <Select onValueChange={field.onChange} value={field.value || undefined}>
+                    <FormControl>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Sélectionner…" />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {TYPES_CONTRAT.map((type) => (
+                        <SelectItem key={type} value={type}>
+                          {type}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
               name="fournisseur"
               render={({ field }) => (
                 <FormItem>
@@ -79,6 +115,8 @@ export function ContratForm({
                 </FormItem>
               )}
             />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
             <FormField
               control={form.control}
               name="nom_offre"
@@ -92,8 +130,6 @@ export function ContratForm({
                 </FormItem>
               )}
             />
-          </div>
-          <div className="grid grid-cols-2 gap-4">
             <FormField
               control={form.control}
               name="cout_mensuel"
@@ -107,6 +143,8 @@ export function ContratForm({
                 </FormItem>
               )}
             />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
             <FormField
               control={form.control}
               name="statut_contrat"
@@ -131,8 +169,6 @@ export function ContratForm({
                 </FormItem>
               )}
             />
-          </div>
-          <div className="grid grid-cols-2 gap-4">
             <FormField
               control={form.control}
               name="date_souscription"
@@ -146,6 +182,8 @@ export function ContratForm({
                 </FormItem>
               )}
             />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
             <FormField
               control={form.control}
               name="date_fin_engagement"
@@ -159,20 +197,20 @@ export function ContratForm({
                 </FormItem>
               )}
             />
+            <FormField
+              control={form.control}
+              name="reference_contrat"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Référence</FormLabel>
+                  <FormControl>
+                    <Input {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
           </div>
-          <FormField
-            control={form.control}
-            name="reference_contrat"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Référence</FormLabel>
-                <FormControl>
-                  <Input {...field} />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
           <FormField
             control={form.control}
             name="notes"

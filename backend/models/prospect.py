@@ -27,6 +27,11 @@ class Prospect(Base):
     ville: Mapped[str | None] = mapped_column(String, nullable=True)
     adresse: Mapped[str | None] = mapped_column(String, nullable=True)
     type_client: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Renseignés uniquement pour type_client == "Professionnel" (voir
+    # EtapeIdentite.tsx côté diagnostic) — raison_sociale : nom de l'entreprise,
+    # effectif : tranche libre ("1", "2-5", "6-9", "10-19", "20+").
+    raison_sociale: Mapped[str | None] = mapped_column(String, nullable=True)
+    effectif: Mapped[str | None] = mapped_column(String, nullable=True)
     univers_interesse: Mapped[str | None] = mapped_column(String, nullable=True)
     service_principal: Mapped[str | None] = mapped_column(String, nullable=True)
     operateur_actuel: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -36,6 +41,10 @@ class Prospect(Base):
     offre_actuelle: Mapped[str | None] = mapped_column(String, nullable=True)
     satisfaction_reseau: Mapped[str | None] = mapped_column(String, nullable=True)
     veut_rester: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Signalement d'un défaut technique potentiel constaté sur le réseau actuel
+    # du prospect ("Faible" | "Moyen" | "Critique"), voir NIVEAUX_DEFAUT_TECHNIQUE
+    # côté frontend (lib/diagnosticConstants.ts).
+    defaut_technique: Mapped[str | None] = mapped_column(String, nullable=True)
     speed_down: Mapped[float | None] = mapped_column(Float, default=0)
     speed_up: Mapped[float | None] = mapped_column(Float, default=0)
     cout_elec: Mapped[float | None] = mapped_column(Float, default=0)

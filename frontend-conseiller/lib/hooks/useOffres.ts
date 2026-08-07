@@ -68,6 +68,32 @@ interface CreerComparaisonPayload {
   contexte?: string;
 }
 
+// Liste les comparaisons enregistrées pour un client (ou un prospect) — la
+// plus récente (id desc, voir backend/routers/comparaisons_offres.py) sert à
+// afficher la meilleure offre trouvée sous "Économies estimées" sur la fiche
+// client (clients/[id]/page.tsx).
+export function useComparaisonsOffres(params: { client_id?: number; prospect_id?: number }, enabled = true) {
+  const query = new URLSearchParams();
+  if (params.client_id != null) query.set("client_id", String(params.client_id));
+  if (params.prospect_id != null) query.set("prospect_id", String(params.prospect_id));
+  return useQuery({
+    queryKey: ["comparaisons-offres", "list", params],
+    queryFn: () => apiFetch<ComparaisonOffre[]>(`/comparaisons-offres?${query.toString()}`),
+    enabled,
+  });
+}
+
+// Dernière comparaison d'offres du même univers que ce dossier — sert à
+// proposer de choisir une autre offre parmi celles comparées lors du
+// diagnostic (backend/routers/dossiers.py::obtenir_comparaison_dossier).
+export function useComparaisonDossier(dossierId: number | undefined) {
+  return useQuery({
+    queryKey: ["dossiers", "comparaison", dossierId ?? ""],
+    queryFn: () => apiFetch<ComparaisonOffre | null>(`/dossiers/${dossierId}/comparaison`),
+    enabled: dossierId !== undefined,
+  });
+}
+
 // Persiste le résultat d'une comparaison (backend/routers/comparaisons_offres.py)
 // — nécessaire avant de générer un PDF de restitution : GET /dossiers/{id}/pdf-restitution
 // lit toujours la dernière ComparaisonOffre du client.

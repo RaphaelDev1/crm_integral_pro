@@ -11,8 +11,8 @@ import { DataTable } from "@/components/ui/data-table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
+import { formatDateRelance, sortingFnDateRelance } from "@/lib/dateRelance";
 import { clientsResource } from "@/lib/hooks/useClients";
-import { contratsResource } from "@/lib/hooks/useContrats";
 import type { ClientCreateInput } from "@/lib/schemas/client";
 import type { Client } from "@/lib/types";
 
@@ -21,7 +21,6 @@ export default function ClientsPage() {
   const [createOpen, setCreateOpen] = useState(false);
 
   const clientsQuery = clientsResource.useList();
-  const contratsQuery = contratsResource.useList();
   const createMutation = clientsResource.useCreate({
     onSuccess: (client) => {
       toast.success("Client créé.");
@@ -33,17 +32,9 @@ export default function ClientsPage() {
     onSuccess: () => toast.success("Client supprimé."),
   });
 
-  const nbContratsParClient = useMemo(() => {
-    const map = new Map<number, number>();
-    for (const contrat of contratsQuery.data ?? []) {
-      if (contrat.client_id == null) continue;
-      map.set(contrat.client_id, (map.get(contrat.client_id) ?? 0) + 1);
-    }
-    return map;
-  }, [contratsQuery.data]);
-
   const columns = useMemo<ColumnDef<Client>[]>(
     () => [
+      { accessorKey: "ref", header: "Référence" },
       {
         id: "nom",
         header: "Nom",
@@ -53,13 +44,21 @@ export default function ClientsPage() {
       { accessorKey: "telephone", header: "Téléphone" },
       { accessorKey: "ville", header: "Ville" },
       {
-        id: "nb_contrats",
-        header: "Nb contrats",
-        accessorFn: (client) => nbContratsParClient.get(client.id) ?? 0,
+        id: "prochaine_relance",
+        header: "Prochaine relance",
+        accessorFn: (client) => `${client.date_relance ?? ""} ${client.statut_relance ?? ""}`.trim(),
+        sortingFn: sortingFnDateRelance,
+        cell: ({ row }) => (
+          <div className="space-y-0.5">
+            <div>{formatDateRelance(row.original.date_relance)}</div>
+            {row.original.statut_relance && (
+              <div className="text-xs text-muted-foreground">{row.original.statut_relance}</div>
+            )}
+          </div>
+        ),
       },
-      { accessorKey: "date_creation", header: "Date création" },
     ],
-    [nbContratsParClient]
+    []
   );
 
   const handleDelete = (client: Client) => {
@@ -85,6 +84,7 @@ export default function ClientsPage() {
           data={clientsQuery.data ?? []}
           globalFilterPlaceholder="Rechercher un client…"
           emptyMessage="Aucun client pour le moment."
+          defaultSorting={[{ id: "prochaine_relance", desc: false }]}
           onRowClick={(client) => router.push(`/clients/${client.id}`)}
           rowActions={(client) => (
             <>

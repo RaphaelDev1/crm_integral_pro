@@ -14,7 +14,8 @@ import hashlib
 import json
 import logging
 import time
-from datetime import datetime
+from datetime import date, datetime
+from typing import TYPE_CHECKING
 
 import httpx
 from sqlalchemy import select
@@ -26,13 +27,14 @@ from backend.models.contrat import Contrat
 from backend.models.parametre import Parametre
 from backend.models.prospect import Prospect
 
+if TYPE_CHECKING:
+    from backend.models.dossier import Dossier
+
 logger = logging.getLogger(__name__)
 
 # ≈ 2 mois — seuil (en jours avant la fin d'engagement) déclenchant l'alerte
 # client dans `alerter_fin_engagement`, cf. suivi post-souscription.
 JOURS_AVANT_ALERTE_ENGAGEMENT = 60
-
-_FORMAT_DATE_COURTE = "%d/%m/%Y"
 
 _OVH_BASE_URLS = {
     "ovh-eu": "https://eu.api.ovh.com/1.0",
@@ -41,9 +43,12 @@ _OVH_BASE_URLS = {
 }
 
 
-def envoyer_email(destinataire: str, sujet: str, corps_html: str) -> bool:
+def envoyer_email(
+    destinataire: str, sujet: str, corps_html: str, attachments: list[dict] | None = None
+) -> bool:
     """Envoie un email transactionnel via Resend. False (sans exception) si
-    RESEND_API_KEY absente ou si l'envoi échoue."""
+    RESEND_API_KEY absente ou si l'envoi échoue. `attachments` (optionnel) :
+    liste Resend `[{"filename": ..., "content": <base64 str>}]`."""
     if not destinataire:
         return False
     if not settings.resend_api_key:
@@ -53,12 +58,15 @@ def envoyer_email(destinataire: str, sujet: str, corps_html: str) -> bool:
         import resend
 
         resend.api_key = settings.resend_api_key
-        resend.Emails.send({
+        payload = {
             "from": f"{settings.email_from_name} <{settings.email_from}>",
             "to": [destinataire],
             "subject": sujet,
             "html": corps_html,
-        })
+        }
+        if attachments:
+            payload["attachments"] = attachments
+        resend.Emails.send(payload)
         return True
     except Exception:
         logger.exception("Échec de l'envoi email (Resend) à %s.", destinataire)
@@ -150,16 +158,32 @@ async def _destinataire_admin(db: AsyncSession) -> str | None:
 
 
 def _parser_date_courte(date_str: str | None):
+    """Format d/m/Y — utilisé pour `date_fin_engagement` (saisi en texte libre
+    "JJ/MM/AAAA", voir ContratForm.tsx). Ne pas réutiliser pour `date_relance`,
+    qui est en ISO (voir _parser_date_relance ci-dessous)."""
     if not date_str:
         return None
     try:
-        return datetime.strptime(date_str.strip(), _FORMAT_DATE_COURTE).date()
+        return datetime.strptime(date_str.strip(), "%d/%m/%Y").date()
+    except (ValueError, AttributeError):
+        return None
+
+
+def _parser_date_relance(date_str: str | None):
+    """`date_relance` est en ISO (YYYY-MM-DD) — les champs `<input type="date">`
+    du frontend et `POST /prospects/{id}/relance-effectuee` produisent ce
+    format nativement. Doit rester aligné avec backend/routers/dashboard.py::
+    _parse_date_relance."""
+    if not date_str:
+        return None
+    try:
+        return date.fromisoformat(date_str.strip())
     except (ValueError, AttributeError):
         return None
 
 
 def _jours_retard(date_relance_str: str | None) -> int | None:
-    d = _parser_date_courte(date_relance_str)
+    d = _parser_date_relance(date_relance_str)
     if d is None:
         return None
     return (datetime.now().date() - d).days
@@ -401,3 +425,72 @@ def envoyer_demande_documents_prospect(prospect: dict, url: str, duree_jours: in
         email, "Merci de nous transmettre votre facture et votre test de débit", corps_email
     ) if email else False
     return {"sms_envoye": sms_envoye, "email_envoye": email_envoye}
+
+
+async def creer_notification_conseiller(db: AsyncSession, dossier: "Dossier", message: str) -> None:
+    """Notification in-app pour le conseiller responsable du dossier — utilisée
+    quand le client agit de son côté (upload de document, speedtest, signature
+    de mandat) ou qu'un dossier change de statut, sans que le conseiller ne le
+    sache tant qu'il n'a pas rouvert le dossier. `Dossier.conseiller_responsable`
+    stocke le nom complet (voir routers/dossiers.py::creer_dossier), pas le
+    username — on le résout ici. Ne fait rien si le dossier n'a pas de
+    conseiller assigné ou si son compte est introuvable (ne bloque jamais
+    l'action du client)."""
+    from backend.models.notification import Notification
+    from backend.models.user import User
+
+    if not dossier.conseiller_responsable:
+        return
+    utilisateur = (
+        await db.execute(select(User).where(User.nom_complet == dossier.conseiller_responsable))
+    ).scalars().first()
+    if utilisateur is None:
+        return
+    db.add(Notification(
+        conseiller_username=utilisateur.username,
+        dossier_id=dossier.id,
+        message=message,
+        date_creation=datetime.now().strftime("%d/%m/%Y %H:%M"),
+    ))
+    await db.commit()
+
+
+async def creer_notification_document(db: AsyncSession, dossier: "Dossier") -> None:
+    """Variante de `creer_notification_conseiller` pour les uploads de
+    documents : si un client envoie plusieurs pièces d'affilée, on ne veut
+    qu'une seule notification "nouveau document" en attente par dossier plutôt
+    qu'une par fichier — sinon la cloche du conseiller se remplit d'entrées
+    redondantes pour un seul événement métier (le client a répondu à la
+    demande de documents)."""
+    from backend.models.notification import Notification
+    from backend.models.user import User
+
+    if not dossier.conseiller_responsable:
+        return
+    utilisateur = (
+        await db.execute(select(User).where(User.nom_complet == dossier.conseiller_responsable))
+    ).scalars().first()
+    if utilisateur is None:
+        return
+
+    message = f"Nouveau document — dossier #{dossier.id}."
+    deja_en_attente = (
+        await db.execute(
+            select(Notification).where(
+                Notification.conseiller_username == utilisateur.username,
+                Notification.dossier_id == dossier.id,
+                Notification.message == message,
+                Notification.lu.is_(False),
+            )
+        )
+    ).scalars().first()
+    if deja_en_attente is not None:
+        return
+
+    db.add(Notification(
+        conseiller_username=utilisateur.username,
+        dossier_id=dossier.id,
+        message=message,
+        date_creation=datetime.now().strftime("%d/%m/%Y %H:%M"),
+    ))
+    await db.commit()

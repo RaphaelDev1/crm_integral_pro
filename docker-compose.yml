@@ -1,12 +1,14 @@
 # ==============================================================================
-#  Environnement de DEV local. Lance les 3 process (backend, streamlit,
-#  portail — le portail se lance à part via `cd frontend-portail && npm run
-#  dev`, pas encore intégré ici car il n'est pas requis pour la boucle
-#  backend/Celery) + Redis + Celery worker/beat + Flower, avec un Postgres
+#  Environnement de DEV local. Lance backend, streamlit, portail client
+#  (frontend-portail, hot-reload via `npm run dev` monté en volume — le stage
+#  `deps` du Dockerfile est réutilisé pour avoir node_modules sans lancer le
+#  build de prod) + Redis + Celery worker/beat + Flower, avec un Postgres
 #  local optionnel (profil `local-db`, sinon `backend/.env` pointe sur Neon).
+#  frontend-conseiller reste hors docker-compose (lancé via `npm run dev`
+#  directement, voir GUIDE_LANCEMENT.md).
 #
 #  Usage :
-#    docker compose up                     # backend + streamlit + redis + celery + flower
+#    docker compose up                     # backend + streamlit + portail + redis + celery + flower
 #    docker compose --profile local-db up   # + un Postgres local
 #
 #  backend/.env et src/.env sont lus tels quels (env_file) ; REDIS_URL est
@@ -92,6 +94,20 @@ services:
       - "8501:8501"
     depends_on:
       - redis
+
+  frontend-portail:
+    build:
+      context: ./frontend-portail
+      dockerfile: Dockerfile
+      target: deps
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    volumes:
+      - ./frontend-portail:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    command: npm run dev
 
 volumes:
   pg_data:

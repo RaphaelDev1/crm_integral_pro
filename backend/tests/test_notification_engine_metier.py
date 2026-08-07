@@ -50,7 +50,13 @@ class _FakeResult:
 
 
 def _date_courte(jours_ecart: int) -> str:
+    """Format d/m/Y, pour `date_fin_engagement` (saisi en texte libre)."""
     return (datetime.now().date() + timedelta(days=jours_ecart)).strftime("%d/%m/%Y")
+
+
+def _date_relance(jours_ecart: int) -> str:
+    """Format ISO, pour `date_relance` (`<input type="date">` côté frontend)."""
+    return (datetime.now().date() + timedelta(days=jours_ecart)).isoformat()
 
 
 # ------------------------------------------------------------------------------
@@ -58,9 +64,9 @@ def _date_courte(jours_ecart: int) -> str:
 # ------------------------------------------------------------------------------
 def test_relances_du_jour_combine_prospects_et_clients_en_retard():
     prospect = Prospect(id=1, prenom="Alice", nom="Martin", telephone="0600", statut="À relancer",
-                         date_relance=_date_courte(-2), economie_estimee_an=120.0)
+                         date_relance=_date_relance(-2), economie_estimee_an=120.0)
     client = Client(id=2, prenom="Bob", nom="Durand", telephone="0601", statut_relance="Relancé",
-                     date_relance=_date_courte(0), economie_estimee_an=80.0)
+                     date_relance=_date_relance(0), economie_estimee_an=80.0)
     db = FakeSession(file_attente=[[prospect], [client]])
 
     relances = _run(notification_engine.relances_du_jour(db))
@@ -73,7 +79,7 @@ def test_relances_du_jour_combine_prospects_et_clients_en_retard():
 
 def test_relances_du_jour_exclut_les_relances_futures():
     prospect = Prospect(id=1, prenom="Alice", nom="Martin", telephone="0600", statut="À relancer",
-                         date_relance=_date_courte(3), economie_estimee_an=120.0)
+                         date_relance=_date_relance(3), economie_estimee_an=120.0)
     db = FakeSession(file_attente=[[prospect], []])
 
     relances = _run(notification_engine.relances_du_jour(db))

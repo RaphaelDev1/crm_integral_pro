@@ -11,6 +11,8 @@ class ProspectBase(BaseModel):
     ville: str | None = None
     adresse: str | None = None
     type_client: str | None = None
+    raison_sociale: str | None = None
+    effectif: str | None = None
     univers_interesse: str | None = None
     service_principal: str | None = None
     operateur_actuel: str | None = None
@@ -20,6 +22,7 @@ class ProspectBase(BaseModel):
     offre_actuelle: str | None = None
     satisfaction_reseau: str | None = None
     veut_rester: str | None = None
+    defaut_technique: str | None = None
     speed_down: float | None = None
     speed_up: float | None = None
     cout_elec: float | None = None
@@ -53,6 +56,7 @@ class ProspectOut(ProspectBase):
     cree_par: str | None = None
     client_id: int | None = None
     converti_at: str | None = None
+    dernier_contact: str | None = None
 
 
 class DetailScoreOut(BaseModel):

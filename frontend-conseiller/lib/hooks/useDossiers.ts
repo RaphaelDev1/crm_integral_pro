@@ -79,11 +79,17 @@ export function useCreerDossier() {
       fournisseur_cible?: string;
       offre_cible_id?: number;
       economie_annuelle_estimee?: number;
+      frais_annexes_cible?: number;
+      // false par défaut (fiche client déjà établie) — true quand le dossier est
+      // créé depuis le diagnostic pour un prospect pas encore converti (client
+      // "miroir", voir EtapeRecommandations.tsx) : allège les documents requis
+      // tant que le mandat n'est pas signé (dossier_engine.documents_requis_pour_univers).
+      est_prospect?: boolean;
     }) =>
       apiFetch<Dossier>("/dossiers", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ...values, est_prospect: false }),
+        body: JSON.stringify({ ...values, est_prospect: values.est_prospect ?? false }),
       }),
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["dossiers", "list", { client_id: variables.client_id }] });

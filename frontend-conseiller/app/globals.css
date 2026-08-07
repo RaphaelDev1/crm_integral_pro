@@ -28,9 +28,36 @@
     --ring: 216 62% 27%;
     --radius: 0.5rem;
   }
+
+  .dark {
+    --background: 222 47% 8%;
+    --foreground: 210 40% 96%;
+    --card: 222 40% 11%;
+    --card-foreground: 210 40% 96%;
+    --popover: 222 40% 11%;
+    --popover-foreground: 210 40% 96%;
+    /* Même teinte navy identitaire, éclaircie pour rester lisible sur fond sombre. */
+    --primary: 216 70% 62%;
+    --primary-foreground: 222 47% 11%;
+    --secondary: 222 30% 18%;
+    --secondary-foreground: 210 40% 96%;
+    --muted: 222 30% 18%;
+    --muted-foreground: 215 20% 65%;
+    --accent: 222 30% 18%;
+    --accent-foreground: 210 40% 96%;
+    --destructive: 0 62.8% 50.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 222 25% 22%;
+    --input: 222 25% 22%;
+    --ring: 216 70% 62%;
+  }
 }
 
 body {
   background: #f4f6f9;
   min-height: 100vh;
+}
+
+.dark body {
+  background: hsl(222 47% 8%);
 }

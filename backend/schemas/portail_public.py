@@ -55,6 +55,7 @@ class TokenPublicContexte(BaseModel):
     demarches_a_completer: list[DemarcheAFournirOut] = []
     peut_renseigner_demarches: bool = True
     peut_transmettre_speedtest: bool = True
+    speedtest_fait: bool = False
 
 
 class UploadResultOut(BaseModel):

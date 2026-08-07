@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.core.config import settings
 from backend.core.logging import configurer_logging
 from backend.routers import (
+    admin,
     alertes_offres,
     audit_agent,
     auth,
@@ -21,12 +22,16 @@ from backend.routers import (
     demarches,
     dossiers,
     factures,
+    geo,
     honoraires,
+    mandats,
+    notifications,
     offres,
     parametres,
     portail_public,
     prospects,
     speedtest_backend,
+    stockage_local,
     users,
     veille,
     webhooks,
@@ -53,6 +58,7 @@ app.add_middleware(
 )
 
 # Routers protégés par JWT
+app.include_router(admin.router)
 app.include_router(alertes_offres.router)
 app.include_router(audit_agent.router)
 app.include_router(auth.router)
@@ -64,17 +70,22 @@ app.include_router(dossiers.router)
 app.include_router(factures.router)
 app.include_router(honoraires.router)
 app.include_router(honoraires.router_liste)
+app.include_router(mandats.router)
+app.include_router(mandats.router_mandats)
 app.include_router(demarches.router)
 app.include_router(comparaisons_offres.router)
 app.include_router(offres.router)
 app.include_router(veille.router)
 app.include_router(parametres.router)
 app.include_router(dashboard.router)
+app.include_router(notifications.router)
 app.include_router(users.router)
+app.include_router(geo.router)
 
 # Routers publics
 app.include_router(portail_public.router)
 app.include_router(speedtest_backend.router)
+app.include_router(stockage_local.router)
 app.include_router(webhooks.router)
 
 

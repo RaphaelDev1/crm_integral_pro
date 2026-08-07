@@ -6,16 +6,16 @@ import { useState } from "react";
 import { Champ, ChampSelect } from "@/components/diagnostic/champs";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Label } from "@/components/ui/label";
 import {
   CATEGORIES_ABONNEMENT,
-  DEBITS_OPTIONS,
+  GO_OPTIONS,
   LISTE_FOURNISSEURS_ENERGIE,
   LISTE_OPERATEURS_TEL,
   LISTE_TECHNO,
   LISTE_TECHNO_MOBILE,
+  NIVEAUX_DEFAUT_TECHNIQUE,
   SATISFACTION_RESEAU,
+  VEUT_RESTER_OPTIONS,
 } from "@/lib/diagnosticConstants";
 import type { DiagnosticDispatch, DiagnosticState } from "@/lib/hooks/useDiagnosticWizard";
 
@@ -43,84 +43,78 @@ export function EtapeSituation({ state, dispatch }: EtapeSituationProps) {
 
 function BlocTelecom({ state, dispatch }: EtapeSituationProps) {
   const mobileSeul = state.servicePrincipal === "Mobile uniquement";
-  const boxSeule = state.servicePrincipal === "Box / Fibre uniquement";
-  const afficherDebit = boxSeule || state.telecom.techno === "FIBRE" || state.telecom.techno === "ADSL";
   const technoOptions = mobileSeul ? LISTE_TECHNO_MOBILE : LISTE_TECHNO;
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">📱 Télécom</CardTitle>
-      </CardHeader>
-      <CardContent className="grid grid-cols-2 gap-4">
-        <ChampSelect
-          label="Opérateur actuel *"
-          value={state.telecom.operateurActuel}
-          onChange={(value) => dispatch({ type: "SET_TELECOM", values: { operateurActuel: value } })}
-          options={LISTE_OPERATEURS_TEL}
-        />
-        <ChampSelect
-          label="Technologie"
-          value={state.telecom.techno}
-          onChange={(value) => dispatch({ type: "SET_TELECOM", values: { techno: value } })}
-          options={technoOptions}
-        />
-        <Champ
-          label="Offre / forfait actuel"
-          value={state.telecom.offreActuelle}
-          onChange={(e) => dispatch({ type: "SET_TELECOM", values: { offreActuelle: e.target.value } })}
-        />
-        <Champ
-          label="Coût mensuel actuel (€) *"
-          type="number"
-          min={0}
-          step={1}
-          value={state.telecom.coutMensuelActuel || ""}
-          onChange={(e) => dispatch({ type: "SET_TELECOM", values: { coutMensuelActuel: Number(e.target.value) } })}
-        />
-        {afficherDebit ? (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">📱 Télécom</CardTitle>
+        </CardHeader>
+        <CardContent className="grid grid-cols-2 gap-4">
           <ChampSelect
-            label="Bande passante souhaitée"
-            value={state.telecom.debitSouhaite}
-            onChange={(value) => dispatch({ type: "SET_TELECOM", values: { debitSouhaite: value } })}
-            options={DEBITS_OPTIONS}
+            label="Opérateur actuel *"
+            value={state.telecom.operateurActuel}
+            onChange={(value) => dispatch({ type: "SET_TELECOM", values: { operateurActuel: value } })}
+            options={LISTE_OPERATEURS_TEL}
           />
-        ) : (
+          <ChampSelect
+            label="Technologie"
+            value={state.telecom.techno}
+            onChange={(value) => dispatch({ type: "SET_TELECOM", values: { techno: value } })}
+            options={technoOptions}
+          />
           <Champ
-            label="Data mobile minimum (Go) *"
+            label="Fin de contrat / engagement"
+            type="date"
+            value={state.telecom.finEngagement}
+            onChange={(e) => dispatch({ type: "SET_TELECOM", values: { finEngagement: e.target.value } })}
+          />
+          <Champ
+            label="Coût mensuel actuel (€) *"
+            type="number"
+            min={0}
+            step={1}
+            value={state.telecom.coutMensuelActuel || ""}
+            onChange={(e) => dispatch({ type: "SET_TELECOM", values: { coutMensuelActuel: Number(e.target.value) } })}
+          />
+          <ChampSelect
+            label="Go minimal *"
             value={state.telecom.dataGoMin}
-            onChange={(e) => dispatch({ type: "SET_TELECOM", values: { dataGoMin: e.target.value } })}
+            onChange={(value) => dispatch({ type: "SET_TELECOM", values: { dataGoMin: value } })}
+            options={GO_OPTIONS}
           />
-        )}
-        <ChampSelect
-          label="Satisfaction réseau (réponse réelle du client) *"
-          value={state.telecom.satisfactionReseau}
-          onChange={(value) => dispatch({ type: "SET_TELECOM", values: { satisfactionReseau: value } })}
-          options={SATISFACTION_RESEAU}
-        />
-        <Champ
-          label="Débit descendant mesuré (Mbps)"
-          type="number"
-          min={0}
-          value={state.telecom.speedDown || ""}
-          onChange={(e) => dispatch({ type: "SET_TELECOM", values: { speedDown: Number(e.target.value) } })}
-        />
-        <Champ
-          label="Débit montant mesuré (Mbps)"
-          type="number"
-          min={0}
-          value={state.telecom.speedUp || ""}
-          onChange={(e) => dispatch({ type: "SET_TELECOM", values: { speedUp: Number(e.target.value) } })}
-        />
-        <div className="col-span-2 flex items-center gap-2">
-          <Checkbox
-            checked={state.telecom.veutRester}
-            onCheckedChange={(checked) => dispatch({ type: "SET_TELECOM", values: { veutRester: checked === true } })}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">📶 Satisfaction réseau</CardTitle>
+        </CardHeader>
+        <CardContent className="grid grid-cols-2 gap-4">
+          <ChampSelect
+            label="Satisfaction réseau (réponse réelle du client) *"
+            value={state.telecom.satisfactionReseau}
+            onChange={(value) => dispatch({ type: "SET_TELECOM", values: { satisfactionReseau: value } })}
+            options={SATISFACTION_RESEAU}
           />
-          <Label className="font-normal">⚠️ Le client souhaite rester chez son opérateur actuel</Label>
-        </div>
-      </CardContent>
-    </Card>
+          <ChampSelect
+            label="Défaut technique potentiel *"
+            value={state.telecom.defautTechnique}
+            onChange={(value) => dispatch({ type: "SET_TELECOM", values: { defautTechnique: value } })}
+            options={NIVEAUX_DEFAUT_TECHNIQUE}
+            placeholder="Sélectionner…"
+          />
+          <ChampSelect
+            label="Veut rester chez son opérateur *"
+            value={state.telecom.veutRester}
+            onChange={(value) => dispatch({ type: "SET_TELECOM", values: { veutRester: value } })}
+            options={VEUT_RESTER_OPTIONS}
+            placeholder="Sélectionner…"
+          />
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 

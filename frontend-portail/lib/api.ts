@@ -3,7 +3,7 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 export interface DocumentDemande {
   type_document: string;
   label_affiche: string;
-  statut: "a_fournir" | "en_attente" | "valide" | "rejete";
+  statut: "a_fournir" | "en_attente" | "recu" | "valide" | "rejete";
   motif_rejet?: string | null;
   date_upload?: string | null;
 }
@@ -39,6 +39,7 @@ export interface TokenContexte {
   demarches_a_completer: DemarcheAFournir[];
   peut_renseigner_demarches: boolean;
   peut_transmettre_speedtest: boolean;
+  speedtest_fait: boolean;
 }
 
 export interface UploadResult {

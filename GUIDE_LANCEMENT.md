@@ -60,7 +60,7 @@ celery -A backend.workers.celery_app beat --loglevel=info
 cd src
 streamlit run app.py
 
-# Portail client Next.js
+# Portail client Next.js (voir aussi §3 pour le lancer via Docker à la place)
 cd frontend-portail
 npm run dev
 ```
@@ -78,11 +78,24 @@ docker compose up --build
 # + Postgres local si besoin (sinon backend/.env pointe sur Neon) :
 docker compose --profile local-db up --build
 ```
-Services lancés : redis, backend (`:8000`), celery-worker, celery-beat, flower (`:5555`), streamlit (`:8501`).
-Le portail Next.js n'est pas dans le compose — le lancer à part avec `npm run dev`.
+Services lancés : redis, backend (`:8000`), celery-worker, celery-beat, flower (`:5555`), streamlit
+(`:8501`), **et le portail client Next.js (`frontend-portail`, `:3000`, hot-reload — `npm run dev`
+monté en volume dans le conteneur, pas un build de prod)**. `frontend-conseiller` reste hors compose
+(lancé via `npm run dev`, voir `frontend-conseiller/LANCEMENT.md`).
+
+Pour ne lancer que le portail (les autres briques tournant déjà en local, sans Docker) :
+```powershell
+docker compose up frontend-portail
+```
+> Après un `npm install` dans `frontend-portail/` (nouvelle dépendance) : reconstruire l'image
+> avec `docker compose build frontend-portail` avant de relancer — le conteneur garde sinon
+> l'ancien `node_modules`.
 
 Vérif : `http://localhost:5555` (Flower) doit montrer le worker actif et les tâches planifiées
-(`relancer_dossiers_stagnants`, `verifier_accuses_lre_en_attente`).
+(`relancer_dossiers_stagnants`, `verifier_accuses_lre_en_attente`) ; `http://localhost:3000` →
+landing du portail. C'est ce port (`:3000`) que pointent les liens de collecte de documents envoyés
+aux prospects/clients (`PORTAIL_CLIENT_BASE_URL` dans `backend/.env`, défaut
+`http://localhost:3000`) — sans ce service lancé, ces liens renvoient `ERR_CONNECTION_RESET`.
 
 ## 4. Lancer les tests
 

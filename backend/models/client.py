@@ -4,7 +4,7 @@
 # ==============================================================================
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Float, String
+from sqlalchemy import Float, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.models.base import Base
@@ -18,6 +18,10 @@ class Client(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Conseiller propriétaire de la fiche — seul lui (ou un Admin) peut la voir/modifier
+    # (voir backend/routers/clients.py). NULL = fiche existante avant l'introduction de
+    # cette colonne, restant visible/éditable transitoirement le temps d'être réclamée.
+    conseiller_id: Mapped[int | None] = mapped_column(ForeignKey("utilisateurs.id"), nullable=True)
     prenom: Mapped[str | None] = mapped_column(String, nullable=True)
     nom: Mapped[str | None] = mapped_column(String, nullable=True)
     telephone: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -26,6 +30,10 @@ class Client(Base):
     ville: Mapped[str | None] = mapped_column(String, nullable=True)
     adresse: Mapped[str | None] = mapped_column(String, nullable=True)
     type_client: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Renseignés uniquement pour type_client == "Professionnel", repris du
+    # prospect à la conversion (voir prospect_conversion.CHAMPS_PROSPECT_VERS_CLIENT).
+    raison_sociale: Mapped[str | None] = mapped_column(String, nullable=True)
+    effectif: Mapped[str | None] = mapped_column(String, nullable=True)
     operateur_actuel: Mapped[str | None] = mapped_column(String, nullable=True)
     techno: Mapped[str | None] = mapped_column(String, nullable=True)
     data_go: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -33,6 +41,10 @@ class Client(Base):
     cout_mensuel_actuel: Mapped[float | None] = mapped_column(Float, default=0)
     satisfaction_reseau: Mapped[str | None] = mapped_column(String, nullable=True)
     veut_rester: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Signalement d'un défaut technique potentiel constaté sur le réseau actuel
+    # du client ("Faible" | "Moyen" | "Critique"), voir NIVEAUX_DEFAUT_TECHNIQUE
+    # côté frontend (lib/diagnosticConstants.ts).
+    defaut_technique: Mapped[str | None] = mapped_column(String, nullable=True)
     speed_down: Mapped[float | None] = mapped_column(Float, default=0)
     speed_up: Mapped[float | None] = mapped_column(Float, default=0)
     fournisseur_energie: Mapped[str | None] = mapped_column(String, nullable=True)

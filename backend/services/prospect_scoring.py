@@ -84,6 +84,16 @@ def indicateur_score(score: float) -> str:
     return "🟢 froid"
 
 
+def dernier_contact_affiche(prospect: Prospect, dernier_contact: datetime | None) -> str | None:
+    """Valeur affichée au conseiller pour `Prospect.dernier_contact` : à
+    défaut d'action journalisée (aucune entrée dans historique_actions), on
+    retombe sur la date de création du prospect plutôt que d'afficher
+    "Jamais" — un prospect fraîchement créé a bien été "contacté" ce jour-là."""
+    if dernier_contact is not None:
+        return dernier_contact.strftime(FORMAT_DATE)
+    return prospect.date_creation
+
+
 async def dernier_contact(db: AsyncSession, prospect_id: int) -> datetime | None:
     """Date du dernier contact enregistré pour ce prospect (historique
     d'audit), ou None si aucun."""

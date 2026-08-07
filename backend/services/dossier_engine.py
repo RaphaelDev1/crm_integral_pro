@@ -19,6 +19,7 @@ from typing import Callable
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.models.document import Document
 from backend.models.dossier import Dossier
 from backend.services.dossier_notifications import SEUILS_JOURS_PAR_STATUT
 
@@ -110,16 +111,14 @@ async def ajouter_note(db: AsyncSession, dossier: Dossier, texte: str, *, par: s
     return dossier
 
 
-def documents_requis_pour_univers(univers: str, est_prospect: bool = False) -> list[dict]:
-    """Retourne la liste des documents à demander au client pour un univers donné.
-
-    Tant que la personne n'est encore qu'un prospect (`est_prospect=True` —
-    Dossier.est_prospect, cf. backend/models/dossier.py), aucun document KYC (CNI, RIB,
-    justificatif de domicile) n'est réclamé : la facture et le test de débit, déjà
-    couverts par le parcours prospect existant (src/prospects_engine.py::
-    enregistrer_document_prospect), suffisent avant la conversion en client."""
-    if est_prospect:
-        return []
+def documents_requis_pour_univers(univers: str) -> list[dict]:
+    """Retourne la liste des documents à demander pour un univers donné, dès
+    qu'un dossier existe — la collecte CNI/RIB/justificatif se fait en
+    parallèle de la signature du mandat, plutôt que d'attendre celle-ci (avant,
+    `Dossier.est_prospect` bloquait cette demande jusqu'à la conversion
+    officielle ; ça ralentissait inutilement le dossier). Le lien prospect
+    "léger" (facture/speedtest, avant même qu'un dossier existe) reste géré à
+    part, voir backend/routers/portail_public.py::_contexte_token_prospect."""
     base = [
         {"type_document": "cni", "label_affiche": "Pièce d'identité (recto + verso)"},
         {"type_document": "rib", "label_affiche": "RIB"},
@@ -129,8 +128,48 @@ def documents_requis_pour_univers(univers: str, est_prospect: bool = False) -> l
     return base
 
 
-def construire_timeline(dossier: Dossier) -> list[dict]:
-    """Retourne la timeline à afficher au client dans son portail."""
+async def documents_valides_pour_client(db: AsyncSession, client_id: int) -> tuple[bool, list[str]]:
+    """Vérifie que tous les documents KYC requis (CNI/RIB/justificatif, selon
+    l'univers de chacun des dossiers du client) sont au statut "valide" — sert
+    de condition à la conversion prospect→client à la signature du mandat
+    (voir mandat_engine.traiter_mandat_signe) : la signature seule ne suffit
+    plus, les documents doivent aussi avoir été envoyés et validés. Retourne
+    (True, []) si tout est validé, sinon (False, types_manquants)."""
+    dossiers = (
+        await db.execute(select(Dossier).where(Dossier.client_id == client_id))
+    ).scalars().all()
+
+    types_requis: set[str] = set()
+    for dossier in dossiers:
+        types_requis.update(d["type_document"] for d in documents_requis_pour_univers(dossier.univers))
+    if not types_requis:
+        return True, []
+
+    documents = (
+        await db.execute(select(Document).where(Document.client_id == client_id))
+    ).scalars().all()
+    types_valides = {d.type_document for d in documents if d.statut_kyc == "valide"}
+
+    manquants = sorted(types_requis - types_valides)
+    return not manquants, manquants
+
+
+def construire_timeline(dossier: Dossier, documents_recus: bool = False) -> list[dict]:
+    """Retourne la timeline à afficher au client dans son portail (et au
+    conseiller sur la fiche dossier).
+
+    Deux étapes ont un statut dérivé d'un événement plutôt que de la seule
+    position dans `ordre` :
+      - "docs_demandes" ("Nous vous demandons vos documents") : dès l'envoi de
+        la demande (email/SMS/lien copié), l'action du conseiller est
+        terminée — ce n'est pas lui qui doit encore agir, donc vert
+        immédiatement plutôt qu'"en cours".
+      - "docs_recus" ("Documents vérifiés") : passe orange dès qu'au moins un
+        document a été transmis par le client (`documents_recus`, détecté par
+        la notification d'upload), même si le conseiller n'a pas encore fait
+        transiter le dossier vers "docs_recus" — l'attente réelle porte sur la
+        vérification, pas sur la demande initiale.
+    """
     ordre = [
         ("docs_demandes",       "Nous vous demandons vos documents"),
         ("docs_recus",          "Documents vérifiés"),
@@ -148,10 +187,19 @@ def construire_timeline(dossier: Dossier) -> list[dict]:
     for entree in (dossier.notes_workflow or []):
         dates_par_statut[entree.get("vers")] = entree.get("date")
 
+    derniere_etape = len(ordre) - 1
+
     etapes = []
     for i, (cle, label) in enumerate(ordre):
-        if i < idx_actuel:
+        if i < idx_actuel or (i == idx_actuel == derniere_etape):
+            # La dernière étape ("actif") n'a pas d'étape suivante pour la faire
+            # basculer à "termine" par le test `i < idx_actuel` normal — dès
+            # qu'elle est atteinte, elle est donc terminée, pas "en cours".
             statut_etape = "termine"
+        elif cle == "docs_demandes" and i == idx_actuel:
+            statut_etape = "termine"
+        elif cle == "docs_recus" and i == idx_actuel + 1 and documents_recus:
+            statut_etape = "en_cours"
         elif i == idx_actuel:
             statut_etape = "en_cours"
         else:
@@ -197,4 +245,15 @@ async def dossiers_stagnants(db: AsyncSession) -> list[Dossier]:
         if jours_depuis_relance is not None and jours_depuis_relance < _JOURS_MIN_ENTRE_RELANCES:
             continue
         candidats.append(dossier)
+    # Plus grosses économies en premier — priorise les dossiers les plus
+    # rentables à faire avancer ; à économie égale, le plus ancien d'abord
+    # (celui qui stagne depuis le plus longtemps est le plus urgent).
+    def _cle_tri(d: Dossier) -> tuple[float, float]:
+        try:
+            horodatage = datetime.strptime(d.date_creation, FORMAT_DATE).timestamp() if d.date_creation else float("inf")
+        except ValueError:
+            horodatage = float("inf")
+        return (-(d.economie_annuelle_estimee or 0), horodatage)
+
+    candidats.sort(key=_cle_tri)
     return candidats

@@ -95,7 +95,7 @@ export default function UtilisateursPage() {
             </DialogHeader>
             <UserForm
               mode="create"
-              defaultValues={{ username: "", nom_complet: "", password: "", role: "Conseiller" } as UserCreateInput}
+              defaultValues={{ username: "", nom_complet: "", password: "", role: "Conseiller", telephone: "" } as UserCreateInput}
               onSubmit={(values) => createMutation.mutate(values as UserCreateInput)}
               submitError={createMutation.error}
               submitLabel="Créer"

@@ -8,6 +8,7 @@ class DossierBase(BaseModel):
     fournisseur_cible: str | None = None
     offre_cible_id: int | None = None
     economie_annuelle_estimee: float = 0.0
+    frais_annexes_cible: float = 0.0
 
 
 class DossierCreate(DossierBase):
@@ -19,6 +20,7 @@ class DossierUpdate(BaseModel):
     fournisseur_cible: str | None = None
     offre_cible_id: int | None = None
     economie_annuelle_estimee: float | None = None
+    frais_annexes_cible: float | None = None
     reference_fournisseur: str | None = None
     date_activation_prevue: str | None = None
     conseiller_responsable: str | None = None
@@ -44,6 +46,8 @@ class DossierOut(DossierBase):
     duree_prelevement_mois: int = 0
     conseiller_responsable: str | None = None
     notes_workflow: list | None = None
+    documents_requis: list[str] = []
+    offre_nom: str | None = None
 
 
 class TransitionStatut(BaseModel):

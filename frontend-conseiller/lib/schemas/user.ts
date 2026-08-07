@@ -8,11 +8,13 @@ export const userCreateSchema = z.object({
   nom_complet: z.string().trim().min(1, "Le nom complet est requis."),
   password: z.string().min(8, "Le mot de passe doit contenir au moins 8 caractères."),
   role: z.enum(ROLES_UTILISATEUR),
+  telephone: z.string().trim().optional().or(z.literal("")),
 });
 
 export const userUpdateSchema = z.object({
   nom_complet: z.string().trim().min(1, "Le nom complet est requis.").optional(),
   role: z.enum(ROLES_UTILISATEUR).optional(),
+  telephone: z.string().trim().optional().or(z.literal("")),
   actif: z.boolean().optional(),
   password: z.string().min(8, "Le mot de passe doit contenir au moins 8 caractères.").optional().or(z.literal("")),
 });

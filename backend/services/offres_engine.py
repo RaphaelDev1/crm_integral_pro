@@ -49,16 +49,24 @@ async def comparer_offres(
             continue
         prix = float(o.prix_mensuel or 0)
         frais = float(o.frais_activation or 0)
+        frais_sim = float(o.frais_sim or 0)
+        frais_resiliation = float(o.frais_resiliation or 0)
+        frais_portabilite = float(o.frais_portabilite or 0)
+        frais_annexes_total = round(frais + frais_sim + frais_resiliation + frais_portabilite, 2)
         eco_mens = round(cout_actuel_mensuel - prix, 2)
+        eco_annuelle = round(eco_mens * 12, 2)
         resultats.append({
             "id": o.id, "nom": o.nom_offre, "fournisseur": o.fournisseur,
             "categorie": categorie, "univers": univers,
             "prix_mensuel": prix, "frais_activation": frais,
+            "frais_sim": frais_sim, "frais_resiliation": frais_resiliation,
+            "frais_portabilite": frais_portabilite, "frais_annexes_total": frais_annexes_total,
             "engagement": int(o.engagement_mois or 0),
             "caracteristiques": o.caracteristiques or "",
             "commission": float(o.commission_affiliation or 0),
             "data_go": data_go_offre,
-            "economie_mensuelle": eco_mens, "economie_annuelle": round(eco_mens * 12, 2),
+            "economie_mensuelle": eco_mens, "economie_annuelle": eco_annuelle,
+            "economie_annee_1": round(eco_annuelle - frais_annexes_total, 2),
             "cout_1_an": round(prix * 12 + frais, 2),
             "url_souscription": o.url_souscription or "",
             "code_affiliation": o.code_affiliation or "",
@@ -85,29 +93,29 @@ async def construire_recommandations(
         return resultats[:3]
 
     if service_principal == "Mobile uniquement":
-        principal = ("📱 Vos meilleures offres Mobile", await top("Mobile"))
+        principal = ("📱 Vos meilleures offres Mobile", "Mobile", await top("Mobile"))
         cross = [
-            ("🏠 Et si vous regardiez aussi la Box / Fibre ?", await top("Box / Fibre")),
-            ("📦 Nos packs Box + Mobile (pour aller plus loin)", await top("Pack Box + Mobile")),
+            ("🏠 Et si vous regardiez aussi la Box / Fibre ?", "Box / Fibre", await top("Box / Fibre")),
+            ("📦 Nos packs Box + Mobile (pour aller plus loin)", "Pack Box + Mobile", await top("Pack Box + Mobile")),
         ]
     elif service_principal == "Box / Fibre uniquement":
-        principal = ("🏠 Vos meilleures offres Box / Fibre", await top("Box / Fibre"))
+        principal = ("🏠 Vos meilleures offres Box / Fibre", "Box / Fibre", await top("Box / Fibre"))
         cross = [
-            ("📦 Top 3 de nos packs Box + Mobile", await top("Pack Box + Mobile")),
-            ("📱 Nos 3 meilleurs forfaits Mobile", await top("Mobile")),
+            ("📦 Top 3 de nos packs Box + Mobile", "Pack Box + Mobile", await top("Pack Box + Mobile")),
+            ("📱 Nos 3 meilleurs forfaits Mobile", "Mobile", await top("Mobile")),
         ]
     elif service_principal == "Pack Box + Mobile":
         # Un pack combine box + mobile : le comparer à une offre Mobile seule ou Box seule
         # n'a pas de sens (le client perdrait l'autre service). On ne compare donc les packs
         # qu'entre eux, sans cross-sell vers du Mobile ou du Box / Fibre isolé.
-        principal = ("📦 Vos meilleurs packs Box + Mobile", await top("Pack Box + Mobile"))
+        principal = ("📦 Vos meilleurs packs Box + Mobile", "Pack Box + Mobile", await top("Pack Box + Mobile"))
         cross = []
     else:
         ml = await top("Multi-lignes") or await top("Mobile")
-        principal = ("📲 Vos meilleures offres Multi-lignes", ml)
+        principal = ("📲 Vos meilleures offres Multi-lignes", "Multi-lignes", ml)
         cross = [
-            ("📦 Top 3 de nos packs Box + Mobile", await top("Pack Box + Mobile")),
-            ("🏠 Nos 3 meilleures offres Box / Fibre", await top("Box / Fibre")),
+            ("📦 Top 3 de nos packs Box + Mobile", "Pack Box + Mobile", await top("Pack Box + Mobile")),
+            ("🏠 Nos 3 meilleures offres Box / Fibre", "Box / Fibre", await top("Box / Fibre")),
         ]
 
     return {"principal": principal, "cross_sell": cross}

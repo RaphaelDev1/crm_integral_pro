@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useReducer, useRef } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 
 import type { EtapeIdentiteValues } from "@/lib/schemas/diagnostic";
 import type { OffreComparee } from "@/lib/types";
@@ -31,9 +31,11 @@ export interface SituationTelecomState {
   dataGoMin: string;
   debitSouhaite: string;
   satisfactionReseau: string;
-  veutRester: boolean;
+  defautTechnique: string;
+  veutRester: string;
   speedDown: number;
   speedUp: number;
+  finEngagement: string;
 }
 
 export interface SituationEnergieState {
@@ -48,6 +50,11 @@ export interface PanierItem {
   categorie: string;
   coutActuelMensuel: number;
   offre: OffreComparee;
+  // Faux uniquement pour une offre "cross-sell" (ex. Box proposée alors que le
+  // client a un forfait Mobile) : son économie n'est pas comparable au coût
+  // actuel du client (autre type de service) et ne doit ni s'afficher ni
+  // entrer dans le calcul de l'économie totale — voir EtapeRecommandations.tsx.
+  comparable?: boolean;
 }
 
 export interface DiagnosticState {
@@ -84,6 +91,8 @@ const ETAT_INITIAL: DiagnosticState = {
     codePostal: "",
     ville: "",
     adresse: "",
+    raisonSociale: "",
+    effectif: "",
   },
   telecom: {
     operateurActuel: "",
@@ -93,9 +102,11 @@ const ETAT_INITIAL: DiagnosticState = {
     dataGoMin: "",
     debitSouhaite: "",
     satisfactionReseau: "",
-    veutRester: false,
+    defautTechnique: "",
+    veutRester: "",
     speedDown: 0,
     speedUp: 0,
+    finEngagement: "",
   },
   energie: { fournisseurEnergie: "Autre / Aucun", coutElec: 0, coutGaz: 0 },
   abonnements: [],
@@ -154,20 +165,25 @@ export function useDiagnosticWizard() {
   const [state, dispatch] = useReducer(reducer, ETAT_INITIAL);
   const hydrated = useRef(false);
   const lastSaved = useRef<string>("");
+  const draftEnAttenteRef = useRef<DiagnosticState | null>(null);
+  const [draftDisponible, setDraftDisponible] = useState(false);
 
-  // Reprise du brouillon localStorage au montage — au cas où le conseiller
-  // ferme l'onglet en plein rendez-vous (plan Phase 6.1).
+  // Un brouillon existant au montage n'est plus repris automatiquement (le
+  // conseiller pourrait démarrer un diagnostic pour quelqu'un d'autre sans
+  // s'en rendre compte) : on signale juste sa présence via `draftDisponible`,
+  // à charge de la page d'afficher une boîte de dialogue "reprendre / recommencer".
   useEffect(() => {
     if (hydrated.current) return;
     hydrated.current = true;
     try {
       const raw = window.localStorage.getItem(STORAGE_KEY);
       if (raw) {
-        dispatch({ type: "HYDRATE", state: JSON.parse(raw) as DiagnosticState });
+        draftEnAttenteRef.current = JSON.parse(raw) as DiagnosticState;
         lastSaved.current = raw;
+        setDraftDisponible(true);
       }
     } catch {
-      // Brouillon corrompu : on repart d'un wizard vierge sans bloquer le conseiller.
+      window.localStorage.removeItem(STORAGE_KEY);
     }
   }, []);
 
@@ -187,10 +203,20 @@ export function useDiagnosticWizard() {
   const clearDraft = useCallback(() => {
     window.localStorage.removeItem(STORAGE_KEY);
     lastSaved.current = "";
+    draftEnAttenteRef.current = null;
+    setDraftDisponible(false);
     dispatch({ type: "RESET" });
   }, []);
 
-  return { state, dispatch, clearDraft };
+  const reprendreDraft = useCallback(() => {
+    if (draftEnAttenteRef.current) {
+      dispatch({ type: "HYDRATE", state: draftEnAttenteRef.current });
+    }
+    draftEnAttenteRef.current = null;
+    setDraftDisponible(false);
+  }, []);
+
+  return { state, dispatch, clearDraft, draftDisponible, reprendreDraft };
 }
 
 export type DiagnosticDispatch = ReturnType<typeof useDiagnosticWizard>["dispatch"];

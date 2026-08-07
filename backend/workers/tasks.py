@@ -26,6 +26,7 @@ from backend.services import (
     dossier_notifications,
     kyc_engine,
     lre_engine,
+    mandat_engine,
     notification_engine,
     signature_engine,
     storage_engine,
@@ -148,29 +149,11 @@ async def _telecharger_mandat_signe(mandat_id: int) -> None:
         mandat.date_signature = _MAINTENANT()
         await db.commit()
 
-        # Fait avancer automatiquement le stepper du dossier correspondant —
-        # évite au conseiller de devoir reporter à la main le statut après
-        # une signature Yousign.
-        if mandat.client_id:
-            dossier = (
-                await db.execute(
-                    select(Dossier).where(
-                        Dossier.client_id == mandat.client_id,
-                        Dossier.statut == "mandat_a_signer",
-                    )
-                )
-            ).scalars().first()
-            if dossier is not None:
-                client = await db.get(Client, mandat.client_id)
-                try:
-                    await dossier_engine.transiter(
-                        db, dossier, "mandat_signe",
-                        par="webhook_yousign",
-                        commentaire="Mandat de représentation signé (Yousign).",
-                        on_transition=lambda d, _ancien: dossier_notifications.notifier_transition(d, client),
-                    )
-                except dossier_engine.TransitionInvalide:
-                    pass
+        # Fait avancer automatiquement le stepper du dossier correspondant,
+        # finalise la conversion prospect→client si nécessaire et programme
+        # une relance de suivi — voir mandat_engine.traiter_mandat_signe
+        # (même logique que le fallback manuel "Marquer signé").
+        await mandat_engine.traiter_mandat_signe(db, mandat, par="webhook_yousign")
 
 
 @celery_app.task(

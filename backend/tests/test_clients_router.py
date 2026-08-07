@@ -19,6 +19,10 @@ FAKE_USER = User(
     id=1, username="conseiller", nom_complet="Test Conseiller",
     password_hash="x", role="Conseiller", actif=True,
 )
+FAKE_ADMIN = User(
+    id=2, username="admin", nom_complet="Test Admin",
+    password_hash="x", role="Admin", actif=True,
+)
 
 
 class _FakeResult:
@@ -108,8 +112,20 @@ def test_creer_client(client, fake_db):
     assert historique[0].action == "Création client"
 
 
-def test_maj_client(client, fake_db):
-    fake_db.get_map[(Client, 1)] = Client(id=1, prenom="Jean", nom="Dupont")
+def test_maj_client_refuse_pour_conseiller(client, fake_db):
+    # Une fois enregistrée, une fiche client n'est plus modifiable par un
+    # Conseiller (même propriétaire) — seul un Admin le peut (voir _verifier_acces
+    # et la note sur PUT /clients/{id}).
+    fake_db.get_map[(Client, 1)] = Client(id=1, prenom="Jean", nom="Dupont", conseiller_id=1)
+
+    reponse = client.put("/clients/1", json={"ville": "Lyon"})
+
+    assert reponse.status_code == 403
+
+
+def test_maj_client_autorise_pour_admin(client, fake_db):
+    fake_db.get_map[(Client, 1)] = Client(id=1, prenom="Jean", nom="Dupont", conseiller_id=1)
+    app.dependency_overrides[get_current_user] = lambda: FAKE_ADMIN
 
     reponse = client.put("/clients/1", json={"ville": "Lyon"})
 
@@ -121,8 +137,43 @@ def test_maj_client(client, fake_db):
 
 
 def test_maj_client_introuvable(client, fake_db):
+    app.dependency_overrides[get_current_user] = lambda: FAKE_ADMIN
     reponse = client.put("/clients/999", json={"ville": "Lyon"})
     assert reponse.status_code == 404
+
+
+def test_programmer_relance_autorise_pour_conseiller_proprietaire(client, fake_db):
+    fake_db.get_map[(Client, 1)] = Client(id=1, prenom="Jean", nom="Dupont", conseiller_id=1)
+
+    reponse = client.post("/clients/1/relance", json={"date_relance": "2026-08-10", "statut_relance": "À relancer"})
+
+    assert reponse.status_code == 200
+    assert reponse.json()["date_relance"] == "2026-08-10"
+
+
+def test_programmer_relance_refuse_pour_autre_conseiller(client, fake_db):
+    fake_db.get_map[(Client, 1)] = Client(id=1, prenom="Jean", nom="Dupont", conseiller_id=99)
+
+    reponse = client.post("/clients/1/relance", json={"date_relance": "2026-08-10"})
+
+    assert reponse.status_code == 403
+
+
+def test_lister_clients_filtre_par_proprietaire(client, fake_db):
+    fake_db.queue_result([Client(id=1, prenom="A", nom="A", conseiller_id=1)])
+
+    reponse = client.get("/clients")
+
+    assert reponse.status_code == 200
+    assert len(reponse.json()) == 1
+
+
+def test_obtenir_client_refuse_pour_autre_conseiller(client, fake_db):
+    fake_db.get_map[(Client, 1)] = Client(id=1, prenom="Jean", nom="Dupont", conseiller_id=99)
+
+    reponse = client.get("/clients/1")
+
+    assert reponse.status_code == 403
 
 
 def test_supprimer_client(client, fake_db):
@@ -137,6 +188,7 @@ def test_supprimer_client(client, fake_db):
 
 
 def test_documents_client(client, fake_db):
+    fake_db.get_map[(Client, 1)] = Client(id=1, prenom="Jean", nom="Dupont")
     fake_db.queue_result([Document(id=1, client_id=1, type_document="cni", url_stockage="clients/1/cni.pdf", statut_kyc="valide")])
 
     with patch("backend.routers.clients.url_signee", return_value="https://s3.example/cni.pdf?sig=1"):
@@ -149,6 +201,7 @@ def test_documents_client(client, fake_db):
 
 
 def test_historique_client(client, fake_db):
+    fake_db.get_map[(Client, 1)] = Client(id=1, prenom="Jean", nom="Dupont")
     fake_db.queue_result([
         HistoriqueAction(id=1, entite_type="client", entite_id=1, action="Création client", date_action="01/01/2026 10:00"),
     ])

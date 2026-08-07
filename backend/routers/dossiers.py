@@ -10,9 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.core.database import get_db
 from backend.core.security import get_current_user
 from backend.models.comparaison_offre import ComparaisonOffre
+from backend.models.document import Document
 from backend.models.dossier import Dossier
+from backend.models.offre import Offre
 from backend.models.parametre import Parametre
 from backend.models.user import User
+from backend.schemas.comparaison_offre import ComparaisonOffreOut
 from backend.schemas.dossier import (
     DossierCreate,
     DossierOut,
@@ -39,7 +42,12 @@ async def lister_dossiers(
     if client_id:
         query = query.where(Dossier.client_id == client_id)
     result = await db.execute(query)
-    return result.scalars().all()
+    dossiers = result.scalars().all()
+    for dossier in dossiers:
+        dossier.documents_requis = [
+            d["type_document"] for d in dossier_engine.documents_requis_pour_univers(dossier.univers)
+        ]
+    return dossiers
 
 
 @router.get("/stagnants", response_model=list[DossierOut])
@@ -54,6 +62,13 @@ async def obtenir_dossier(dossier_id: int, db: AsyncSession = Depends(get_db)):
     dossier = await db.get(Dossier, dossier_id)
     if dossier is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Dossier introuvable.")
+    dossier.documents_requis = [
+        d["type_document"] for d in dossier_engine.documents_requis_pour_univers(dossier.univers)
+    ]
+    dossier.offre_nom = None
+    if dossier.offre_cible_id:
+        offre = await db.get(Offre, dossier.offre_cible_id)
+        dossier.offre_nom = offre.nom_offre if offre else None
     return dossier
 
 
@@ -108,6 +123,14 @@ async def transiter_dossier(
             par=user.username, commentaire=payload.commentaire,
             on_transition=lambda d, _ancien: dossier_notifications.notifier_transition(d, client),
         )
+        # Pas d'auto-notification si c'est le conseiller responsable lui-même
+        # qui vient de faire la transition — seulement utile si quelqu'un
+        # d'autre agit sur son dossier.
+        if dossier.conseiller_responsable and dossier.conseiller_responsable != user.nom_complet:
+            from backend.services import notification_engine
+            await notification_engine.creer_notification_conseiller(
+                db, dossier, f"Dossier #{dossier.id} passé à « {dossier.statut} » par {user.nom_complet}."
+            )
     except dossier_engine.TransitionInvalide as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc))
     return dossier
@@ -120,7 +143,31 @@ async def obtenir_timeline_dossier(dossier_id: int, db: AsyncSession = Depends(g
     dossier = await db.get(Dossier, dossier_id)
     if dossier is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Dossier introuvable.")
-    return dossier_engine.construire_timeline(dossier)
+    documents_recus = (
+        await db.execute(select(Document.id).where(Document.client_id == dossier.client_id).limit(1))
+    ).scalar_one_or_none() is not None
+    return dossier_engine.construire_timeline(dossier, documents_recus=documents_recus)
+
+
+@router.get("/{dossier_id}/comparaison", response_model=ComparaisonOffreOut | None)
+async def obtenir_comparaison_dossier(dossier_id: int, db: AsyncSession = Depends(get_db)):
+    """Dernière comparaison d'offres (voir ComparaisonOffre.offres_comparees)
+    faite pour le client de ce dossier, dans le même univers — permet à la
+    fiche dossier de proposer de choisir une autre offre parmi celles
+    comparées lors du diagnostic. Filtre sur `univers` en plus de `client_id`
+    (contrairement à `obtenir_pdf_restitution` ci-dessous) pour ne pas
+    remonter la comparaison d'un autre univers si le client en a plusieurs."""
+    dossier = await db.get(Dossier, dossier_id)
+    if dossier is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Dossier introuvable.")
+
+    return (
+        await db.execute(
+            select(ComparaisonOffre)
+            .where(ComparaisonOffre.client_id == dossier.client_id, ComparaisonOffre.univers == dossier.univers)
+            .order_by(ComparaisonOffre.id.desc())
+        )
+    ).scalars().first()
 
 
 @router.post("/{dossier_id}/notes", response_model=DossierOut)
@@ -136,6 +183,17 @@ async def ajouter_note_dossier(
     if dossier is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Dossier introuvable.")
     return await dossier_engine.ajouter_note(db, dossier, payload.texte, par=user.username)
+
+
+async def _marquer_docs_demandes_si_besoin(db: AsyncSession, dossier: Dossier, *, par: str) -> None:
+    """Le conseiller n'a pas d'action de statut dédiée pour « je viens de
+    demander les documents » — copier/envoyer le lien de collecte EST cette
+    action. On fait donc avancer automatiquement le dossier de "initie" à
+    "docs_demandes" à ce moment-là, sans déclencher le template email/SMS
+    générique de transition (le lien vient déjà d'être transmis
+    explicitement par l'appelant — un second message serait redondant)."""
+    if dossier.statut == "initie":
+        await dossier_engine.transiter(db, dossier, "docs_demandes", par=par)
 
 
 @router.post("/{dossier_id}/token-client", response_model=dict)
@@ -159,6 +217,7 @@ async def generer_lien_client(
         dossier_id=dossier.id,
         cree_par=user.username,
     )
+    await _marquer_docs_demandes_si_besoin(db, dossier, par=user.username)
 
     url = token_engine.construire_url_client(token.token, base_url=settings.portail_client_base_url)
     return {
@@ -200,6 +259,8 @@ async def envoyer_lien_client(
         dossier_id=dossier.id,
         cree_par=user.username,
     )
+    await _marquer_docs_demandes_si_besoin(db, dossier, par=user.username)
+
     url = token_engine.construire_url_client(token.token, base_url=settings.portail_client_base_url)
     prenom = client.prenom or ""
 
@@ -233,7 +294,11 @@ async def envoyer_lien_client(
 
 
 @router.get("/{dossier_id}/pdf-restitution")
-async def obtenir_pdf_restitution(dossier_id: int, db: AsyncSession = Depends(get_db)):
+async def obtenir_pdf_restitution(
+    dossier_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """Génère à la volée le PDF de restitution « vendeur » (tableau
     comparatif multi-offres + habillage configurable, voir
     backend/services/restitution_pdf_engine.py) — outil conseiller, jamais
@@ -274,11 +339,21 @@ async def obtenir_pdf_restitution(dossier_id: int, db: AsyncSession = Depends(ge
         except storage_engine.StorageError:
             logo_bytes = None
 
+    # Conseiller à afficher sur le PDF : le propriétaire de la fiche client
+    # s'il est renseigné (conseiller_id), sinon celui qui génère le PDF.
+    conseiller = user
+    if client.conseiller_id is not None and client.conseiller_id != user.id:
+        conseiller_proprietaire = await db.get(User, client.conseiller_id)
+        if conseiller_proprietaire is not None:
+            conseiller = conseiller_proprietaire
+
     branding = {
         "nom_societe": await _parametre("nom_societe"),
         "couleur_primaire_hex": await _parametre("pdf_couleur_primaire_hex"),
         "couleur_accent_hex": await _parametre("pdf_couleur_accent_hex"),
         "logo_bytes": logo_bytes,
+        "conseiller_nom": conseiller.nom_complet,
+        "conseiller_telephone": conseiller.telephone,
     }
 
     pdf_bytes = restitution_pdf_engine.generer_pdf_restitution_dossier(dossier, client, comparaison, branding)

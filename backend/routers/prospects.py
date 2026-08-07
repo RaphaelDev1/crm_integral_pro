@@ -2,7 +2,7 @@
 #  PROSPECTS — CRUD, protégé par JWT (get_current_user).
 # ==============================================================================
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -19,9 +19,9 @@ from backend.schemas.document_prospect import DocumentProspectOut
 from backend.schemas.dossier import EnvoiLienClient
 from backend.schemas.historique_action import HistoriqueActionOut
 from backend.schemas.prospect import ProspectCreate, ProspectOut, ProspectUpdate, ScoreProspectOut
-from backend.services import audit_engine, notification_engine, prospect_scoring, token_engine
-from backend.services.prospect_conversion import ProspectDejaConverti, convertir_prospect
-from backend.services.storage_engine import StorageError, url_signee
+from backend.services import audit_engine, notification_engine, prospect_scoring, reference_engine, token_engine
+from backend.services.prospect_conversion import ProspectDejaConverti, convertir_prospect, obtenir_ou_creer_client_miroir
+from backend.services.storage_engine import StorageError, supprimer_document, url_signee
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,9 @@ async def lister_prospects(db: AsyncSession = Depends(get_db)):
     prospects = result.scalars().all()
     contacts = await prospect_scoring.derniers_contacts(db)
     for prospect in prospects:
-        prospect.score = prospect_scoring.calculer_score(prospect, contacts.get(prospect.id))
+        dernier = contacts.get(prospect.id)
+        prospect.score = prospect_scoring.calculer_score(prospect, dernier)
+        prospect.dernier_contact = prospect_scoring.dernier_contact_affiche(prospect, dernier)
     return prospects
 
 
@@ -45,6 +47,7 @@ async def obtenir_prospect(prospect_id: int, db: AsyncSession = Depends(get_db))
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Prospect introuvable.")
     dernier_contact = await prospect_scoring.dernier_contact(db, prospect_id)
     prospect.score = prospect_scoring.calculer_score(prospect, dernier_contact)
+    prospect.dernier_contact = prospect_scoring.dernier_contact_affiche(prospect, dernier_contact)
     return prospect
 
 
@@ -75,6 +78,28 @@ async def convertir_en_client(
         return await convertir_prospect(db, prospect, par=user.nom_complet)
     except ProspectDejaConverti as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
+
+
+@router.post("/{prospect_id}/client-miroir", response_model=ClientOut)
+async def obtenir_client_miroir(
+    prospect_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Crée (ou réutilise) le client "miroir" du prospect sans finaliser la
+    conversion — utilisé par le diagnostic pour créer un dossier avant que le
+    prospect ne soit officiellement converti (la conversion se déclenche
+    désormais à la signature du mandat, voir mandat_engine.traiter_mandat_signe,
+    pas à la génération de la restitution)."""
+    prospect = await db.get(Prospect, prospect_id)
+    if prospect is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Prospect introuvable.")
+    if prospect.converti_at is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"Le prospect {prospect_id} a déjà été converti.")
+    client = await obtenir_ou_creer_client_miroir(db, prospect, par=user.nom_complet)
+    await db.commit()
+    await db.refresh(client)
+    return client
 
 
 @router.post("/{prospect_id}/token-documents", response_model=dict)
@@ -124,6 +149,33 @@ async def documents_prospect(prospect_id: int, db: AsyncSession = Depends(get_db
             nom_fichier=doc.nom_fichier, mime=doc.mime, date_upload=doc.date_upload, url=url,
         ))
     return documents
+
+
+@router.delete("/{prospect_id}/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def supprimer_document_prospect(
+    prospect_id: int,
+    document_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Supprime un document transmis par erreur (mauvais fichier) avant
+    conversion — le conseiller peut alors renvoyer le lien de collecte."""
+    document = await db.get(DocumentProspect, document_id)
+    if document is None or document.prospect_id != prospect_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Document introuvable.")
+
+    try:
+        supprimer_document(document.cle_stockage)
+    except StorageError:
+        logger.warning("Suppression S3 échouée pour le document %s (prospect %s)", document_id, prospect_id)
+
+    await audit_engine.enregistrer_action(
+        db, entite_type="prospect", entite_id=prospect_id,
+        action="Document supprimé", details=document.type_document or document.nom_fichier,
+        auteur=user.nom_complet,
+    )
+    await db.delete(document)
+    await db.commit()
 
 
 @router.get("/{prospect_id}/historique", response_model=list[HistoriqueActionOut])
@@ -184,12 +236,19 @@ async def creer_prospect(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    donnees = payload.model_dump()
+    donnees["ref"] = await reference_engine.generer_ref_prospect(db)
     prospect = Prospect(
-        **payload.model_dump(),
+        **donnees,
         date_creation=datetime.now().strftime("%d/%m/%Y %H:%M"),
         cree_par=user.nom_complet,
     )
     db.add(prospect)
+    await db.flush()
+    await audit_engine.enregistrer_action(
+        db, entite_type="prospect", entite_id=prospect.id,
+        action="Prospect créé", auteur=user.nom_complet,
+    )
     await db.commit()
     await db.refresh(prospect)
     return prospect
@@ -197,13 +256,45 @@ async def creer_prospect(
 
 @router.put("/{prospect_id}", response_model=ProspectOut)
 async def maj_prospect(prospect_id: int, payload: ProspectUpdate, db: AsyncSession = Depends(get_db)):
+    """`ref` est immuable une fois le prospect créé (numéro de dossier interne,
+    ne doit plus bouger) — silencieusement ignoré s'il est présent dans le
+    payload, plutôt que de rejeter toute la requête."""
     prospect = await db.get(Prospect, prospect_id)
     if prospect is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Prospect introuvable.")
     for champ, valeur in payload.model_dump(exclude_unset=True).items():
+        if champ == "ref":
+            continue
         setattr(prospect, champ, valeur)
     await db.commit()
     await db.refresh(prospect)
+    return prospect
+
+
+@router.post("/{prospect_id}/relance-effectuee", response_model=ProspectOut)
+async def relance_effectuee(
+    prospect_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Marque une relance comme faite aujourd'hui : journalise l'action (source
+    du `dernier_contact` calculé, voir prospect_scoring.dernier_contact) et
+    programme la prochaine relance à +7 jours."""
+    prospect = await db.get(Prospect, prospect_id)
+    if prospect is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Prospect introuvable.")
+
+    await audit_engine.enregistrer_action(
+        db, entite_type="prospect", entite_id=prospect_id,
+        action="Relance effectuée", auteur=user.nom_complet,
+    )
+    prospect.date_relance = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+    await db.commit()
+    await db.refresh(prospect)
+
+    dernier_contact = await prospect_scoring.dernier_contact(db, prospect_id)
+    prospect.score = prospect_scoring.calculer_score(prospect, dernier_contact)
+    prospect.dernier_contact = prospect_scoring.dernier_contact_affiche(prospect, dernier_contact)
     return prospect
 
 

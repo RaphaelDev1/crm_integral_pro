@@ -332,7 +332,7 @@ function dlTest(done) {
 	const testStream = function(i, delay) {
 		setTimeout(
 			function() {
-				if (testState !== 1) return; // delayed stream ended up starting after the end of the download test
+				if (testState !== 1 || !xhr) return; // delayed stream ended up starting after the end of the download test (or after clearRequests() already nulled xhr)
 				tverb("dl test stream started " + i + " " + delay);
 				let prevLoaded = 0; // number of bytes loaded last time onprogress was called
 				let x = new XMLHttpRequest();
@@ -458,7 +458,7 @@ function ulTest(done) {
 		const testStream = function(i, delay) {
 			setTimeout(
 				function() {
-					if (testState !== 3) return; // delayed stream ended up starting after the end of the upload test
+					if (testState !== 3 || !xhr) return; // delayed stream ended up starting after the end of the upload test (or after clearRequests() already nulled xhr)
 					tverb("ul test stream started " + i + " " + delay);
 					let prevLoaded = 0; // number of bytes transmitted last time onprogress was called
 					let x = new XMLHttpRequest();

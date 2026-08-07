@@ -17,6 +17,7 @@ from fpdf import FPDF
 
 from backend.models.client import Client
 from backend.models.dossier import Dossier
+from backend.models.mandat_honoraires import MandatHonoraires
 
 COULEUR_PRIMAIRE = (16, 42, 82)
 COULEUR_ACCENT = (0, 150, 90)
@@ -213,6 +214,29 @@ def generer_pdf_souscription(dossier: Dossier, client: Client, donnees: dict) ->
     )
     if donnees.get("adresse_installation"):
         pdf.paragraphe(f"Adresse d'installation : {donnees['adresse_installation']}")
+    pdf.champ_signature()
+    return bytes(pdf.output())
+
+
+def generer_pdf_mandat_honoraires(dossier: Dossier, client: Client, mandat: MandatHonoraires) -> bytes:
+    pdf = PDFDemarche("Mandat d'honoraires")
+    pdf.add_page()
+    pdf.paragraphe(_identite_client(client), taille=10)
+    pdf.paragraphe(
+        f"Je soussigne(e) {(client.prenom or '')} {(client.nom or '')}, confie a IA Conseil un mandat "
+        f"d'honoraires pour les prestations de conseil et de mise en concurrence realisees dans le cadre "
+        f"du dossier {dossier.univers}"
+        + (f" aupres de {dossier.fournisseur_cible}" if dossier.fournisseur_cible else "")
+        + ".",
+    )
+    pdf.paragraphe(
+        f"Montant des honoraires : {mandat.montant:.2f} EUR - Taux applicable : {mandat.taux:.2f} %.",
+        gras=True,
+    )
+    pdf.paragraphe(
+        "Ce mandat d'honoraires est distinct du mandat de representation aupres des operateurs et "
+        "fournisseurs, et couvre uniquement la remuneration du cabinet pour les prestations rendues.",
+    )
     pdf.champ_signature()
     return bytes(pdf.output())
 

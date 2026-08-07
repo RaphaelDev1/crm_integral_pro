@@ -89,9 +89,9 @@ async def generer_token_prospect_documents(
     """Génère un token pour qu'un prospect (pas encore client) transmette lui-même
     sa facture/son test de débit — équivalent de
     src/prospects_engine.py::creer_token_documents. Aucun dossier n'existe encore :
-    seul l'upload de documents est autorisé (les autres permissions sont désactivées,
-    ce qui suffit à exclure ce token des endpoints /suivi, /demarches, /speedtest sans
-    modifier leur code, cf. backend/routers/portail_public.py)."""
+    upload de documents ET test de débit en direct (widget LibreSpeed self-hosted,
+    voir /portail/{token}/speedtest) sont autorisés ; les autres permissions
+    restent désactivées (pas de suivi/mandat/démarches sans dossier)."""
     return await generer_token(
         db,
         prospect_id=prospect_id,
@@ -101,7 +101,7 @@ async def generer_token_prospect_documents(
         peut_uploader_docs=True,
         peut_signer_mandat=False,
         peut_voir_suivi=False,
-        peut_transmettre_speedtest=False,
+        peut_transmettre_speedtest=True,
         peut_renseigner_demarches=False,
     )
 

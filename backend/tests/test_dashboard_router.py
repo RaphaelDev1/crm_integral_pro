@@ -21,11 +21,8 @@ FAKE_USER = User(
     password_hash="x", role="Conseiller", actif=True,
 )
 
-FORMAT_DATE_RELANCE = "%d/%m/%Y"
-
-
 def _il_y_a(jours: int) -> str:
-    return (datetime.now() - timedelta(days=jours)).strftime(FORMAT_DATE_RELANCE)
+    return (datetime.now() - timedelta(days=jours)).date().isoformat()
 
 
 class _FakeResult:

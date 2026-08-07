@@ -37,6 +37,7 @@ async def creer_utilisateur(payload: UserCreate, db: AsyncSession = Depends(get_
         nom_complet=payload.nom_complet,
         password_hash=hash_password(payload.password),
         role=payload.role,
+        telephone=payload.telephone,
         actif=True,
         doit_changer_mdp=True,
         date_creation=datetime.now().strftime("%d/%m/%Y %H:%M"),

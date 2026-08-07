@@ -20,6 +20,40 @@ export function useClientDocuments(clientId: number | undefined) {
   });
 }
 
+export function useSupprimerDocumentClient(clientId: number | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (documentId: number) =>
+      apiFetch<void>(`/clients/${clientId}/documents/${documentId}`, { method: "DELETE" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["clients", "documents", clientId ?? ""] });
+    },
+  });
+}
+
+export function useValiderDocumentClient(clientId: number | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      documentId,
+      statutKyc,
+      motifRejet,
+    }: {
+      documentId: number;
+      statutKyc: "valide" | "rejete";
+      motifRejet?: string;
+    }) =>
+      apiFetch<ClientDocument>(`/clients/${clientId}/documents/${documentId}/statut`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ statut_kyc: statutKyc, motif_rejet: motifRejet || undefined }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["clients", "documents", clientId ?? ""] });
+    },
+  });
+}
+
 export function useClientHistorique(clientId: number | undefined) {
   return useQuery({
     queryKey: ["clients", "historique", clientId ?? ""],
@@ -54,8 +88,11 @@ export function useEnvoyerRelance() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ id, values }: { id: number; values: { date_relance: string; statut_relance: string } }) =>
-      apiFetch<Client>(`/clients/${id}`, {
-        method: "PUT",
+      // Endpoint dédié, distinct de PUT /clients/{id} (verrouillé aux Admin une
+      // fois la fiche enregistrée) — programmer une relance reste ouvert au
+      // conseiller propriétaire, voir backend/routers/clients.py::programmer_relance.
+      apiFetch<Client>(`/clients/${id}/relance`, {
+        method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(values),
       }),

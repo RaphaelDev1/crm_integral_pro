@@ -124,6 +124,7 @@ def test_construire_recommandations_multi_lignes_repli_sur_mobile_si_vide():
     with patch.object(offres_engine, "comparer_offres", new=AsyncMock(side_effect=comparer_offres_stub)):
         resultat = _run(offres_engine.construire_recommandations(db, "Autre", 20.0))
 
-    titre, offres = resultat["principal"]
+    titre, categorie, offres = resultat["principal"]
     assert titre.startswith("📲")
+    assert categorie == "Multi-lignes"
     assert offres and offres[0]["categorie"] == "Mobile"

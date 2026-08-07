@@ -12,11 +12,18 @@ import { DataTable } from "@/components/ui/data-table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
+import { formatDateRelance, sortingFnDateRelance } from "@/lib/dateRelance";
 import { prospectsResource } from "@/lib/hooks/useProspects";
 import type { ProspectCreateInput } from "@/lib/schemas/prospect";
 import type { Prospect } from "@/lib/types";
 
 type Filtre = "chauds" | "relances_jour" | "non_convertis";
+
+const OPTIONS_FILTRE: { valeur: Filtre; label: string }[] = [
+  { valeur: "chauds", label: "Chauds uniquement" },
+  { valeur: "relances_jour", label: "Relances aujourd'hui" },
+  { valeur: "non_convertis", label: "Non convertis" },
+];
 
 function scoreBadgeClass(score: number | null): string {
   if (score == null) return "bg-slate-100 text-slate-600 hover:bg-slate-100";
@@ -28,7 +35,7 @@ function scoreBadgeClass(score: number | null): string {
 export default function ProspectsPage() {
   const router = useRouter();
   const [createOpen, setCreateOpen] = useState(false);
-  const [filtresActifs, setFiltresActifs] = useState<Set<Filtre>>(new Set());
+  const [filtreActif, setFiltreActif] = useState<Filtre | null>(null);
 
   const prospectsQuery = prospectsResource.useList();
   const createMutation = prospectsResource.useCreate({
@@ -42,33 +49,28 @@ export default function ProspectsPage() {
     onSuccess: () => toast.success("Prospect supprimé."),
   });
 
-  const toggleFiltre = (filtre: Filtre) => {
-    setFiltresActifs((prev) => {
-      const next = new Set(prev);
-      if (next.has(filtre)) next.delete(filtre);
-      else next.add(filtre);
-      return next;
-    });
-  };
-
   const aujourdHui = new Date().toISOString().slice(0, 10);
 
   const data = useMemo(() => {
-    let prospects = prospectsQuery.data ?? [];
-    if (filtresActifs.has("chauds")) prospects = prospects.filter((p) => (p.score ?? 0) >= 70);
-    if (filtresActifs.has("relances_jour")) prospects = prospects.filter((p) => p.date_relance === aujourdHui);
-    if (filtresActifs.has("non_convertis")) prospects = prospects.filter((p) => p.client_id == null);
+    const prospects = prospectsQuery.data ?? [];
+    if (filtreActif === "chauds") return prospects.filter((p) => (p.score ?? 0) >= 70);
+    if (filtreActif === "relances_jour") return prospects.filter((p) => p.date_relance === aujourdHui);
+    if (filtreActif === "non_convertis") return prospects.filter((p) => p.client_id == null);
     return prospects;
-  }, [prospectsQuery.data, filtresActifs, aujourdHui]);
+  }, [prospectsQuery.data, filtreActif, aujourdHui]);
 
   const columns = useMemo<ColumnDef<Prospect>[]>(
     () => [
+      {
+        id: "ref",
+        header: "Référence",
+        accessorFn: (prospect) => prospect.ref || "—",
+      },
       {
         id: "nom",
         header: "Nom",
         accessorFn: (prospect) => `${prospect.prenom ?? ""} ${prospect.nom ?? ""}`.trim(),
       },
-      { accessorKey: "origine", header: "Origine" },
       {
         id: "score",
         header: "Score",
@@ -78,11 +80,27 @@ export default function ProspectsPage() {
           </Badge>
         ),
       },
-      { accessorKey: "date_relance", header: "Date relance" },
       {
-        id: "statut",
-        header: "Statut",
-        cell: ({ row }) => <Badge variant="secondary">{row.original.statut || "—"}</Badge>,
+        id: "economie_estimee_an",
+        header: "Économie estimée",
+        accessorFn: (prospect) => prospect.economie_estimee_an ?? 0,
+        cell: ({ row }) =>
+          row.original.economie_estimee_an != null ? `${row.original.economie_estimee_an.toFixed(0)} €/an` : "—",
+      },
+      {
+        id: "prochaine_relance",
+        header: "Prochaine relance",
+        // Inclut le statut dans la valeur de recherche globale (affiché en
+        // dessous de la date dans la cellule) — voir la demande de recherche
+        // sur SCORE / DATE RELANCE / nom / prénom / ÉCONOMIE / STATUT.
+        accessorFn: (prospect) => `${prospect.date_relance ?? ""} ${prospect.statut ?? ""}`.trim(),
+        sortingFn: sortingFnDateRelance,
+        cell: ({ row }) => (
+          <div className="space-y-0.5">
+            <div>{formatDateRelance(row.original.date_relance)}</div>
+            {row.original.statut && <div className="text-xs text-muted-foreground">{row.original.statut}</div>}
+          </div>
+        ),
       },
     ],
     []
@@ -101,27 +119,19 @@ export default function ProspectsPage() {
       </div>
 
       <div className="flex gap-2">
-        <Button
-          variant={filtresActifs.has("chauds") ? "default" : "outline"}
-          size="sm"
-          onClick={() => toggleFiltre("chauds")}
-        >
-          Chauds uniquement
+        <Button variant={filtreActif === null ? "default" : "outline"} size="sm" onClick={() => setFiltreActif(null)}>
+          Tous
         </Button>
-        <Button
-          variant={filtresActifs.has("relances_jour") ? "default" : "outline"}
-          size="sm"
-          onClick={() => toggleFiltre("relances_jour")}
-        >
-          Relances aujourd&apos;hui
-        </Button>
-        <Button
-          variant={filtresActifs.has("non_convertis") ? "default" : "outline"}
-          size="sm"
-          onClick={() => toggleFiltre("non_convertis")}
-        >
-          Non convertis
-        </Button>
+        {OPTIONS_FILTRE.map((option) => (
+          <Button
+            key={option.valeur}
+            variant={filtreActif === option.valeur ? "default" : "outline"}
+            size="sm"
+            onClick={() => setFiltreActif((prev) => (prev === option.valeur ? null : option.valeur))}
+          >
+            {option.label}
+          </Button>
+        ))}
       </div>
 
       {prospectsQuery.isLoading ? (
@@ -135,6 +145,7 @@ export default function ProspectsPage() {
           data={data}
           globalFilterPlaceholder="Rechercher un prospect…"
           emptyMessage="Aucun prospect pour le moment."
+          defaultSorting={[{ id: "prochaine_relance", desc: false }]}
           onRowClick={(prospect) => router.push(`/prospects/${prospect.id}`)}
           rowActions={(prospect) => (
             <>

@@ -1,20 +1,25 @@
 // Classement des relances clients/prospects par fenêtre temporelle — miroir en
 // TS de backend/routers/dashboard.py::_classer_relance/_parse_date_relance
-// (format dd/mm/yyyy). Utilisé côté front pour obtenir les items cliquables
-// (le endpoint /dashboard/summary ne renvoie que des compteurs, pas les items).
+// (format ISO YYYY-MM-DD, produit nativement par les <input type="date"> du
+// frontend). Utilisé côté front pour obtenir les items cliquables (le endpoint
+// /dashboard/summary ne renvoie que des compteurs, pas les items).
 export type FenetreRelance = "retard" | "jour" | "venir";
 
 export interface RelanceItem {
   id: number;
   type: "client" | "prospect";
   label: string;
+  ref: string | null;
+  theme: string | null;
+  score: number | null;
+  economieEstimeeAn: number | null;
   dateRelance: string;
   statutRelance: string | null;
 }
 
 function parseDateRelance(valeur: string | null | undefined): Date | null {
   if (!valeur) return null;
-  const [jour, mois, annee] = valeur.split("/").map(Number);
+  const [annee, mois, jour] = valeur.split("-").map(Number);
   if (!jour || !mois || !annee) return null;
   const date = new Date(annee, mois - 1, jour);
   return Number.isNaN(date.getTime()) ? null : date;

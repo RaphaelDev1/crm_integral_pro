@@ -14,6 +14,7 @@ from backend.models.historique_action import HistoriqueAction
 from backend.models.login_tentative import LoginTentative
 from backend.models.mandat import Mandat
 from backend.models.mandat_honoraires import MandatHonoraires
+from backend.models.notification import Notification
 from backend.models.offre import Offre
 from backend.models.offre_staging import OffreStaging
 from backend.models.parametre import Parametre
@@ -48,4 +49,5 @@ __all__ = [
     "HistoriqueAction",
     "CatalogueSource",
     "OffreStaging",
+    "Notification",
 ]

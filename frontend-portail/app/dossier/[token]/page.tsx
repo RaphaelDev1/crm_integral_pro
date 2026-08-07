@@ -26,6 +26,9 @@ export default async function DossierPage({
 
   const docsAFournir = ctx.documents_a_fournir.filter((d) => d.statut === "a_fournir" || d.statut === "rejete");
   const tousDocsOk = docsAFournir.length === 0 && ctx.documents_a_fournir.length > 0;
+  const mandatOk = !ctx.mandat_statut || ctx.mandat_statut === "signe";
+  const speedtestOk = ctx.speedtest_fait || !ctx.peut_transmettre_speedtest;
+  const toutEstFait = tousDocsOk && mandatOk && ctx.demarches_a_completer.length === 0 && speedtestOk;
 
   return (
     <main>
@@ -45,6 +48,18 @@ export default async function DossierPage({
           </div>
         )}
       </div>
+
+      {toutEstFait && (
+        <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-6 mb-6 flex items-center gap-3">
+          <CheckCircle2 className="w-8 h-8 text-accent shrink-0" />
+          <div>
+            <p className="font-semibold text-emerald-900">✅ Tous vos documents ont bien été transmis.</p>
+            <p className="text-sm text-emerald-800 mt-1">
+              Votre conseiller les vérifie et reviendra vers vous avec la suite.
+            </p>
+          </div>
+        </div>
+      )}
 
       <section className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 mb-6">
         <div className="flex items-center gap-3 mb-4">
@@ -68,7 +83,7 @@ export default async function DossierPage({
           ))}
         </ul>
 
-        {docsAFournir.length > 0 && ctx.peut_uploader_docs && (
+        {docsAFournir.length > 0 && ctx.peut_uploader_docs && !toutEstFait && (
           <Link
             href={`/dossier/${params.token}/documents`}
             className="mt-6 block w-full bg-primary text-white text-center py-3 rounded-lg font-semibold hover:bg-primary/90 transition"
@@ -122,20 +137,29 @@ export default async function DossierPage({
       {ctx.peut_transmettre_speedtest && (
         <section className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 mb-6">
           <div className="flex items-center gap-3 mb-4">
-            <div className="w-10 h-10 rounded-full flex items-center justify-center bg-blue-100 text-primary">
-              <Wifi className="w-6 h-6" />
+            <div className={`w-10 h-10 rounded-full flex items-center justify-center ${ctx.speedtest_fait ? "bg-emerald-100 text-accent" : "bg-blue-100 text-primary"}`}>
+              {ctx.speedtest_fait ? <CheckCircle2 className="w-6 h-6" /> : <Wifi className="w-6 h-6" />}
             </div>
-            <h3 className="text-lg font-semibold">Votre débit internet</h3>
+            <h3 className="text-lg font-semibold">Testons la puissance de votre réseau</h3>
           </div>
-          <p className="text-slate-600 mb-4">
-            Un test de débit nous aide à confirmer la qualité de votre offre actuelle.
-          </p>
-          <Link
-            href={`/dossier/${params.token}/speedtest`}
-            className="block w-full bg-primary text-white text-center py-3 rounded-lg font-semibold hover:bg-primary/90 transition"
-          >
-            Tester mon débit →
-          </Link>
+          {ctx.speedtest_fait ? (
+            <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
+              <span className="font-medium">Votre débit internet testé</span>
+              <StatutBadge statut="recu" />
+            </div>
+          ) : (
+            <>
+              <p className="text-slate-600 mb-4">
+                Un test de débit nous aide à confirmer la qualité de votre offre actuelle.
+              </p>
+              <Link
+                href={`/dossier/${params.token}/speedtest`}
+                className="block w-full bg-primary text-white text-center py-3 rounded-lg font-semibold hover:bg-primary/90 transition"
+              >
+                Tester mon débit →
+              </Link>
+            </>
+          )}
         </section>
       )}
 
@@ -152,6 +176,7 @@ function StatutBadge({ statut }: { statut: string }) {
   const map: Record<string, { label: string; className: string }> = {
     a_fournir: { label: "À envoyer", className: "bg-orange-100 text-orange-700" },
     en_attente: { label: "En attente", className: "bg-slate-100 text-slate-600" },
+    recu: { label: "✓ Reçu", className: "bg-emerald-100 text-accent" },
     valide: { label: "✓ Validé", className: "bg-emerald-100 text-accent" },
     rejete: { label: "✗ À refaire", className: "bg-red-100 text-danger" },
   };

@@ -11,6 +11,8 @@ class ClientBase(BaseModel):
     ville: str | None = None
     adresse: str | None = None
     type_client: str | None = None
+    raison_sociale: str | None = None
+    effectif: str | None = None
     operateur_actuel: str | None = None
     techno: str | None = None
     data_go: str | None = None
@@ -18,6 +20,7 @@ class ClientBase(BaseModel):
     cout_mensuel_actuel: float | None = None
     satisfaction_reseau: str | None = None
     veut_rester: str | None = None
+    defaut_technique: str | None = None
     speed_down: float | None = None
     speed_up: float | None = None
     fournisseur_energie: str | None = None
@@ -38,9 +41,15 @@ class ClientUpdate(ClientBase):
     pass
 
 
+class RelanceUpdate(BaseModel):
+    date_relance: str | None = None
+    statut_relance: str | None = None
+
+
 class ClientOut(ClientBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
     date_creation: str | None = None
     cree_par: str | None = None
+    conseiller_id: int | None = None

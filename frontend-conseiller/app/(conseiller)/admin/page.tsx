@@ -1,6 +1,6 @@
 "use client";
 
-import { BookOpen, FileSearch, Settings, Users as UsersIcon, TrendingDown, type LucideIcon } from "lucide-react";
+import { BookOpen, FileSearch, Settings, Trash2, Users as UsersIcon, TrendingDown, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 
 import { AdminGuard } from "@/components/layout/AdminGuard";
@@ -43,6 +43,12 @@ const SECTIONS: AdminSection[] = [
     label: "Catalogue",
     description: "Sources de découverte d'offres et validation des offres détectées.",
     icon: BookOpen,
+  },
+  {
+    href: "/admin/donnees-test",
+    label: "Données de test",
+    description: "Supprimer tous les prospects et clients (et fichiers associés) pour désencombrer la base.",
+    icon: Trash2,
   },
 ];
 

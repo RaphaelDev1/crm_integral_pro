@@ -58,6 +58,10 @@ interface DataTableProps<TData, TValue> {
   pageCount?: number;
   pagination?: PaginationState;
   onPaginationChange?: OnChangeFn<PaginationState>;
+
+  // Tri initial appliqué à l'ouverture (ex. relance la plus proche en
+  // premier) — l'utilisateur reste ensuite libre de re-trier au clic.
+  defaultSorting?: SortingState;
 }
 
 // Composant unique pour toutes les listes (clients, prospects, dossiers,
@@ -81,8 +85,9 @@ export function DataTable<TData, TValue>({
   pageCount,
   pagination: controlledPagination,
   onPaginationChange,
+  defaultSorting,
 }: DataTableProps<TData, TValue>) {
-  const [sorting, setSorting] = useState<SortingState>([]);
+  const [sorting, setSorting] = useState<SortingState>(defaultSorting ?? []);
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
   const [globalFilter, setGlobalFilter] = useState("");
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});

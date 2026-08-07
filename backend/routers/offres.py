@@ -43,10 +43,11 @@ async def recommandations(payload: RecommandationsRequest, db: AsyncSession = De
         fournisseur_exclu=payload.fournisseur_exclu,
         data_go_min=payload.data_go_min,
     )
-    titre_principal, offres_principal = resultat["principal"]
+    titre_principal, categorie_principal, offres_principal = resultat["principal"]
     return RecommandationsOut(
-        principal=BlocRecommandationOut(titre=titre_principal, offres=offres_principal),
+        principal=BlocRecommandationOut(titre=titre_principal, categorie=categorie_principal, offres=offres_principal),
         cross_sell=[
-            BlocRecommandationOut(titre=titre, offres=offres) for titre, offres in resultat["cross_sell"]
+            BlocRecommandationOut(titre=titre, categorie=categorie, offres=offres)
+            for titre, categorie, offres in resultat["cross_sell"]
         ],
     )

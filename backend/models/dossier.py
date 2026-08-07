@@ -49,12 +49,15 @@ class Dossier(Base):
     univers: Mapped[str] = mapped_column(String, nullable=False)          # telecom, energie, alarme, tpe...
     fournisseur_cible: Mapped[str | None] = mapped_column(String, nullable=True)
     economie_annuelle_estimee: Mapped[float] = mapped_column(Float, default=0.0)
+    # Snapshot des frais annexes de l'offre cible (SIM, résiliation, portabilité)
+    # au moment où le conseiller l'a choisie — voir offres_engine.comparer_offres.
+    frais_annexes_cible: Mapped[float] = mapped_column(Float, default=0.0)
 
-    # True tant que le client rattaché n'est encore qu'un prospect côté CRM Streamlit (cf.
-    # src/api_client.py::creer_dossier, entite="prospect") — bascule à False lors de la
-    # conversion en client (src/app.py::finaliser_conversion_client). Sert uniquement à
-    # alléger les documents demandés (cf. dossier_engine.documents_requis_pour_univers) :
-    # inutile de réclamer CNI/justificatif de domicile à quelqu'un qui n'est pas encore client.
+    # True tant que le client rattaché n'est encore qu'un prospect côté CRM (cf.
+    # backend/services/prospect_conversion.py) — bascule à False lors de la conversion
+    # officielle (signature du mandat). Purement informatif : la collecte de documents
+    # (cf. dossier_engine.documents_requis_pour_univers) ne dépend plus de ce flag —
+    # elle démarre dès la création du dossier, en parallèle de la signature du mandat.
     est_prospect: Mapped[bool] = mapped_column(default=True, server_default="true")
 
     # État

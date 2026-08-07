@@ -111,3 +111,17 @@ def test_derniers_contacts_garde_la_date_la_plus_recente():
 
     assert derniers[1].strftime(FORMAT_DATE) == recente
     assert derniers[2].strftime(FORMAT_DATE) == ancienne
+
+
+# ------------------------------------------------------------------------------
+#  dernier_contact_affiche() — repli sur date_creation plutôt que "Jamais"
+# ------------------------------------------------------------------------------
+def test_dernier_contact_affiche_utilise_le_contact_journalise_si_present():
+    contact = datetime.now() - timedelta(days=3)
+    prospect = _prospect(date_creation="01/01/2026 10:00")
+    assert prospect_scoring.dernier_contact_affiche(prospect, contact) == contact.strftime(FORMAT_DATE)
+
+
+def test_dernier_contact_affiche_retombe_sur_date_creation_si_aucun_contact():
+    prospect = _prospect(date_creation="01/01/2026 10:00")
+    assert prospect_scoring.dernier_contact_affiche(prospect, None) == "01/01/2026 10:00"
