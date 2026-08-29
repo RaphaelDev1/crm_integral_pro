@@ -24,17 +24,27 @@ export class ApiError extends Error {
   status: number;
   detail: string;
   fieldErrors: ApiFieldError[];
+  // Corps brut de `detail` quand ce n'est ni une chaîne ni un tableau
+  // d'erreurs de validation — ex. { message, alertes: [...] } renvoyé par
+  // POST /api/v1/souscriptions en cas d'alerte critique bloquante (§2.1).
+  // `undefined` dans tous les autres cas.
+  payload: unknown;
 
-  constructor(status: number, detail: string, fieldErrors: ApiFieldError[] = []) {
+  constructor(status: number, detail: string, fieldErrors: ApiFieldError[] = [], payload?: unknown) {
     super(detail);
     this.name = "ApiError";
     this.status = status;
     this.detail = detail;
     this.fieldErrors = fieldErrors;
+    this.payload = payload;
   }
 }
 
-function parseErrorBody(status: number, path: string, body: unknown): { detail: string; fieldErrors: ApiFieldError[] } {
+function parseErrorBody(
+  status: number,
+  path: string,
+  body: unknown
+): { detail: string; fieldErrors: ApiFieldError[]; payload?: unknown } {
   const rawDetail = (body as { detail?: unknown } | null)?.detail;
 
   if (typeof rawDetail === "string") {
@@ -52,6 +62,12 @@ function parseErrorBody(status: number, path: string, body: unknown): { detail: 
     return { detail, fieldErrors };
   }
 
+  if (rawDetail && typeof rawDetail === "object") {
+    const message = (rawDetail as { message?: unknown }).message;
+    const detail = typeof message === "string" ? message : `Erreur ${status} lors de l'appel à ${path}.`;
+    return { detail, fieldErrors: [], payload: rawDetail };
+  }
+
   return { detail: `Erreur ${status} lors de l'appel à ${path}.`, fieldErrors: [] };
 }
 
@@ -64,8 +80,8 @@ export async function apiFetch<T = unknown>(path: string, init?: RequestInit): P
 
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    const { detail, fieldErrors } = parseErrorBody(res.status, path, body);
-    throw new ApiError(res.status, detail, fieldErrors);
+    const { detail, fieldErrors, payload } = parseErrorBody(res.status, path, body);
+    throw new ApiError(res.status, detail, fieldErrors, payload);
   }
 
   if (res.status === 204) {

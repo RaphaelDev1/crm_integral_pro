@@ -36,6 +36,10 @@ export default function ProspectsPage() {
   const router = useRouter();
   const [createOpen, setCreateOpen] = useState(false);
   const [filtreActif, setFiltreActif] = useState<Filtre | null>(null);
+  // Numéros non vérifiés (Twilio Lookup, telephone_verifie === false) masqués
+  // par défaut — case à décocher pour les faire réapparaître, car un faux
+  // négatif ne doit jamais faire perdre un vrai lead (voir P2.2).
+  const [masquerNonVerifies, setMasquerNonVerifies] = useState(true);
 
   const prospectsQuery = prospectsResource.useList();
   const createMutation = prospectsResource.useCreate({
@@ -52,12 +56,13 @@ export default function ProspectsPage() {
   const aujourdHui = new Date().toISOString().slice(0, 10);
 
   const data = useMemo(() => {
-    const prospects = prospectsQuery.data ?? [];
+    let prospects = prospectsQuery.data ?? [];
+    if (masquerNonVerifies) prospects = prospects.filter((p) => p.telephone_verifie !== false);
     if (filtreActif === "chauds") return prospects.filter((p) => (p.score ?? 0) >= 70);
     if (filtreActif === "relances_jour") return prospects.filter((p) => p.date_relance === aujourdHui);
     if (filtreActif === "non_convertis") return prospects.filter((p) => p.client_id == null);
     return prospects;
-  }, [prospectsQuery.data, filtreActif, aujourdHui]);
+  }, [prospectsQuery.data, filtreActif, aujourdHui, masquerNonVerifies]);
 
   const columns = useMemo<ColumnDef<Prospect>[]>(
     () => [
@@ -70,6 +75,16 @@ export default function ProspectsPage() {
         id: "nom",
         header: "Nom",
         accessorFn: (prospect) => `${prospect.prenom ?? ""} ${prospect.nom ?? ""}`.trim(),
+        cell: ({ row }) => (
+          <div className="flex items-center gap-2">
+            <span>{`${row.original.prenom ?? ""} ${row.original.nom ?? ""}`.trim() || "—"}</span>
+            {row.original.telephone_verifie === false && (
+              <Badge variant="outline" className="bg-amber-100 text-amber-800 hover:bg-amber-100">
+                ⚠️ Numéro non vérifié
+              </Badge>
+            )}
+          </div>
+        ),
       },
       {
         id: "score",
@@ -118,7 +133,7 @@ export default function ProspectsPage() {
         <Button onClick={() => setCreateOpen(true)}>Nouveau prospect</Button>
       </div>
 
-      <div className="flex gap-2">
+      <div className="flex items-center gap-2">
         <Button variant={filtreActif === null ? "default" : "outline"} size="sm" onClick={() => setFiltreActif(null)}>
           Tous
         </Button>
@@ -132,6 +147,15 @@ export default function ProspectsPage() {
             {option.label}
           </Button>
         ))}
+        <label className="ml-2 flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={masquerNonVerifies}
+            onChange={(e) => setMasquerNonVerifies(e.target.checked)}
+            className="h-4 w-4 rounded border-slate-300"
+          />
+          Masquer les numéros non vérifiés
+        </label>
       </div>
 
       {prospectsQuery.isLoading ? (

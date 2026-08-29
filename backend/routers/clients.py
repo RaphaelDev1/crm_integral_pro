@@ -23,6 +23,7 @@ from backend.schemas.briefing import ClientBriefingOut, DocumentOut, DocumentSta
 from backend.schemas.client import ClientCreate, ClientOut, ClientUpdate, RelanceUpdate
 from backend.schemas.historique_action import HistoriqueActionOut
 from backend.services import audit_engine, notification_engine, reference_engine, token_engine
+from backend.services.ia_conseil_bridge import obtenir_ou_creer_client_conseil
 from backend.services.storage_engine import StorageError, supprimer_document, url_signee
 
 logger = logging.getLogger(__name__)
@@ -175,6 +176,24 @@ async def historique_client(client_id: int, db: AsyncSession = Depends(get_db), 
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Client introuvable.")
     _verifier_acces(client, user)
     return await audit_engine.lire_historique(db, "client", client_id)
+
+
+@router.post("/{client_id}/ia-conseil-client", response_model=dict)
+async def obtenir_ia_conseil_client(
+    client_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Crée (ou réutilise) le ClientConseil IA Conseil rattaché à ce client —
+    utilisé par l'étape "Trame" du diagnostic pour pouvoir lancer des sessions
+    de trame adaptative (voir backend/services/ia_conseil_bridge.py)."""
+    client = await db.get(Client, client_id)
+    if client is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Client introuvable.")
+    _verifier_acces(client, user)
+    client_conseil = await obtenir_ou_creer_client_conseil(db, client, "client", conseiller_id=user.id)
+    await db.commit()
+    return {"id": str(client_conseil.id)}
 
 
 @router.post("/{client_id}/token-portail", response_model=dict)

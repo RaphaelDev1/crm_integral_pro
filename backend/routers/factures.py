@@ -20,6 +20,7 @@ from backend.core.database import get_db
 from backend.core.security import get_current_user
 from backend.models.client import Client
 from backend.models.facture_analyse import FactureAnalyse
+from backend.models.prospect import Prospect
 from backend.models.user import User
 from backend.schemas.facture import FactureAnalyseOut
 from backend.services.facture_analyzer import FactureAnalyzerError, analyser_facture
@@ -31,6 +32,7 @@ router = APIRouter(prefix="/factures", tags=["factures"], dependencies=[Depends(
 async def analyser(
     fichier: UploadFile,
     client_id: int | None = Form(None),
+    prospect_id: int | None = Form(None),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -39,6 +41,8 @@ async def analyser(
 
     if client_id is not None and await db.get(Client, client_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Client introuvable.")
+    if prospect_id is not None and await db.get(Prospect, prospect_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Prospect introuvable.")
 
     contenu = await fichier.read()
     # delete=False + suppression manuelle : sous Windows, un NamedTemporaryFile
@@ -54,9 +58,10 @@ async def analyser(
     finally:
         os.unlink(chemin_tmp)
 
-    if client_id is not None:
+    if client_id is not None or prospect_id is not None:
         db.add(FactureAnalyse(
             client_id=client_id,
+            prospect_id=prospect_id,
             **resultat,
             date_analyse=datetime.now().strftime("%d/%m/%Y %H:%M"),
             analyse_par=user.username,

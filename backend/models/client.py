@@ -2,9 +2,11 @@
 #  CLIENT — miroir de la table `clients` (src/db.py, création + colonnes
 #  ajoutées par _migrer_bdd()).
 # ==============================================================================
+import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Float, ForeignKey, String
+from sqlalchemy import Float, ForeignKey, Integer, String
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.models.base import Base
@@ -22,6 +24,10 @@ class Client(Base):
     # (voir backend/routers/clients.py). NULL = fiche existante avant l'introduction de
     # cette colonne, restant visible/éditable transitoirement le temps d'être réclamée.
     conseiller_id: Mapped[int | None] = mapped_column(ForeignKey("utilisateurs.id"), nullable=True)
+    # ClientConseil IA Conseil rattaché (cf. backend/services/ia_conseil_bridge.py) —
+    # créé à la demande à l'entrée de l'étape "Trame" du diagnostic fusionné,
+    # jamais recréé ensuite. Migration : 0037_ia_conseil_bridge.
+    ia_conseil_client_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("client.id"), nullable=True)
     prenom: Mapped[str | None] = mapped_column(String, nullable=True)
     nom: Mapped[str | None] = mapped_column(String, nullable=True)
     telephone: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -37,6 +43,11 @@ class Client(Base):
     operateur_actuel: Mapped[str | None] = mapped_column(String, nullable=True)
     techno: Mapped[str | None] = mapped_column(String, nullable=True)
     data_go: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Mêmes questions/valeurs que la trame mobile (roaming_ue / sensibilite_prix,
+    # voir backend/scripts/seed_ia_conseil.py) — désormais posées aussi sur la
+    # landing publique /economiser. Migration : 0038_landing_roaming_priorite.
+    roaming_europe: Mapped[str | None] = mapped_column(String, nullable=True)
+    sensibilite_prix: Mapped[str | None] = mapped_column(String, nullable=True)
     offre_actuelle: Mapped[str | None] = mapped_column(String, nullable=True)
     cout_mensuel_actuel: Mapped[float | None] = mapped_column(Float, default=0)
     satisfaction_reseau: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -58,3 +69,4 @@ class Client(Base):
     statut_relance: Mapped[str | None] = mapped_column(String, default="Aucune")
 
     contrats: Mapped[list["Contrat"]] = relationship(back_populates="client")
+    age: Mapped[int | None] = mapped_column(Integer, nullable=True)

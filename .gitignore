@@ -36,3 +36,13 @@ frontend-conseiller/.env.local
 
 # Fallback stockage local (dev uniquement, quand S3 n'est pas configuré)
 backend/_local_storage/
+
+# Modèle de churn entraîné localement (§3.5) — régénéré via
+# backend/scripts/train_churn_model.py, jamais commité.
+backend/ml_models/
+
+# Redis for Windows portable (dev local, pas de Docker sur cette machine)
+/tools/redis/
+
+# Dump Redis local (dev)
+dump.rdb

@@ -1,12 +1,12 @@
 # ==============================================================================
 #  RESTITUTION PDF ENGINE — PDF de vente remis au client par le conseiller :
-#  tableau comparatif multi-offres/multi-fournisseurs côte à côte + habillage
+#  bandeau de synthèse chiffrée + une carte détaillée par offre comparée
+#  (avant/après barré, pastille de réduction, encart économie) + habillage
 #  vendeur configurable (logo réel, couleurs, nom société — voir Parametre,
-#  backend/routers/parametres.py). Style de cartes/pastilles réutilisé de
-#  src/pdf_engine.py::PDFPro (fpdf2), mais layout entièrement redessiné en
-#  tableau (au lieu des cartes empilées) — indépendant de src/pdf_engine.py et
-#  de backend/services/document_engine.py (PDF légaux de démarche), sur le
-#  même principe de découplage backend/src déjà en place.
+#  backend/routers/parametres.py). Style repris de src/pdf_engine.py::PDFPro
+#  (fpdf2, cartes empilées plus détaillées qu'un tableau compact) — indépendant
+#  de src/pdf_engine.py et de backend/services/document_engine.py (PDF légaux
+#  de démarche), sur le même principe de découplage backend/src déjà en place.
 # ==============================================================================
 from __future__ import annotations
 
@@ -226,81 +226,149 @@ def _banniere_economie(pdf: PDFRestitution, montant_annuel: float, hauteur: floa
     pdf.set_y(y + hauteur + 6)
 
 
-def _tableau_comparatif(pdf: PDFRestitution, offres: list[dict], offre_recommandee_id: int | None):
-    """Tableau comparatif côte à côte — une colonne par offre comparée (au
-    lieu des cartes empilées de src/pdf_engine.py::_carte_offre), avec la
-    colonne recommandée mise en évidence visuellement."""
-    marge_x = 10
-    largeur_totale = 190
-    nb_offres = len(offres)
-    largeur_col = largeur_totale / nb_offres
-    def _economie(o: dict, annuelle: bool) -> str:
-        if not o.get("comparable", True):
-            return "-"
-        montant = (o.get("economie_mensuelle", 0) or 0) * (12 if annuelle else 1)
-        return f"{montant:.2f} EUR"
-
-    lignes = [
-        ("Fournisseur", lambda o: o.get("fournisseur") or "-"),
-        ("Offre", lambda o: (o.get("nom") or "-")[:22]),
-        ("Economie / mois", lambda o: _economie(o, annuelle=False)),
-        ("Economie / an", lambda o: _economie(o, annuelle=True)),
-    ]
-    hauteur_ligne = 8
-    hauteur_entete = 10
-    hauteur_totale = hauteur_entete + len(lignes) * hauteur_ligne
-
+def _bande_kpi(pdf: PDFRestitution, nb_offres: int, economie_mensuelle: float, economie_annuelle: float):
+    """Bandeau de synthèse chiffrée en tête de l'étude (style
+    src/pdf_engine.py::generer_pdf_restitution) — donne le total d'un coup
+    d'oeil avant le détail offre par offre ci-dessous."""
     y0 = pdf.get_y()
-    if y0 > 297 - 24 - hauteur_totale:
+    h = 20
+    pdf.rounded_card(10, y0, 190, h, r=3, fill=(255, 255, 255), border=COULEUR_BORDURE)
+    col_w = 190 / 3
+    kpis = [
+        (str(nb_offres), "offre(s) comparee(s)", pdf.couleur_primaire),
+        (f"{economie_mensuelle:.2f} EUR", "economie estimee / mois", pdf.couleur_accent),
+        (f"{economie_annuelle:.2f} EUR", "economie estimee / an", pdf.couleur_accent),
+    ]
+    for i, (valeur, label, couleur) in enumerate(kpis):
+        x = 10 + i * col_w
+        if i > 0:
+            pdf.set_draw_color(*COULEUR_BORDURE)
+            pdf.set_line_width(0.2)
+            pdf.line(x, y0 + 4, x, y0 + h - 4)
+        pdf.set_xy(x, y0 + 3)
+        pdf.set_font("Helvetica", "B", 13)
+        pdf.set_text_color(*couleur)
+        pdf.cell(col_w, 7, _txt(valeur), align="C")
+        pdf.set_xy(x, y0 + 11.5)
+        pdf.set_font("Helvetica", "", 7.5)
+        pdf.set_text_color(*COULEUR_GRIS)
+        pdf.cell(col_w, 5, _txt(label), align="C")
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_y(y0 + h + 6)
+
+
+def _carte_offre_comparee(pdf: PDFRestitution, offre: dict, cout_actuel_mensuel: float | None, recommandee: bool):
+    """Une carte détaillée par offre comparée (au lieu d'une colonne compacte
+    de tableau) — reprend le style avant/après barré + pastille d'économie de
+    src/pdf_engine.py::_carte_offre, plus riche que la ligne de tableau."""
+    h = 32
+    y0 = pdf.get_y()
+    if y0 > 297 - 24 - h:
         pdf.add_page()
         y0 = pdf.get_y()
 
-    # En-tête (nom de l'offre recommandée mis en avant)
-    for i, offre in enumerate(offres):
-        x = marge_x + i * largeur_col
-        recommandee = offre_recommandee_id is not None and offre.get("offre_id") == offre_recommandee_id
-        pdf.rounded_card(x + 1, y0, largeur_col - 2, hauteur_entete,
-                          r=2, fill=pdf.couleur_accent if recommandee else pdf.couleur_primaire)
-        pdf.set_xy(x + 1, y0 + 1.5)
-        pdf.set_font("Helvetica", "B", 8.5)
-        pdf.set_text_color(255, 255, 255)
-        pdf.cell(largeur_col - 2, 4, _txt(f"Offre {i + 1}"), align="C")
-        if recommandee:
-            pdf.set_xy(x + 1, y0 + 5.5)
-            pdf.set_font("Helvetica", "", 6.5)
-            pdf.cell(largeur_col - 2, 3.5, _txt("RECOMMANDEE"), align="C")
+    bordure = pdf.couleur_accent if recommandee else COULEUR_BORDURE
+    fond = COULEUR_ACCENT_CLAIR if recommandee else COULEUR_FOND_CARTE
+    pdf.rounded_card(10, y0, 190, h, r=3, fill=fond, border=bordure, line_width=0.6 if recommandee else 0.3)
+
+    titre_y = y0 + 4
+    if recommandee:
+        pdf.pill(13, y0 + 3, "RECOMMANDEE", fill=pdf.couleur_accent, text_color=(255, 255, 255), h=5, font=("Helvetica", "B", 7))
+        titre_y = y0 + 10
+
+    pdf.set_xy(13, titre_y)
+    pdf.set_font("Helvetica", "B", 11.5)
+    pdf.set_text_color(*COULEUR_TEXTE)
+    pdf.cell(120, 6, _txt(offre.get("nom") or "Offre"))
+
+    pdf.set_xy(13, titre_y + 6.5)
+    pdf.set_font("Helvetica", "", 8.5)
+    pdf.set_text_color(*COULEUR_GRIS)
+    pdf.cell(120, 5, _txt(offre.get("fournisseur") or "-"))
+    pdf.set_text_color(0, 0, 0)
+
+    comparable = offre.get("comparable", True)
+    prix_offre = offre.get("prix_mensuel")
+    economie_mensuelle = offre.get("economie_mensuelle", 0) or 0
+
+    if comparable and cout_actuel_mensuel and prix_offre is not None:
+        yy = titre_y + 13.5
+        avant_txt = f"{cout_actuel_mensuel:.2f} EUR/mois"
+        pdf.set_xy(13, yy)
+        pdf.set_font("Helvetica", "", 8)
+        pdf.set_text_color(*COULEUR_GRIS)
+        pdf.cell(13, 5, _txt("Avant :"))
+        pdf.set_xy(27, yy)
+        pdf.set_font("Helvetica", "", 9)
+        largeur_avant = pdf.get_string_width(_txt(avant_txt))
+        pdf.cell(largeur_avant, 5, _txt(avant_txt))
+        pdf.set_draw_color(*COULEUR_GRIS)
+        pdf.set_line_width(0.25)
+        pdf.line(27, yy + 2.6, 27 + largeur_avant, yy + 2.6)
+
+        pdf.set_xy(65, yy)
+        pdf.set_font("Helvetica", "", 8)
+        pdf.set_text_color(*COULEUR_GRIS)
+        pdf.cell(13, 5, _txt("Apres :"))
+        pdf.set_xy(78, yy - 0.7)
+        pdf.set_font("Helvetica", "B", 10.5)
+        pdf.set_text_color(*pdf.couleur_accent)
+        pdf.cell(35, 6, _txt(f"{prix_offre:.2f} EUR/mois"))
         pdf.set_text_color(0, 0, 0)
 
-    # Corps du tableau, ligne par ligne
-    for j, (label, extracteur) in enumerate(lignes):
-        y = y0 + hauteur_entete + j * hauteur_ligne
-        for i, offre in enumerate(offres):
-            x = marge_x + i * largeur_col
-            recommandee = offre_recommandee_id is not None and offre.get("offre_id") == offre_recommandee_id
-            fill = COULEUR_ACCENT_CLAIR if recommandee else (COULEUR_FOND_CARTE if j % 2 == 0 else (255, 255, 255))
-            pdf.set_fill_color(*fill)
-            pdf.set_draw_color(*COULEUR_BORDURE)
-            pdf.set_line_width(0.2)
-            pdf.rect(x + 1, y, largeur_col - 2, hauteur_ligne, "DF")
-            pdf.set_xy(x + 1, y + 1.3)
-            pdf.set_font("Helvetica", "B" if label.startswith("Economie") else "", 8)
-            pdf.set_text_color(*(pdf.couleur_accent if label.startswith("Economie") else COULEUR_TEXTE))
-            pdf.cell(largeur_col - 2, 5.4, _txt(extracteur(offre)), align="C")
-            pdf.set_text_color(0, 0, 0)
+        if cout_actuel_mensuel > 0 and prix_offre < cout_actuel_mensuel:
+            baisse = round((cout_actuel_mensuel - prix_offre) / cout_actuel_mensuel * 100)
+            pdf.pill(13, y0 + h - 6.5, f"-{baisse}% sur la facture", fill=(255, 255, 255) if recommandee else COULEUR_ACCENT_CLAIR,
+                     text_color=pdf.couleur_accent, h=5, font=("Helvetica", "B", 7))
+    else:
+        pdf.set_xy(13, titre_y + 13.5)
+        pdf.set_font("Helvetica", "I", 8)
+        pdf.set_text_color(*COULEUR_GRIS)
+        pdf.cell(120, 5, _txt("Service complementaire, non directement comparable a l'abonnement actuel."))
+        pdf.set_text_color(0, 0, 0)
 
-    pdf.set_y(y0 + hauteur_totale + 4)
-
-    # Légende textuelle des lignes (le tableau ci-dessus n'a pas de colonne
-    # d'étiquettes pour rester compact sur mobile/impression — les libellés
-    # sont donnés ici une seule fois).
-    pdf.set_font("Helvetica", "I", 7.5)
-    pdf.set_text_color(*COULEUR_GRIS)
-    pdf.multi_cell(0, 4, _txt(
-        "Lignes du tableau, de haut en bas : Fournisseur, Offre, Economie mensuelle, Economie annuelle. "
-        "Les offres complementaires ('-') portent sur un autre type de service et ne sont pas comparables "
-        "financierement a votre abonnement actuel."))
+    px, pw, py, ph = 140, 55, y0 + 4, h - 8
+    pdf.rounded_card(px, py, pw, ph, r=2.5, fill=pdf.couleur_accent)
+    pdf.set_xy(px, py + 3)
+    pdf.set_font("Helvetica", "", 7.5)
+    pdf.set_text_color(255, 255, 255)
+    pdf.cell(pw, 4, _txt("Economie estimee"), align="C")
+    pdf.set_xy(px, py + 8.5)
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.cell(pw, 7, _txt(f"{(economie_mensuelle * 12):.2f} EUR"), align="C")
+    pdf.set_xy(px, py + 16)
+    pdf.set_font("Helvetica", "", 7)
+    pdf.cell(pw, 4, _txt("par an"), align="C")
+    pdf.set_xy(px, py + 20)
+    pdf.set_font("Helvetica", "", 6.5)
+    pdf.cell(pw, 4, _txt(f"soit {economie_mensuelle:.2f} EUR/mois"), align="C")
     pdf.set_text_color(0, 0, 0)
-    pdf.ln(2)
+
+    pdf.set_y(y0 + h + 5)
+
+
+def _bande_confiance(pdf: PDFRestitution, items: list[tuple[str, str]]):
+    """Bandeau de réassurance en pied d'étude (style
+    src/pdf_engine.py::_bande_confiance)."""
+    y0 = pdf.get_y()
+    h = 16
+    if y0 > 297 - 24 - h:
+        pdf.add_page()
+        y0 = pdf.get_y()
+    pdf.rounded_card(10, y0, 190, h, r=3, fill=COULEUR_FOND_CARTE, border=COULEUR_BORDURE)
+    col_w = 190 / len(items)
+    for i, (titre, sous_titre) in enumerate(items):
+        x = 10 + i * col_w
+        pdf.set_xy(x, y0 + 3.5)
+        pdf.set_font("Helvetica", "B", 8.5)
+        pdf.set_text_color(*pdf.couleur_primaire)
+        pdf.cell(col_w, 5, _txt(titre), align="C")
+        pdf.set_xy(x, y0 + 9)
+        pdf.set_font("Helvetica", "", 7.5)
+        pdf.set_text_color(*COULEUR_GRIS)
+        pdf.cell(col_w, 4.5, _txt(sous_titre), align="C")
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_y(y0 + h + 6)
 
 
 def generer_pdf_restitution_dossier(
@@ -328,15 +396,21 @@ def generer_pdf_restitution_dossier(
     _bloc_conseiller(pdf, branding.get("conseiller_nom"), branding.get("conseiller_telephone"))
 
     offres = comparaison.offres_comparees or []
+    montant_annuel = comparaison.economie_annuelle_estimee or dossier.economie_annuelle_estimee or 0.0
     if offres:
         pdf.set_font("Helvetica", "", 10)
         pdf.set_text_color(*COULEUR_TEXTE)
         pdf.multi_cell(0, 5, _txt(
-            "Voici, cote a cote, les offres que nous avons comparees pour votre situation "
+            "Voici le detail des offres que nous avons comparees pour votre situation "
             f"({comparaison.univers or ''} - {comparaison.categorie or ''}), avec l'offre recommandee mise en avant."))
         pdf.set_text_color(0, 0, 0)
         pdf.ln(3)
-        _tableau_comparatif(pdf, offres, comparaison.offre_recommandee_id)
+
+        _bande_kpi(pdf, len(offres), comparaison.economie_mensuelle_estimee or (montant_annuel / 12), montant_annuel)
+
+        for offre in offres:
+            recommandee = comparaison.offre_recommandee_id is not None and offre.get("offre_id") == comparaison.offre_recommandee_id
+            _carte_offre_comparee(pdf, offre, comparaison.cout_actuel_mensuel, recommandee)
     else:
         pdf.set_font("Helvetica", "I", 10)
         pdf.set_text_color(*COULEUR_GRIS)
@@ -345,8 +419,12 @@ def generer_pdf_restitution_dossier(
         pdf.ln(4)
 
     _bloc_etapes_souscription(pdf)
+    _bande_confiance(pdf, [
+        ("Sans engagement", "pour vous"),
+        ("Demarches prises en charge", "de A a Z"),
+        ("Donnees confidentielles", "traitees en toute securite"),
+    ])
 
-    montant_annuel = comparaison.economie_annuelle_estimee or dossier.economie_annuelle_estimee or 0.0
     _banniere_economie(pdf, montant_annuel)
 
     return bytes(pdf.output())

@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { usersResource } from "@/lib/hooks/useUsers";
+import { libelleRole } from "@/lib/roles";
 import type { UserCreateInput, UserUpdateInput } from "@/lib/schemas/user";
 import type { User } from "@/lib/types";
 
@@ -45,7 +46,9 @@ export default function UtilisateursPage() {
       {
         id: "role",
         header: "Rôle",
-        cell: ({ row }) => <Badge variant={row.original.role === "Admin" ? "default" : "secondary"}>{row.original.role}</Badge>,
+        cell: ({ row }) => (
+          <Badge variant={row.original.role === "Admin" ? "default" : "secondary"}>{libelleRole(row.original.role)}</Badge>
+        ),
       },
       {
         id: "actif",

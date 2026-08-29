@@ -22,6 +22,7 @@ RESULTAT_ATTENDU = {
     "operateur": "Orange", "prix_ht": 38.33, "prix_ttc": 45.99, "data_conso_go": 150.0,
     "options": ["Appels illimités"], "engagement_mois": 12,
     "date_fin_engagement": "15/03/2027", "iban_prelevement": "FR7630001007941234567890185",
+    "type_couverture": "", "bonus_malus": "",
 }
 
 

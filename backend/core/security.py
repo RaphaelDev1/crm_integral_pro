@@ -5,11 +5,12 @@
 # ==============================================================================
 import hashlib
 import secrets
+import uuid
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, WebSocket, WebSocketException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,6 +36,7 @@ class TokenType(StrEnum):
     ACCESS = "access"
     REFRESH = "refresh"
     RESET = "reset"
+    SESSION_VIEW = "session_view"  # lien client partageable IA Conseil, voir §1.5.1
 
 
 def hash_password(password: str) -> str:
@@ -81,6 +83,33 @@ def creer_reset_token(user: User) -> str:
     return _creer_token(user, TokenType.RESET, timedelta(minutes=settings.reset_token_expire_minutes))
 
 
+SESSION_VIEW_TOKEN_DUREE = timedelta(days=30)
+
+
+def creer_session_view_token(session_id: uuid.UUID) -> str:
+    """Jeton non lié à un `User` (contrairement aux autres TokenType) —
+    donne un accès lecture-seule à UNE session de trame IA Conseil, sans
+    authentification conseiller (lien envoyé au client, §1.5.1). Pas de
+    table de révocation dédiée (cohérent avec l'isolation du sous-système
+    IA Conseil, voir models/ia_conseil.py) : l'expiration à 30 jours est la
+    seule protection dans le temps."""
+    maintenant = datetime.now(timezone.utc)
+    payload = {
+        "session_id": str(session_id),
+        "type": TokenType.SESSION_VIEW.value,
+        "iat": maintenant,
+        "exp": maintenant + SESSION_VIEW_TOKEN_DUREE,
+    }
+    return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithme)
+
+
+def decoder_session_view_token(token: str) -> uuid.UUID:
+    payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithme])
+    if payload.get("type") != TokenType.SESSION_VIEW.value:
+        raise jwt.InvalidTokenError("Type de jeton inattendu.")
+    return uuid.UUID(payload["session_id"])
+
+
 def decoder_token(token: str, type_attendu: TokenType) -> dict:
     """Décode et valide un JWT, en vérifiant qu'il est du type attendu — empêche
     par exemple un refresh token d'être présenté comme access token."""
@@ -108,6 +137,23 @@ async def get_current_user(
     user = await db.get(User, payload["user_id"])
     if user is None or not user.actif:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Utilisateur introuvable ou désactivé.")
+    return user
+
+
+async def get_current_user_ws(websocket: WebSocket, token: str | None = None, db: AsyncSession = Depends(get_db)) -> User:
+    """Équivalent de get_current_user pour les endpoints WebSocket : le
+    navigateur ne permet pas d'en-têtes personnalisés sur la poignée de main
+    WS, le jeton d'accès est donc passé en query param (?token=...)."""
+    if token is None:
+        raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
+    try:
+        payload = decoder_token(token, TokenType.ACCESS)
+    except jwt.PyJWTError:
+        raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
+
+    user = await db.get(User, payload["user_id"])
+    if user is None or not user.actif:
+        raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
     return user
 
 

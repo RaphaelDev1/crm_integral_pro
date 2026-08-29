@@ -127,8 +127,8 @@ export default function DashboardPage() {
         <RelanceQueueCard
           groupes={[
             { cle: "retard", titre: "Relances en retard", items: relances.retard, badgeVariant: "destructive", empty: "Aucune relance en retard.", ouvertParDefaut: true },
-            { cle: "jour", titre: "Relances du jour", items: relances.jour, badgeVariant: "default", empty: "Aucune relance aujourd'hui.", ouvertParDefaut: false },
-            { cle: "venir", titre: "Relances à venir (7 jours)", items: relances.venir, badgeVariant: "secondary", empty: "Aucune relance à venir.", ouvertParDefaut: false },
+            { cle: "jour", titre: "Relances du jour", items: relances.jour, badgeVariant: "default", empty: "Aucune relance aujourd'hui.", ouvertParDefaut: true },
+            { cle: "venir", titre: "Relances à venir (7 jours)", items: relances.venir, badgeVariant: "secondary", empty: "Aucune relance à venir.", ouvertParDefaut: true },
           ]}
           loading={clientsQuery.isLoading || prospectsQuery.isLoading}
         />
@@ -253,7 +253,7 @@ function RelanceQueueCard({ groupes, loading }: { groupes: GroupeRelance[]; load
                 <button
                   type="button"
                   onClick={() => toggle(groupe.cle)}
-                  className="flex w-full items-center justify-between px-3 py-2 text-left hover:bg-slate-50"
+                  className="flex w-full items-center justify-between px-3 py-2 text-left hover:bg-slate-900/5 dark:hover:bg-white/10"
                 >
                   <span className="flex items-center gap-2 font-medium text-sm">
                     {estOuvert ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
@@ -271,7 +271,7 @@ function RelanceQueueCard({ groupes, loading }: { groupes: GroupeRelance[]; load
                           <li key={`${item.type}-${item.id}`}>
                             <Link
                               href={item.type === "client" ? `/clients/${item.id}` : `/prospects/${item.id}`}
-                              className="flex flex-wrap items-center gap-3 py-3 text-sm hover:bg-slate-50 rounded-md px-2"
+                              className="flex flex-wrap items-center gap-3 py-3 text-sm hover:bg-slate-900/5 dark:hover:bg-white/10 rounded-md px-2"
                             >
                               <ScorePastille score={item.score} />
                               <Badge variant={item.type === "client" ? "default" : "outline"} className="shrink-0">

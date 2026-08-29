@@ -102,3 +102,26 @@ python -m backend.scripts.seed_admin
 
 Affiche le mot de passe généré en clair **une seule fois** (à noter
 immédiatement) ; ne fait rien (idempotent) si un compte existe déjà.
+
+---
+
+# Seed IA Conseil (trame adaptative + recommandation)
+
+Peuple le sous-système neuf créé par la migration `0032_ia_conseil_fondations`
+(`categorie`, `fournisseur`, `offre`, `trame_template`, `regle_recommandation`)
+pour les 4 catégories MVP (§Phase 1) : mobile (10 fournisseurs/20 offres/15
+règles), box (10/24/20), énergie élec+gaz (14/30/20) — chacune avec sa trame
+adaptative complète (branches, `show_if`, métadonnées escargot). Voir
+`backend/rules_engine/README.md` pour le DSL utilisé par les conditions/
+actions des règles.
+
+```bash
+python -m backend.scripts.seed_ia_conseil
+```
+
+Orchestre `seed_ia_conseil_box.py` et `seed_ia_conseil_energie.py` en plus de
+la catégorie mobile (module principal) — chaque catégorie reste aussi
+exécutable seule (`python -m backend.scripts.seed_ia_conseil_box`, etc.).
+Idempotent par catégorie : ne recrée pas une catégorie déjà présente. Prix et
+caractéristiques indicatifs — usage dev/test uniquement, ne pas exécuter en
+prod avec ces données comme catalogue réel.

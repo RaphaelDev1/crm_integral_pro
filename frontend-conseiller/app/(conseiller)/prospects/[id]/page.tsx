@@ -19,8 +19,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatDateRelance } from "@/lib/dateRelance";
 import { useDossiersClient } from "@/lib/hooks/useDossiers";
+import { useProspectFacturesAnalysees } from "@/lib/hooks/useFactures";
 import {
   prospectsResource,
+  useContacterTelephone,
   useConvertirProspect,
   useEnvoyerLienDocumentsProspect,
   useGenererLienDocumentsProspect,
@@ -232,6 +234,7 @@ function DocumentsTab({
 }) {
   const documentsQuery = useProspectDocuments(prospectId);
   const supprimerMutation = useSupprimerDocumentProspect(prospectId);
+  const facturesQuery = useProspectFacturesAnalysees(prospectId);
   const typesRecus = new Set((documentsQuery.data ?? []).map((doc) => doc.type_document));
 
   const handleSupprimer = (documentId: number, label: string) => {
@@ -294,6 +297,52 @@ function DocumentsTab({
             ))}
           </ul>
         )}
+        {facturesQuery.data && facturesQuery.data.length > 0 && (
+          <div className="mt-4 space-y-2 border-t pt-4">
+            <p className="text-sm font-medium">Analyse automatique de la facture</p>
+            {facturesQuery.data.map((facture) => (
+              <div key={facture.id} className="rounded-md border p-3 text-sm">
+                <dl className="grid grid-cols-2 gap-x-4 gap-y-1">
+                  <dt className="text-muted-foreground">Opérateur</dt>
+                  <dd>{facture.operateur || "—"}</dd>
+                  <dt className="text-muted-foreground">Prix TTC</dt>
+                  <dd>{facture.prix_ttc} €</dd>
+                  {facture.data_conso_go > 0 && (
+                    <>
+                      <dt className="text-muted-foreground">Data</dt>
+                      <dd>{facture.data_conso_go} Go</dd>
+                    </>
+                  )}
+                  {facture.engagement_mois > 0 && (
+                    <>
+                      <dt className="text-muted-foreground">Engagement</dt>
+                      <dd>{facture.engagement_mois} mois{facture.date_fin_engagement ? ` (jusqu'au ${facture.date_fin_engagement})` : ""}</dd>
+                    </>
+                  )}
+                  {facture.type_couverture && (
+                    <>
+                      <dt className="text-muted-foreground">Formule assurance</dt>
+                      <dd>{facture.type_couverture}</dd>
+                    </>
+                  )}
+                  {facture.bonus_malus && (
+                    <>
+                      <dt className="text-muted-foreground">Bonus/malus</dt>
+                      <dd>{facture.bonus_malus}</dd>
+                    </>
+                  )}
+                  {facture.options && facture.options.length > 0 && (
+                    <>
+                      <dt className="text-muted-foreground">Options</dt>
+                      <dd>{facture.options.join(", ")}</dd>
+                    </>
+                  )}
+                </dl>
+                <p className="mt-2 text-xs text-muted-foreground">Analysée le {facture.date_analyse}</p>
+              </div>
+            ))}
+          </div>
+        )}
       </CardContent>
     </Card>
   );
@@ -344,12 +393,14 @@ function ActionsCard({
   const router = useRouter();
   const [lienOpen, setLienOpen] = useState(false);
   const [lienUrl, setLienUrl] = useState<string | null>(null);
+  const [appelOpen, setAppelOpen] = useState(false);
 
   const lienMutation = useGenererLienDocumentsProspect();
   const envoyerLienMutation = useEnvoyerLienDocumentsProspect();
   const deleteMutation = prospectsResource.useDelete();
   const relanceMutation = useRelanceEffectuee();
   const convertirMutation = useConvertirProspect();
+  const appelMutation = useContacterTelephone();
 
   const handleConvertir = () => {
     convertirMutation.mutate(prospectId, {
@@ -362,6 +413,22 @@ function ActionsCard({
     relanceMutation.mutate(prospectId, {
       onSuccess: () => toast.success("Relance enregistrée — prochaine relance programmée dans 7 jours."),
     });
+  };
+
+  const handleContacterTelephone = (repondu: boolean) => {
+    appelMutation.mutate(
+      { prospectId, repondu },
+      {
+        onSuccess: () => {
+          setAppelOpen(false);
+          toast.success(
+            repondu
+              ? "Appel enregistré — prochaine relance programmée dans 7 jours."
+              : "Appel sans réponse enregistré — SMS/email envoyé, relance programmée dans 7 jours."
+          );
+        },
+      }
+    );
   };
 
   const handleEnvoyerLien = () => {
@@ -429,6 +496,9 @@ function ActionsCard({
             )}
           </div>
         )}
+        <Button variant="outline" className="w-full" onClick={() => setAppelOpen(true)}>
+          Contacter par téléphone
+        </Button>
         <Button variant="outline" className="w-full" onClick={handleEnvoyerLien} disabled={lienMutation.isPending}>
           Envoyer lien collecte docs
         </Button>
@@ -459,6 +529,31 @@ function ActionsCard({
           <Button variant="outline" onClick={handleEnvoyerParEmail} disabled={envoyerLienMutation.isPending}>
             {envoyerLienMutation.isPending ? "Envoi…" : "Envoyer par email"}
           </Button>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={appelOpen} onOpenChange={setAppelOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Le client a-t-il répondu ?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            La prochaine relance sera programmée dans 7 jours. En cas d'absence de réponse, un
+            SMS et un email sont envoyés au client pour l'informer de votre appel.
+          </p>
+          <div className="flex gap-2">
+            <Button className="flex-1" onClick={() => handleContacterTelephone(true)} disabled={appelMutation.isPending}>
+              Oui, il a répondu
+            </Button>
+            <Button
+              variant="outline"
+              className="flex-1"
+              onClick={() => handleContacterTelephone(false)}
+              disabled={appelMutation.isPending}
+            >
+              Non, pas de réponse
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
     </Card>

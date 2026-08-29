@@ -75,6 +75,16 @@ export function useClientMiroirProspect() {
   });
 }
 
+// Crée (ou réutilise) le ClientConseil IA Conseil rattaché à ce prospect —
+// voir backend/services/ia_conseil_bridge.py. Utilisé par l'étape "Trame" du
+// diagnostic pour pouvoir lancer des sessions de trame adaptative.
+export function useIaConseilClientProspect() {
+  return useMutation({
+    mutationFn: (prospectId: number) =>
+      apiFetch<{ id: string }>(`/prospects/${prospectId}/ia-conseil-client`, { method: "POST" }),
+  });
+}
+
 interface LienDocumentsResult {
   token: string;
   url: string;
@@ -117,6 +127,28 @@ export function useRelanceEffectuee() {
     mutationFn: (prospectId: number) =>
       apiFetch<Prospect>(`/prospects/${prospectId}/relance-effectuee`, { method: "POST" }),
     onSuccess: (_data, prospectId) => {
+      queryClient.invalidateQueries({ queryKey: prospectsResource.keys.detail(prospectId) });
+      queryClient.invalidateQueries({ queryKey: prospectsResource.keys.lists() });
+      queryClient.invalidateQueries({ queryKey: ["prospects", "score", prospectId] });
+      queryClient.invalidateQueries({ queryKey: ["prospects", "historique", prospectId] });
+    },
+  });
+}
+
+// Bouton "Contacter par téléphone" de la fiche prospect : journalise l'appel,
+// programme la relance à +7 jours et, si le prospect n'a pas répondu, lui
+// envoie un SMS/email pour l'en informer — voir
+// backend/routers/prospects.py::contacter_telephone.
+export function useContacterTelephone() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ prospectId, repondu }: { prospectId: number; repondu: boolean }) =>
+      apiFetch<Prospect>(`/prospects/${prospectId}/contacter-telephone`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ repondu }),
+      }),
+    onSuccess: (_data, { prospectId }) => {
       queryClient.invalidateQueries({ queryKey: prospectsResource.keys.detail(prospectId) });
       queryClient.invalidateQueries({ queryKey: prospectsResource.keys.lists() });
       queryClient.invalidateQueries({ queryKey: ["prospects", "score", prospectId] });

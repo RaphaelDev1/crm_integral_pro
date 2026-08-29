@@ -95,6 +95,14 @@ export function AnalyseFactureForm() {
               <dd>{resultat.date_fin_engagement}</dd>
               <dt className="text-muted-foreground">IBAN prélèvement</dt>
               <dd>{resultat.iban_prelevement}</dd>
+              {(resultat.type_couverture || resultat.bonus_malus) && (
+                <>
+                  <dt className="text-muted-foreground">Formule assurance</dt>
+                  <dd>{resultat.type_couverture || "—"}</dd>
+                  <dt className="text-muted-foreground">Bonus/malus</dt>
+                  <dd>{resultat.bonus_malus || "—"}</dd>
+                </>
+              )}
             </dl>
           </CardContent>
         </Card>

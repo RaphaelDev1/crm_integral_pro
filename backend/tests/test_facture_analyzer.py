@@ -88,6 +88,7 @@ class TestExtractionParUnivers:
             "data_conso_go": 150.0, "options": ["Appels illimités", "Cloud 100 Go"],
             "engagement_mois": 12, "date_fin_engagement": "15/03/2027",
             "iban_prelevement": "FR7630001007941234567890185",
+            "type_couverture": "", "bonus_malus": "",
         }
         # Le prompt système (avec ses exemples few-shot) doit bien être transmis.
         assert "few-shot" not in fake_client.messages.dernier_appel["system"]  # pas de méta-texte qui fuite

@@ -18,6 +18,43 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/geo", tags=["geo"], dependencies=[Depends(get_current_user)])
 
 GEO_API_URL = "https://geo.api.gouv.fr/communes"
+ADRESSE_API_URL = "https://api-adresse.data.gouv.fr/search/"
+
+
+@router.get("/adresses", response_model=dict)
+async def rechercher_adresses(q: str) -> dict:
+    """Auto-complétion d'adresse postale complète (API officielle gratuite
+    api-adresse.data.gouv.fr, utilisée par l'AnswerInput de type "adresse" des
+    trames IA Conseil, PLAN_IMPLEMENTATION_4_PHASES.md §1.2). Même contrainte
+    CSP que /geo/communes ci-dessus : proxy obligatoire. Ne lève jamais."""
+    q = (q or "").strip()
+    if len(q) < 3:
+        return {"resultats": []}
+
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            reponse = await client.get(ADRESSE_API_URL, params={"q": q, "limit": 5})
+            reponse.raise_for_status()
+            donnees = reponse.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("Échec de la recherche d'adresse pour %r : %s", q, exc)
+        return {"resultats": []}
+
+    resultats = []
+    for feature in donnees.get("features", []):
+        proprietes = feature.get("properties", {})
+        coords = (feature.get("geometry") or {}).get("coordinates") or [None, None]
+        resultats.append(
+            {
+                "label": proprietes.get("label"),
+                "rue": proprietes.get("name"),
+                "code_postal": proprietes.get("postcode"),
+                "ville": proprietes.get("city"),
+                "lat": coords[1],
+                "lng": coords[0],
+            }
+        )
+    return {"resultats": resultats}
 
 
 @router.get("/communes", response_model=dict)

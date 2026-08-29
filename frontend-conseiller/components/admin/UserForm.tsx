@@ -7,6 +7,7 @@ import { DialogFooter } from "@/components/ui/dialog";
 import { FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { libelleRole } from "@/lib/roles";
 import { ROLES_UTILISATEUR, userCreateSchema, userUpdateSchema, type UserCreateInput, type UserUpdateInput } from "@/lib/schemas/user";
 import type { User } from "@/lib/types";
 
@@ -81,7 +82,7 @@ export function UserForm({ mode, defaultValues, onSubmit, submitError, submitLab
                   <SelectContent>
                     {ROLES_UTILISATEUR.map((role) => (
                       <SelectItem key={role} value={role}>
-                        {role}
+                        {libelleRole(role)}
                       </SelectItem>
                     ))}
                   </SelectContent>

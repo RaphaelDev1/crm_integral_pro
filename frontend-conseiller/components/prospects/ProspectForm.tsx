@@ -7,6 +7,7 @@ import { DialogFooter } from "@/components/ui/dialog";
 import { FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import {
   LISTE_OPERATEURS_TEL,
   NIVEAUX_DEFAUT_TECHNIQUE,
@@ -29,7 +30,7 @@ type ProspectFormValues = ProspectCreateInput | ProspectUpdateInput;
 // Raisons de relance proposées au conseiller (le champ reste une string libre
 // côté backend — "À relancer" est conservé en premier pour les fiches déjà
 // existantes qui portent encore la valeur par défaut historique).
-const STATUTS_PROSPECT = ["À relancer", "Fin de contrat", "Relance dossier", "Autre"];
+const STATUTS_PROSPECT = ["À relancer", "Fin de contrat", "Relance dossier", "Refusé", "Autre"];
 
 interface ProspectFormProps {
   mode: "create" | "edit";
@@ -53,6 +54,7 @@ export function prospectToFormValues(prospect: Prospect): ProspectUpdateInput {
     statut: prospect.statut ?? "",
     date_relance: prospect.date_relance ?? "",
     notes: prospect.notes ?? "",
+    motif_refus: prospect.motif_refus ?? "",
     operateur_actuel: prospect.operateur_actuel ?? "",
     satisfaction_reseau: prospect.satisfaction_reseau ?? "",
     veut_rester: prospect.veut_rester ?? "",
@@ -215,6 +217,21 @@ export function ProspectForm({
                 </FormItem>
               )}
             />
+            {form.watch("statut") === "Refusé" && (
+              <FormField
+                control={form.control}
+                name="motif_refus"
+                render={({ field }) => (
+                  <FormItem className="col-span-2">
+                    <FormLabel>Motif du refus</FormLabel>
+                    <FormControl>
+                      <Textarea {...field} rows={3} placeholder="Raisons et motivations données par le client" />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            )}
             <FormField
               control={form.control}
               name="date_relance"
@@ -339,7 +356,7 @@ export function ProspectForm({
               <FormItem>
                 <FormLabel>Notes</FormLabel>
                 <FormControl>
-                  <Input {...field} />
+                  <Textarea {...field} rows={8} className="min-h-[220px] text-base" />
                 </FormControl>
                 <FormMessage />
               </FormItem>

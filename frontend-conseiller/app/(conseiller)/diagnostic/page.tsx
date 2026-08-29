@@ -5,8 +5,7 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { EtapeIdentite, valeursIdentiteDepuisEntite } from "@/components/diagnostic/EtapeIdentite";
-import { EtapeRecommandations } from "@/components/diagnostic/EtapeRecommandations";
-import { EtapeSituation } from "@/components/diagnostic/EtapeSituation";
+import { EtapeTrame } from "@/components/diagnostic/EtapeTrame";
 import { EtapeUnivers } from "@/components/diagnostic/EtapeUnivers";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -36,20 +35,12 @@ function identiteComplete(state: DiagnosticState) {
   }).success;
 }
 
-function situationComplete(state: DiagnosticState) {
-  if (state.univers.includes("Télécom")) {
-    const t = state.telecom;
-    if (!t.operateurActuel || !t.satisfactionReseau || !t.defautTechnique || !t.veutRester || t.coutMensuelActuel <= 0)
-      return false;
-  }
-  return true;
-}
-
-// Page /diagnostic (plan de migration Phase 6) — assemble le wizard 4 étapes
-// autour de useDiagnosticWizard (état + autosave) et du composant <Wizard>.
-// useSearchParams() exige une frontière Suspense en rendu statique (voir
-// app/login/page.tsx) — utilisé ici pour le pré-remplissage depuis les
-// boutons "Nouveau diagnostic" des fiches prospect/client.
+// Page /diagnostic — assemble le wizard 3 étapes (Univers → Identité → Trame,
+// cette dernière pilotée par le moteur de trame adaptative IA Conseil, voir
+// EtapeTrame.tsx) autour de useDiagnosticWizard (état + autosave) et du
+// composant <Wizard>. useSearchParams() exige une frontière Suspense en rendu
+// statique (voir app/login/page.tsx) — utilisé ici pour le pré-remplissage
+// depuis les boutons "Nouveau diagnostic" des fiches prospect/client.
 export default function DiagnosticPage() {
   return (
     <Suspense>
@@ -115,8 +106,7 @@ function DiagnosticWizardPage() {
 
   const currentIndex = state.etape - 1;
 
-  const canGoNext =
-    currentIndex === 0 ? universComplet(state) : currentIndex === 1 ? identiteComplete(state) : currentIndex === 2 ? situationComplete(state) : true;
+  const canGoNext = currentIndex === 0 ? universComplet(state) : currentIndex === 1 ? identiteComplete(state) : true;
 
   async function handleNext() {
     if (!canGoNext) return;
@@ -175,7 +165,7 @@ function DiagnosticWizardPage() {
         <div>
           <h1 className="text-xl font-bold text-primary">Nouveau diagnostic</h1>
           <p className="text-sm text-slate-500">
-            Univers → identité → situation actuelle → recommandations. Le brouillon est sauvegardé automatiquement.
+            Univers → identité → situation & recommandations. Le brouillon est sauvegardé automatiquement.
           </p>
         </div>
         <Button type="button" variant="outline" size="sm" onClick={handleReinitialiser}>
@@ -215,8 +205,7 @@ function DiagnosticWizardPage() {
       >
         {currentIndex === 0 && <EtapeUnivers state={state} dispatch={dispatch} />}
         {currentIndex === 1 && <EtapeIdentite state={state} dispatch={dispatch} />}
-        {currentIndex === 2 && <EtapeSituation state={state} dispatch={dispatch} />}
-        {currentIndex === 3 && <EtapeRecommandations state={state} dispatch={dispatch} onTermine={clearDraft} />}
+        {currentIndex === 2 && <EtapeTrame state={state} dispatch={dispatch} onTermine={clearDraft} />}
       </Wizard>
     </div>
   );

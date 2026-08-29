@@ -1,0 +1,50 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Redis (Docker)",
+      "type": "shell",
+      "command": "docker run --rm -p 6379:6379 redis:7-alpine",
+      "isBackground": true,
+      "presentation": { "panel": "dedicated", "group": "app" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Backend FastAPI",
+      "type": "shell",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe -m uvicorn backend.main:app --reload --port 8000",
+      "isBackground": true,
+      "presentation": { "panel": "dedicated", "group": "app" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Frontend Conseiller",
+      "type": "shell",
+      "command": "npm run dev",
+      "options": { "cwd": "${workspaceFolder}/frontend-conseiller" },
+      "isBackground": true,
+      "presentation": { "panel": "dedicated", "group": "app" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Frontend Portail",
+      "type": "shell",
+      "command": "npm run dev",
+      "options": { "cwd": "${workspaceFolder}/frontend-portail" },
+      "isBackground": true,
+      "presentation": { "panel": "dedicated", "group": "app" },
+      "problemMatcher": []
+    },
+    {
+      "label": "🚀 Lancer tout (conseiller + portail)",
+      "dependsOn": [
+        "Redis (Docker)",
+        "Backend FastAPI",
+        "Frontend Conseiller",
+        "Frontend Portail"
+      ],
+      "dependsOrder": "parallel",
+      "problemMatcher": []
+    }
+  ]
+}

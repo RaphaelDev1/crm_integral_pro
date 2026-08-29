@@ -24,18 +24,21 @@ MODEL_FACTURE_DEFAUT = "claude-haiku-4-5-20251001"
 CHAMPS_FACTURE = (
     "operateur", "prix_ht", "prix_ttc", "data_conso_go", "options",
     "engagement_mois", "date_fin_engagement", "iban_prelevement",
+    "type_couverture", "bonus_malus",
 )
 
-SYSTEM_PROMPT_FACTURE = """Tu es un extracteur de données pour des factures françaises de télécom \
-(mobile, box/fibre) et d'énergie (électricité, gaz), fournies en PDF (texte ou scan/image).
+SYSTEM_PROMPT_FACTURE = """Tu es un extracteur de données pour des factures/avis d'échéance français \
+de télécom (mobile, box/fibre), d'énergie (électricité, gaz) et d'assurance auto, fournis en PDF \
+(texte ou scan/image).
 
 Réponds UNIQUEMENT avec un objet JSON valide (rien avant, rien après), avec exactement ces clés :
 {"operateur": "", "prix_ht": 0.0, "prix_ttc": 0.0, "data_conso_go": 0.0, "options": [], \
-"engagement_mois": 0, "date_fin_engagement": "", "iban_prelevement": ""}
+"engagement_mois": 0, "date_fin_engagement": "", "iban_prelevement": "", "type_couverture": "", \
+"bonus_malus": ""}
 
 Règles :
-- operateur : nom de l'opérateur télécom ou du fournisseur d'énergie émetteur de la facture \
-(Orange, SFR, Bouygues, Free, EDF, Engie, TotalEnergies, Ekwateur...)
+- operateur : nom de l'opérateur télécom, du fournisseur d'énergie ou de l'assureur émetteur de \
+la facture (Orange, SFR, Bouygues, Free, EDF, Engie, TotalEnergies, Ekwateur, MAIF, MAAF, Allianz...)
 - prix_ht / prix_ttc : montants hors taxes et toutes taxes comprises, nombres décimaux avec un \
 point (0.0 si absent ou illisible)
 - data_conso_go : quantité de data mobile en Go si applicable (forfait mobile), sinon 0.0
@@ -45,6 +48,11 @@ smartphone", "TV incluse", "Fibre 1Gb/s"), liste vide si aucune
 - date_fin_engagement : date de fin d'engagement au format "JJ/MM/AAAA", chaîne vide si absente
 - iban_prelevement : IBAN utilisé pour le prélèvement s'il est visible sur le document, chaîne \
 vide sinon
+- type_couverture : UNIQUEMENT pour une facture/avis d'échéance d'assurance auto — "Tiers", \
+"Tiers étendu" ou "Tous risques" selon la formule souscrite, chaîne vide si le document n'est pas \
+une assurance auto ou si l'information est introuvable
+- bonus_malus : UNIQUEMENT pour une assurance auto — coefficient bonus-malus tel qu'affiché sur le \
+document (ex. "0.85", "1.00", "1.25"), chaîne vide si non applicable ou introuvable
 Si une information est absente ou illisible, utilise la valeur par défaut indiquée ci-dessus. \
 Ne réponds rien d'autre que ce JSON.
 
@@ -55,12 +63,20 @@ jusqu'au 15/03/2027, options "Appels illimités" et "Cloud 100 Go", prélèvemen
 FR7630001007941234567890185.
 JSON : {"operateur": "Orange", "prix_ht": 38.33, "prix_ttc": 45.99, "data_conso_go": 150.0, \
 "options": ["Appels illimités", "Cloud 100 Go"], "engagement_mois": 12, \
-"date_fin_engagement": "15/03/2027", "iban_prelevement": "FR7630001007941234567890185"}
+"date_fin_engagement": "15/03/2027", "iban_prelevement": "FR7630001007941234567890185", \
+"type_couverture": "", "bonus_malus": ""}
 
 Facture : EDF, abonnement + consommation électricité, montant TTC 89,00 EUR, sans engagement, \
 aucun prélèvement automatique renseigné sur le document.
 JSON : {"operateur": "EDF", "prix_ht": 0.0, "prix_ttc": 89.0, "data_conso_go": 0.0, \
-"options": [], "engagement_mois": 0, "date_fin_engagement": "", "iban_prelevement": ""}
+"options": [], "engagement_mois": 0, "date_fin_engagement": "", "iban_prelevement": "", \
+"type_couverture": "", "bonus_malus": ""}
+
+Avis d'échéance : MAIF assurance auto, formule Tous risques, coefficient bonus-malus 0.85, \
+cotisation annuelle TTC 620,00 EUR, prélèvement mensuel, sans engagement.
+JSON : {"operateur": "MAIF", "prix_ht": 0.0, "prix_ttc": 620.0, "data_conso_go": 0.0, \
+"options": [], "engagement_mois": 0, "date_fin_engagement": "", "iban_prelevement": "", \
+"type_couverture": "Tous risques", "bonus_malus": "0.85"}
 """
 
 
@@ -74,7 +90,7 @@ def _resultat_vide() -> dict:
     return {
         "operateur": "", "prix_ht": 0.0, "prix_ttc": 0.0, "data_conso_go": 0.0,
         "options": [], "engagement_mois": 0, "date_fin_engagement": "",
-        "iban_prelevement": "",
+        "iban_prelevement": "", "type_couverture": "", "bonus_malus": "",
     }
 
 
@@ -115,6 +131,8 @@ def _normaliser(brut: dict) -> dict:
     res["operateur"] = str(res["operateur"] or "")
     res["date_fin_engagement"] = str(res["date_fin_engagement"] or "")
     res["iban_prelevement"] = str(res["iban_prelevement"] or "")
+    res["type_couverture"] = str(res["type_couverture"] or "")
+    res["bonus_malus"] = str(res["bonus_malus"] or "")
     return res
 
 

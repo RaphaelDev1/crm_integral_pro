@@ -36,6 +36,15 @@ class Settings(BaseSettings):
     # -- Portail client --
     portail_client_base_url: str = "http://localhost:3000"
 
+    # -- Frontend conseiller (frontend-conseiller/) — sert à construire le lien
+    # direct vers la fiche prospect dans les notifications (Slack lead landing).
+    frontend_conseiller_base_url: str = "http://localhost:3001"
+
+    # -- Notification conseiller (lead landing publique) --
+    # Webhook Slack "Incoming Webhook" (ou Discord, compatible même format JSON
+    # {"text": ...}) — ping immédiat à la capture d'un lead chaud. Vide = désactivé.
+    slack_webhook_url: str = ""
+
     # -- S3 (Scaleway Object Storage recommandé) --
     s3_endpoint_url: str = "https://s3.fr-par.scw.cloud"
     s3_region: str = "fr-par"
@@ -77,6 +86,24 @@ class Settings(BaseSettings):
     ar24_api_url: str = "https://api.ar24.fr"
     ar24_login: str = ""
     ar24_password: str = ""
+
+    # -- Rate limiting (slowapi) — landing publique /economiser --
+    # "memory://" par défaut (dev/tests, un seul process). En prod derrière
+    # plusieurs workers/instances, pointer vers Redis (ex. redis://.../1 —
+    # une base dédiée différente de REDIS_URL utilisé par Celery évite de
+    # mélanger les clés de rate limit avec le broker de tâches).
+    rate_limit_storage_uri: str = "memory://"
+
+    # -- Cloudflare Turnstile (captcha invisible, landing publique) --
+    # Clé secrète serveur ; la clé de site (publique) vit côté frontend en
+    # NEXT_PUBLIC_TURNSTILE_SITE_KEY. Vide = vérification désactivée.
+    turnstile_secret_key: str = ""
+
+    # -- Éligibilité fibre (landing publique, niveau commune) --
+    # Aucune API ARCEP publique ne donne l'éligibilité exacte à une adresse ;
+    # ce endpoint (gratuit, sans clé) sert un taux de couverture FttH par
+    # code INSEE de commune. Vide = fonctionnalité désactivée.
+    eligibilite_fibre_api_url: str = "https://comparateurinternet.fr/api/v1/communes"
 
     @property
     def is_production(self) -> bool:

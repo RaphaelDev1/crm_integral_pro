@@ -12,6 +12,7 @@ python-multipart
 httpx
 anthropic
 celery[redis]
+slowapi
 boto3
 stripe
 resend
@@ -21,3 +22,5 @@ flower
 playwright
 filetype
 beautifulsoup4
+scikit-learn
+joblib

@@ -18,6 +18,8 @@ class ProspectBase(BaseModel):
     operateur_actuel: str | None = None
     techno: str | None = None
     data_go: str | None = None
+    roaming_europe: str | None = None
+    sensibilite_prix: str | None = None
     cout_mensuel_actuel: float | None = None
     offre_actuelle: str | None = None
     satisfaction_reseau: str | None = None
@@ -37,6 +39,17 @@ class ProspectBase(BaseModel):
     offres_interet: str | None = None
     score: float | None = None
     origine: str | None = None
+    code_insee: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    fibre_disponible: bool | None = None
+    fibre_taux_couverture: float | None = None
+    telephone_verifie: bool | None = None
+    telephone_type_ligne: str | None = None
+    operateur_detecte_ip: str | None = None
+    bonus_malus_auto: str | None = None
+    plage_horaire_rappel: str | None = None
+    motif_refus: str | None = None
 
 
 class ProspectCreate(ProspectBase):
@@ -57,6 +70,12 @@ class ProspectOut(ProspectBase):
     client_id: int | None = None
     converti_at: str | None = None
     dernier_contact: str | None = None
+
+
+class ContacterTelephoneIn(BaseModel):
+    # True si le prospect a décroché, False s'il n'a pas répondu (déclenche
+    # alors un SMS/email pour l'informer de l'appel manqué).
+    repondu: bool
 
 
 class DetailScoreOut(BaseModel):

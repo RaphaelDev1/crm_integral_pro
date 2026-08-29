@@ -5,9 +5,9 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Fragment } from "react";
 
-import { ADMIN_NAV_ITEM, NAV_ITEMS } from "@/lib/nav";
+import { NAV_ITEMS, RESPONSABLE_NAV_ITEMS } from "@/lib/nav";
 
-const KNOWN_ITEMS = [...NAV_ITEMS, ADMIN_NAV_ITEM];
+const KNOWN_ITEMS = [...NAV_ITEMS, ...RESPONSABLE_NAV_ITEMS];
 
 // Parsé depuis usePathname plutôt que déclaré page par page : un segment
 // connu (voir lib/nav.ts) prend son libellé métier, un segment inconnu (ex.

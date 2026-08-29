@@ -23,6 +23,11 @@ export function middleware(request: NextRequest) {
 // suivrait la redirection et recevrait du HTML là où il attend du JSON) —
 // le proxy applique déjà l'auth lui-même et répond 401 en JSON quand le
 // cookie est absent ou expiré (voir app/api/backend/[...path]/route.ts).
+//
+// /ia-conseil-partage/* est également exclu : lien lecture-seule envoyé au
+// CLIENT (pas au conseiller), protégé par son propre jeton `session_view`
+// en query param plutôt que par le cookie access_token (§1.5.1) — voir
+// backend/routers/ia_conseil_sessions.py::obtenir_session_publique.
 export const config = {
-  matcher: ["/((?!login|api|_next/static|_next/image|favicon.ico).*)"],
+  matcher: ["/((?!login|api|ia-conseil-partage|_next/static|_next/image|favicon.ico).*)"],
 };

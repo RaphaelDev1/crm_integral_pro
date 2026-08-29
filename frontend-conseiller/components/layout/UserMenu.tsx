@@ -14,6 +14,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useAuth } from "@/contexts/AuthContext";
+import { libelleRole } from "@/lib/roles";
 
 import { ChangePasswordDialog } from "./ChangePasswordDialog";
 
@@ -48,7 +49,7 @@ export function UserMenu() {
         <DropdownMenuContent align="end" className="w-56">
           <DropdownMenuLabel>
             <p className="font-medium text-slate-800">{user?.nom_complet}</p>
-            <p className="text-xs font-normal text-slate-500">{user?.role}</p>
+            <p className="text-xs font-normal text-slate-500">{user ? libelleRole(user.role) : null}</p>
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={() => setChangePasswordOpen(true)}>

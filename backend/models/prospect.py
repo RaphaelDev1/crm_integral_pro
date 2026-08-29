@@ -3,7 +3,10 @@
 #  ajoutées par _migrer_bdd()). Les dates restent des chaînes "%d/%m/%Y %H:%M"
 #  pour rester compatibles avec le formatage utilisé côté Streamlit (src/app.py).
 # ==============================================================================
-from sqlalchemy import Float, ForeignKey, String
+import uuid
+
+from sqlalchemy import Boolean, Float, ForeignKey, Integer, String
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.models.base import Base
@@ -17,6 +20,10 @@ class Prospect(Base):
     # dossier ou un token de documents pré-conversion a besoin d'un Client réel, réutilisé
     # (pas recréé) comme client définitif à la conversion.
     client_id: Mapped[int | None] = mapped_column(ForeignKey("clients.id"), nullable=True)
+    # ClientConseil IA Conseil rattaché (cf. backend/services/ia_conseil_bridge.py) —
+    # créé à la demande à l'entrée de l'étape "Trame" du diagnostic fusionné,
+    # jamais recréé ensuite. Migration : 0037_ia_conseil_bridge.
+    ia_conseil_client_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("client.id"), nullable=True)
     converti_at: Mapped[str | None] = mapped_column(String, nullable=True)
     ref: Mapped[str | None] = mapped_column(String, nullable=True)
     prenom: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -37,6 +44,11 @@ class Prospect(Base):
     operateur_actuel: Mapped[str | None] = mapped_column(String, nullable=True)
     techno: Mapped[str | None] = mapped_column(String, nullable=True)
     data_go: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Mêmes questions/valeurs que la trame mobile (roaming_ue / sensibilite_prix,
+    # voir backend/scripts/seed_ia_conseil.py) — désormais posées aussi sur la
+    # landing publique /economiser. Migration : 0038_landing_roaming_priorite.
+    roaming_europe: Mapped[str | None] = mapped_column(String, nullable=True)
+    sensibilite_prix: Mapped[str | None] = mapped_column(String, nullable=True)
     cout_mensuel_actuel: Mapped[float | None] = mapped_column(Float, default=0)
     offre_actuelle: Mapped[str | None] = mapped_column(String, nullable=True)
     satisfaction_reseau: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -61,3 +73,66 @@ class Prospect(Base):
     offres_interet: Mapped[str | None] = mapped_column(String, nullable=True)
     score: Mapped[float | None] = mapped_column(Float, default=0)
     origine: Mapped[str | None] = mapped_column(String, default="Manuel")
+    # ==========================================================================
+    #  LANDING CAPTURE — colonnes de tracking pour leads capturés depuis la
+    #  landing publique /economiser (campagnes TikTok/IG/Facebook). Alimentées
+    #  uniquement par backend/routers/leads_public.py ; restent None pour les
+    #  prospects créés manuellement. Migration : 0027_leads_capture.
+    # ==========================================================================
+    utm_source: Mapped[str | None] = mapped_column(String, nullable=True)
+    utm_medium: Mapped[str | None] = mapped_column(String, nullable=True)
+    utm_campaign: Mapped[str | None] = mapped_column(String, nullable=True)
+    utm_content: Mapped[str | None] = mapped_column(String, nullable=True)
+    utm_term: Mapped[str | None] = mapped_column(String, nullable=True)
+    age: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tranche_age: Mapped[str | None] = mapped_column(String, nullable=True)
+    consentement_rgpd: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    consentement_demarchage: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    date_consentement: Mapped[str | None] = mapped_column(String, nullable=True)
+    ip_creation: Mapped[str | None] = mapped_column(String, nullable=True)
+    user_agent_creation: Mapped[str | None] = mapped_column(String, nullable=True)
+    depenses_declarees_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    # ==========================================================================
+    #  ENRICHISSEMENTS LANDING V3 — adresse/fibre (P2.1), validation téléphone
+    #  Twilio Lookup (P2.2), FAI détecté par IP (P2.3), idempotence email J+1
+    #  (P3.2). Migration : 0028_leads_enrichissements.
+    # ==========================================================================
+    code_insee: Mapped[str | None] = mapped_column(String, nullable=True)
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Couverture FttH au niveau commune (pas d'API gratuite fiable au niveau
+    # adresse exacte) — None = non vérifié/service indisponible.
+    fibre_disponible: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    fibre_taux_couverture: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # None = non vérifié (Twilio Lookup non configuré ou appel en attente/échoué),
+    # True/False = résultat Twilio Lookup — ne jamais masquer un lead sur un
+    # None, uniquement sur un False explicite.
+    telephone_verifie: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    telephone_type_ligne: Mapped[str | None] = mapped_column(String, nullable=True)
+    operateur_detecte_ip: Mapped[str | None] = mapped_column(String, nullable=True)
+    email_j1_envoye: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # ==========================================================================
+    #  SÉQUENCE DE NURTURING (P4.2) — emails éducatifs J+2 à J+5 pour les leads
+    #  non convertis, dans la continuité de l'email récap J+1 ci-dessus.
+    #  Idempotence par jour, même principe que email_j1_envoye.
+    #  `email_desabonne` : désabonnement marketing (lien en pied d'email),
+    #  distinct de `consentement_demarchage` (démarchage téléphonique).
+    #  Migration : 0029_utm_dashboard_attribution.
+    # ==========================================================================
+    email_j2_envoye: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    email_j3_envoye: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    email_j4_envoye: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    email_j5_envoye: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    email_desabonne: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # ==========================================================================
+    #  Coefficient bonus/malus assurance auto (étape 2 /economiser), créneau de
+    #  rappel souhaité (étape 3) et motif de refus saisi par le conseiller.
+    #  Migration : 0030_bonus_malus_plage_horaire_refus.
+    # ==========================================================================
+    bonus_malus_auto: Mapped[str | None] = mapped_column(String, nullable=True)
+    plage_horaire_rappel: Mapped[str | None] = mapped_column(String, nullable=True)
+    motif_refus: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Idempotence de la relance automatique demandant la facture au prospect
+    # (voir backend/workers/tasks.py::demander_facture_prospects).
+    # Migration : 0031_facture_prospect_auto.
+    demande_facture_envoyee: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

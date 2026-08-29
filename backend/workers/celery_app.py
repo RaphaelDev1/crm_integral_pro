@@ -51,6 +51,10 @@ celery_app.conf.update(
             "task": "backend.workers.tasks.ingerer_catalogue_periodique",
             "schedule": crontab(hour=3, minute=0),
         },
+        "synchroniser-catalogue-ia-conseil-quotidien": {
+            "task": "backend.workers.tasks.synchroniser_catalogue_ia_conseil_periodique",
+            "schedule": crontab(hour=3, minute=30),
+        },
         "detecter-offres-moins-cheres-quotidien": {
             "task": "backend.workers.tasks.detecter_offres_moins_cheres_periodique",
             # Calée 30 min après la veille prix (7h00) pour comparer contre un
@@ -60,6 +64,53 @@ celery_app.conf.update(
         "envoyer-digest-quotidien": {
             "task": "backend.workers.tasks.envoyer_digest_quotidien",
             "schedule": crontab(hour=8, minute=0),
+        },
+        "relancer-email-j1-landing": {
+            "task": "backend.workers.tasks.relancer_email_j1_leads_landing",
+            # Horaire, comme la vérification LRE — la fenêtre 24h-25h côté
+            # tâche garantit qu'aucun lead n'est raté entre deux exécutions.
+            "schedule": crontab(minute=15),
+        },
+        "relancer-nurturing-landing": {
+            "task": "backend.workers.tasks.relancer_nurturing_leads_landing",
+            # Horaire aussi (fenêtres 48h-49h/72h-73h/96h-97h/120h-121h côté
+            # tâche) — décalée de 30 min sur l'email J+1 pour ne pas cumuler
+            # les deux tâches leads landing sur le même tick.
+            "schedule": crontab(minute=45),
+        },
+        "demander-facture-prospects": {
+            "task": "backend.workers.tasks.demander_facture_prospects",
+            # Horaire (fenêtre 48h-49h côté tâche) — décalée pour ne pas
+            # cumuler avec les deux tâches leads landing ci-dessus.
+            "schedule": crontab(minute=30),
+        },
+        "detecter-alternatives-souscriptions-quotidien": {
+            "task": "backend.workers.tasks.detecter_alternatives_souscriptions_periodique",
+            # Calée après la veille prix legacy (7h30) pour comparer contre un
+            # catalogue fraîchement mis à jour.
+            "schedule": crontab(hour=7, minute=45),
+        },
+        "planifier-evenements-ia-conseil-quotidien": {
+            "task": "backend.workers.tasks.planifier_evenements_ia_conseil_periodique",
+            # Avant l'exécution (08h15) pour que les événements du jour créés
+            # ici puissent être traités dans la même journée.
+            "schedule": crontab(hour=8, minute=0),
+        },
+        "executer-evenements-ia-conseil-quotidien": {
+            "task": "backend.workers.tasks.executer_evenements_ia_conseil_periodique",
+            "schedule": crontab(hour=8, minute=15),
+        },
+        "auditer-biais-commercial-hebdomadaire": {
+            "task": "backend.workers.tasks.auditer_biais_commercial_periodique",
+            # Lundi matin, après le digest quotidien — vue hebdomadaire du
+            # garde-fou anti-biais commercial (§2.6).
+            "schedule": crontab(day_of_week=1, hour=8, minute=30),
+        },
+        "veille-marche-hebdomadaire": {
+            "task": "backend.workers.tasks.veille_marche_hebdomadaire_task",
+            # Lundi, après l'audit anti-biais (08h30) — agent de veille marché
+            # autonome IA Conseil (§3.4).
+            "schedule": crontab(day_of_week=1, hour=9, minute=0),
         },
     },
 )

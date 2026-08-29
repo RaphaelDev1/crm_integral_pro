@@ -12,7 +12,7 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { useAuth } from "@/contexts/AuthContext";
-import { ADMIN_NAV_ITEM, NAV_ITEMS } from "@/lib/nav";
+import { NAV_ITEMS, RESPONSABLE_NAV_ITEMS } from "@/lib/nav";
 
 // Palette globale (Cmd+K / Ctrl+K). Pour l'instant limitée à la navigation
 // transverse (lib/nav.ts) : les groupes de recherche clients/prospects/
@@ -40,7 +40,7 @@ export function CommandPalette() {
     router.push(href);
   }
 
-  const items = estAdmin() ? [...NAV_ITEMS, ADMIN_NAV_ITEM] : NAV_ITEMS;
+  const items = estAdmin() ? [...NAV_ITEMS, ...RESPONSABLE_NAV_ITEMS] : NAV_ITEMS;
 
   return (
     <CommandDialog open={open} onOpenChange={setOpen}>

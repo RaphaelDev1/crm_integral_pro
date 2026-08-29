@@ -20,6 +20,15 @@ export function useClientDocuments(clientId: number | undefined) {
   });
 }
 
+// Crée (ou réutilise) le ClientConseil IA Conseil rattaché à ce client — voir
+// backend/services/ia_conseil_bridge.py. Utilisé par l'étape "Trame" du
+// diagnostic pour pouvoir lancer des sessions de trame adaptative.
+export function useIaConseilClientClient() {
+  return useMutation({
+    mutationFn: (clientId: number) => apiFetch<{ id: string }>(`/clients/${clientId}/ia-conseil-client`, { method: "POST" }),
+  });
+}
+
 export function useSupprimerDocumentClient(clientId: number | undefined) {
   const queryClient = useQueryClient();
   return useMutation({

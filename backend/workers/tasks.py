@@ -7,30 +7,43 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+import uuid
+from datetime import datetime, timedelta
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import and_, select
 
+from backend.core.config import settings
 from backend.core.database import AsyncSessionLocal
 from backend.models.client import Client
 from backend.models.demarche import Demarche
 from backend.models.document import Document
+from backend.models.document_prospect import DocumentProspect
 from backend.models.dossier import Dossier
+from backend.models.ia_conseil import SessionFacture
 from backend.models.mandat import Mandat
+from backend.models.prospect import Prospect
 from backend.services import (
     alertes_offres_engine,
+    anti_biais_engine,
     catalogue_engine,
     demarches_engine,
     dossier_engine,
     dossier_notifications,
+    evenement_planifie_engine,
+    ia_conseil_catalogue_sync,
+    ia_conseil_facture,
+    ia_conseil_ws,
     kyc_engine,
     lre_engine,
     mandat_engine,
     notification_engine,
     signature_engine,
     storage_engine,
+    token_engine,
     veille_engine,
+    veille_marche_agent,
+    veille_souscriptions_engine,
 )
 from backend.workers.celery_app import celery_app
 
@@ -330,6 +343,24 @@ def ingerer_catalogue_periodique() -> dict:
     return _run(_ingerer_catalogue_periodique())
 
 
+async def _synchroniser_catalogue_ia_conseil_periodique() -> dict:
+    async with AsyncSessionLocal() as db:
+        resume = await ia_conseil_catalogue_sync.synchroniser_catalogue(db, ia_conseil_catalogue_sync.ADAPTERS_ACTIFS)
+        await db.commit()
+        return resume
+
+
+@celery_app.task(name="backend.workers.tasks.synchroniser_catalogue_ia_conseil_periodique")
+def synchroniser_catalogue_ia_conseil_periodique() -> dict:
+    """Tâche périodique (voir `celery_app.beat_schedule`) : synchronise le
+    catalogue du sous-système IA Conseil (categorie/offre isolées du CRM,
+    voir models/ia_conseil.py) à partir des adapters actifs
+    (ia_conseil_catalogue_sync.ADAPTERS_ACTIFS). Aucun adapter réel branché
+    à ce stade (§1.4.A/D) — upsert direct en base (pas de file de validation
+    admin comme ingerer_catalogue_periodique ci-dessus, périmètre distinct)."""
+    return _run(_synchroniser_catalogue_ia_conseil_periodique())
+
+
 async def _detecter_offres_moins_cheres_periodique() -> int:
     async with AsyncSessionLocal() as db:
         alertes = await alertes_offres_engine.detecter_offres_moins_cheres(db)
@@ -363,3 +394,329 @@ def envoyer_digest_quotidien() -> dict:
     admin (relances du jour + fins d'engagement + résumé hebdo le lundi),
     remplace le script cron/schtasks externe src/notifications.py."""
     return _run(_envoyer_digest_quotidien())
+
+
+async def _relancer_email_j1_leads_landing() -> int:
+    async with AsyncSessionLocal() as db:
+        prospects = (
+            await db.execute(
+                select(Prospect).where(
+                    and_(
+                        Prospect.origine.like("Landing%"),
+                        Prospect.email.isnot(None),
+                        Prospect.converti_at.is_(None),
+                        Prospect.email_j1_envoye.is_(False),
+                    )
+                )
+            )
+        ).scalars().all()
+
+        maintenant = datetime.now()
+        n = 0
+        for prospect in prospects:
+            if not prospect.date_creation:
+                continue
+            try:
+                cree_le = datetime.strptime(prospect.date_creation, "%d/%m/%Y %H:%M")
+            except ValueError:
+                continue
+            # Fenêtre 24h-25h : la tâche tourne toutes les heures (voir
+            # beat_schedule), une fenêtre d'une heure évite de rater un lead
+            # entre deux exécutions sans jamais en relancer deux fois
+            # (idempotence garantie par `email_j1_envoye`, pas par la fenêtre).
+            age = maintenant - cree_le
+            if not (timedelta(hours=24) <= age < timedelta(hours=25)):
+                continue
+            envoye = notification_engine.envoyer_email(
+                prospect.email,
+                f"{prospect.prenom}, votre estimation IA Conseil vous attend",
+                notification_engine.template_email_relance_j1_landing(
+                    prospect.prenom or "", prospect.economie_estimee_an or 0
+                ),
+            )
+            if envoye:
+                prospect.email_j1_envoye = True
+                n += 1
+        await db.commit()
+        return n
+
+
+@celery_app.task(name="backend.workers.tasks.relancer_email_j1_leads_landing")
+def relancer_email_j1_leads_landing() -> int:
+    """Tâche périodique horaire (voir `celery_app.beat_schedule`) : envoie
+    l'email récap J+1 aux leads landing non convertis n'ayant pas déjà reçu
+    cet email — point de contact stratégique distinct du SMS immédiat envoyé
+    à la capture (backend/routers/leads_public.py, P3.2)."""
+    return _run(_relancer_email_j1_leads_landing())
+
+
+# ==============================================================================
+#  SÉQUENCE DE NURTURING (P4.2) — 4 emails éducatifs J+2 à J+5 pour les leads
+#  landing non convertis, dans la continuité de l'email récap J+1 ci-dessus.
+#  Même principe de fenêtre horaire + idempotence par flag booléen que
+#  _relancer_email_j1_leads_landing (voir commentaire ci-dessus).
+# ==============================================================================
+_SEQUENCE_NURTURING = (
+    (2, "Les 3 pièges des forfaits mobile en 2026"),
+    (3, "Comment changer d'opérateur sans coupure de service"),
+    (4, "Le bon réflexe avant de renégocier vos factures d'énergie"),
+    (5, "Dernière relance : votre estimation IA Conseil"),
+)
+
+
+def _construire_email_nurturing(jour: int, prospect: Prospect, url_desabonnement: str) -> str:
+    prenom = prospect.prenom or ""
+    if jour == 2:
+        return notification_engine.template_email_nurturing_j2(prenom, url_desabonnement)
+    if jour == 3:
+        return notification_engine.template_email_nurturing_j3(prenom, url_desabonnement)
+    if jour == 4:
+        return notification_engine.template_email_nurturing_j4(prenom, url_desabonnement)
+    return notification_engine.template_email_nurturing_j5(
+        prenom, prospect.economie_estimee_an or 0, url_desabonnement
+    )
+
+
+async def _relancer_nurturing_leads_landing() -> int:
+    async with AsyncSessionLocal() as db:
+        prospects = (
+            await db.execute(
+                select(Prospect).where(
+                    and_(
+                        Prospect.origine.like("Landing%"),
+                        Prospect.email.isnot(None),
+                        Prospect.converti_at.is_(None),
+                        Prospect.email_desabonne.is_(False),
+                        Prospect.consentement_rgpd.is_(True),
+                    )
+                )
+            )
+        ).scalars().all()
+
+        maintenant = datetime.now()
+        n = 0
+        for prospect in prospects:
+            if not prospect.date_creation:
+                continue
+            try:
+                cree_le = datetime.strptime(prospect.date_creation, "%d/%m/%Y %H:%M")
+            except ValueError:
+                continue
+            age = maintenant - cree_le
+            for jour, sujet in _SEQUENCE_NURTURING:
+                if getattr(prospect, f"email_j{jour}_envoye"):
+                    continue
+                if not (timedelta(hours=24 * jour) <= age < timedelta(hours=24 * jour + 1)):
+                    continue
+                url_desabonnement = f"{settings.backend_public_base_url}/public/leads/desabonner/{prospect.ref}"
+                envoye = notification_engine.envoyer_email(
+                    prospect.email, sujet, _construire_email_nurturing(jour, prospect, url_desabonnement),
+                )
+                if envoye:
+                    setattr(prospect, f"email_j{jour}_envoye", True)
+                    n += 1
+                # Un seul email par exécution par prospect — les fenêtres des 4 jours
+                # ne se chevauchent jamais, donc au plus une itération peut matcher.
+                break
+        await db.commit()
+        return n
+
+
+@celery_app.task(name="backend.workers.tasks.relancer_nurturing_leads_landing")
+def relancer_nurturing_leads_landing() -> int:
+    """Tâche périodique horaire (voir `celery_app.beat_schedule`) : séquence de
+    nurturing éducative J+2 à J+5 pour les leads landing non convertis (P4.2)
+    — dans la continuité de l'email récap J+1
+    (relancer_email_j1_leads_landing)."""
+    return _run(_relancer_nurturing_leads_landing())
+
+
+async def _demander_facture_prospects() -> int:
+    """Envoie SMS/email demandant sa facture actuelle à tout prospect (quelle
+    que soit son origine) qui n'en a pas encore transmis, pour comparer son
+    contrat sans lui faire perdre de temps au téléphone — voir
+    backend/services/facture_analyzer.py pour l'analyse automatique déclenchée
+    à la réception (backend/routers/portail_public.py)."""
+    async with AsyncSessionLocal() as db:
+        prospects = (
+            await db.execute(
+                select(Prospect).where(
+                    and_(
+                        Prospect.converti_at.is_(None),
+                        Prospect.demande_facture_envoyee.is_(False),
+                    )
+                )
+            )
+        ).scalars().all()
+
+        maintenant = datetime.now()
+        n = 0
+        for prospect in prospects:
+            if not prospect.date_creation or not (prospect.telephone or prospect.email):
+                continue
+            try:
+                cree_le = datetime.strptime(prospect.date_creation, "%d/%m/%Y %H:%M")
+            except ValueError:
+                continue
+            # Fenêtre 48h-49h (J+2) : laisse le temps d'un premier appel avant
+            # de solliciter la facture — tâche horaire, idempotence garantie
+            # par `demande_facture_envoyee`.
+            age = maintenant - cree_le
+            if not (timedelta(hours=48) <= age < timedelta(hours=49)):
+                continue
+
+            deja_recue = (
+                await db.execute(
+                    select(DocumentProspect).where(
+                        DocumentProspect.prospect_id == prospect.id,
+                        DocumentProspect.type_document == "facture",
+                    )
+                )
+            ).scalars().first()
+            if deja_recue is not None:
+                prospect.demande_facture_envoyee = True
+                continue
+
+            token = await token_engine.generer_token_prospect_documents(db, prospect.id, cree_par="systeme")
+            url = token_engine.construire_url_client(token.token, base_url=settings.portail_client_base_url)
+            prenom = prospect.prenom or ""
+            message = (
+                f"Bonjour {prenom}, pour comparer au mieux votre contrat actuel, transmettez-nous "
+                f"votre facture ici : {url} (valable 14 jours). Votre conseiller IA Conseil."
+            )
+            envoye = False
+            if prospect.telephone:
+                envoye = notification_engine.envoyer_sms(prospect.telephone, message) or envoye
+            if prospect.email:
+                corps = (
+                    f"<p>Bonjour {prenom},</p>"
+                    f"<p>Pour comparer au mieux votre contrat actuel et vous faire gagner du temps, "
+                    f"pourriez-vous nous transmettre votre facture ?</p>"
+                    f'<p><a href="{url}">{url}</a></p>'
+                    f"<p>Ce lien est valable 14 jours.</p>"
+                    f"<p>Votre conseiller IA Conseil.</p>"
+                )
+                envoye = notification_engine.envoyer_email(
+                    prospect.email, "Transmettez-nous votre facture pour comparer", corps,
+                ) or envoye
+            if envoye:
+                prospect.demande_facture_envoyee = True
+                n += 1
+        await db.commit()
+        return n
+
+
+@celery_app.task(name="backend.workers.tasks.demander_facture_prospects")
+def demander_facture_prospects() -> int:
+    """Tâche périodique horaire (voir `celery_app.beat_schedule`) : demande
+    automatiquement sa facture à tout prospect actif n'en ayant pas encore
+    transmis, 48h après sa création."""
+    return _run(_demander_facture_prospects())
+
+
+async def _auditer_biais_commercial_periodique() -> int:
+    async with AsyncSessionLocal() as db:
+        resultats = await anti_biais_engine.auditer_et_notifier_superviseurs(db)
+        return sum(1 for r in resultats if r["au_dela_du_seuil"])
+
+
+@celery_app.task(name="backend.workers.tasks.auditer_biais_commercial_periodique")
+def auditer_biais_commercial_periodique() -> int:
+    """Tâche périodique hebdomadaire (voir `celery_app.beat_schedule`) : calcule
+    le ratio de souscriptions favorisant une offre plus commissionnée que la
+    mieux recommandée, par conseiller, et notifie les comptes Admin pour tout
+    conseiller au-delà du seuil configuré (§2.6, garde-fou anti-biais)."""
+    return _run(_auditer_biais_commercial_periodique())
+
+
+async def _detecter_alternatives_souscriptions_periodique() -> int:
+    async with AsyncSessionLocal() as db:
+        detectees = await veille_souscriptions_engine.detecter_alternatives_souscriptions(db)
+        return len(detectees)
+
+
+@celery_app.task(name="backend.workers.tasks.detecter_alternatives_souscriptions_periodique")
+def detecter_alternatives_souscriptions_periodique() -> int:
+    """Tâche périodique (voir `celery_app.beat_schedule`) : compare chaque
+    souscription IA Conseil active proche de sa fin d'engagement au
+    catalogue, dépose un EvenementPlanifie 'veille_alerte' par opportunité
+    d'économie détectée au-delà du seuil configuré (§2.2)."""
+    return _run(_detecter_alternatives_souscriptions_periodique())
+
+
+async def _planifier_evenements_ia_conseil_periodique() -> int:
+    async with AsyncSessionLocal() as db:
+        return await evenement_planifie_engine.planifier_evenements_manquants(db)
+
+
+@celery_app.task(name="backend.workers.tasks.planifier_evenements_ia_conseil_periodique")
+def planifier_evenements_ia_conseil_periodique() -> int:
+    """Tâche périodique (voir `celery_app.beat_schedule`) : crée les
+    EvenementPlanifie (fin d'engagement J-60, bilan annuel, NPS J+30) pour
+    toute souscription IA Conseil qui n'en a pas encore — idempotent, sûr à
+    relancer tous les jours (§2.3)."""
+    return _run(_planifier_evenements_ia_conseil_periodique())
+
+
+async def _executer_evenements_ia_conseil_periodique() -> int:
+    async with AsyncSessionLocal() as db:
+        return await evenement_planifie_engine.executer_evenements_du_jour(db)
+
+
+@celery_app.task(name="backend.workers.tasks.executer_evenements_ia_conseil_periodique")
+def executer_evenements_ia_conseil_periodique() -> int:
+    """Tâche périodique (voir `celery_app.beat_schedule`) : exécute (email
+    client + notification conseiller) tout EvenementPlanifie dont la date est
+    échue et marque-le traité (§2.3)."""
+    return _run(_executer_evenements_ia_conseil_periodique())
+
+
+async def _analyser_facture_session(facture_id: str) -> None:
+    async with AsyncSessionLocal() as db:
+        facture = await db.get(SessionFacture, uuid.UUID(facture_id))
+        if facture is None:
+            return
+        facture = await ia_conseil_facture.analyser(db, facture)
+        await db.commit()
+        await ia_conseil_ws.publier(
+            facture.session_id,
+            {
+                "type": "facture_analysee",
+                "facture_id": str(facture.id),
+                "statut": facture.statut,
+                "extraction": facture.extraction,
+            },
+        )
+
+
+@celery_app.task(
+    name="backend.workers.tasks.analyser_facture_session_task", bind=True, max_retries=2, default_retry_delay=30
+)
+def analyser_facture_session_task(self, facture_id: str) -> None:
+    """Déclenchée à l'upload d'une facture pendant une session de trame
+    (§3.1, pas de planning — voir routers/ia_conseil_sessions.py) : analyse
+    via facture_analyzer.py (Claude vision) et publie le résultat sur le
+    canal WS de la session pour rafraîchir la vue live sans polling."""
+    try:
+        _run(_analyser_facture_session(facture_id))
+    except Exception as exc:
+        raise self.retry(exc=exc)
+
+
+async def _veille_marche_hebdomadaire() -> int:
+    async with AsyncSessionLocal() as db:
+        rapports = await veille_marche_agent.generer_rapports_toutes_categories(db)
+        for rapport in rapports:
+            if rapport.offres_detectees:
+                await notification_engine.notifier_veille_marche_hebdomadaire(db, rapport)
+        return sum(len(r.offres_detectees) for r in rapports)
+
+
+@celery_app.task(name="backend.workers.tasks.veille_marche_hebdomadaire_task")
+def veille_marche_hebdomadaire_task() -> int:
+    """Tâche périodique hebdomadaire (voir `celery_app.beat_schedule`) :
+    agent Claude (outil serveur web_search) qui scanne le web par catégorie
+    pour détecter des offres pas encore au catalogue IA Conseil (§3.4).
+    N'écrit jamais directement dans `offre` — chaque offre détectée attend
+    une revue admin (routers/ia_conseil_catalogue.py)."""
+    return _run(_veille_marche_hebdomadaire())

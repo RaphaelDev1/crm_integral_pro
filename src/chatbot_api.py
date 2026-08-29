@@ -53,7 +53,6 @@ async def _lifespan(app: FastAPI):
 
 
 app = FastAPI(title="IA Conseil — API Chatbot", version="1.0.0", lifespan=_lifespan)
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],   # le widget doit fonctionner depuis n'importe quel site tiers

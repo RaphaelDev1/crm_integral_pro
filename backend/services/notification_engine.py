@@ -138,6 +138,159 @@ def envoyer_sms(destinataire: str, message: str) -> bool:
     return _envoyer_sms_ovh(destinataire, message)
 
 
+def notifier_lead_slack(
+    *,
+    prospect_id: int,
+    prenom: str,
+    telephone: str,
+    economie_annuelle: float,
+    utm_source: str | None,
+    utm_campaign: str | None,
+) -> bool:
+    """Ping Slack (ou Discord, même format webhook `{"text": ...}`) à la
+    capture d'un lead depuis la landing publique — la fenêtre de rappel des
+    5 premières minutes est le facteur n°1 de conversion. False (sans
+    exception) si `SLACK_WEBHOOK_URL` absente ou si l'envoi échoue."""
+    if not settings.slack_webhook_url:
+        logger.info("SLACK_WEBHOOK_URL absente — notification lead non envoyée (prospect=%s).", prospect_id)
+        return False
+    lien_fiche = f"{settings.frontend_conseiller_base_url}/prospects/{prospect_id}"
+    texte = (
+        f"🔥 *Nouveau lead landing* — {prenom}\n"
+        f"📞 <tel:{telephone}|{telephone}>  ·  💰 ~{economie_annuelle:.0f} €/an estimés\n"
+        f"📍 Source : {utm_source or 'direct'}"
+        + (f" / {utm_campaign}" if utm_campaign else "")
+        + f"\n<{lien_fiche}|Voir la fiche prospect>"
+    )
+    try:
+        reponse = httpx.post(settings.slack_webhook_url, json={"text": texte}, timeout=10)
+        reponse.raise_for_status()
+        return True
+    except Exception:
+        logger.exception("Échec de la notification Slack pour le lead prospect=%s.", prospect_id)
+        return False
+
+
+def template_email_relance_j1_landing(prenom: str, economie_annuelle: float) -> str:
+    """Email récap envoyé J+1 après un lead landing (backend/workers/tasks.py
+    ::relancer_email_j1_leads_landing, P3.2) — point de contact stratégique
+    distinct du SMS immédiat, pour un prospect que le conseiller n'a pas
+    encore réussi à joindre."""
+    eco = int(economie_annuelle)
+    return f"""
+    <div style="font-family:system-ui,sans-serif;max-width:560px;margin:auto">
+      <h2>Bonjour {prenom},</h2>
+      <p>Vous avez estimé hier vos économies possibles avec IA Conseil :
+         <strong>jusqu'à {eco} €/an*</strong> sur vos abonnements.</p>
+      <p>Notre conseiller n'a pas encore réussi à vous joindre par téléphone —
+         répondez à cet email ou rappelez-nous pour fixer un créneau qui vous
+         convient.</p>
+      <p style="font-size:11px;color:#666;margin-top:32px">
+        *Estimation indicative basée sur la médiane payée par nos clients dans la même catégorie.
+        Résultat définitif après entretien conseiller.
+      </p>
+    </div>
+    """
+
+
+# ==============================================================================
+#  SÉQUENCE DE NURTURING (P4.2) — 4 emails éducatifs J+2 à J+5 pour les leads
+#  landing non convertis, dans la continuité de l'email récap J+1 ci-dessus.
+#  Déclenchés par backend/workers/tasks.py::relancer_nurturing_leads_landing.
+#  Chaque email inclut un lien de désabonnement en un clic (RGPD — retrait du
+#  consentement aussi simple que son octroi), voir
+#  backend/routers/leads_public.py::desabonner_lead.
+# ==============================================================================
+def _pied_email_nurturing(url_desabonnement: str) -> str:
+    return f"""
+      <p style="font-size:11px;color:#666;margin-top:32px">
+        IA Conseil — vous recevez cet email suite à votre demande d'estimation sur notre landing.
+        <a href="{url_desabonnement}" style="color:#666">Se désinscrire</a> de ces emails à tout moment.
+      </p>
+    """
+
+
+def template_email_nurturing_j2(prenom: str, url_desabonnement: str) -> str:
+    """« Les 3 pièges des forfaits mobile en 2026 » — contenu éducatif, pas de
+    relance commerciale directe (P4.2)."""
+    return f"""
+    <div style="font-family:system-ui,sans-serif;max-width:560px;margin:auto">
+      <h2>Bonjour {prenom},</h2>
+      <p>Avant votre prochain changement d'opérateur, voici 3 pièges fréquents sur les
+         forfaits mobile en 2026 :</p>
+      <ol>
+        <li><strong>Le prix "à vie" qui ne l'est pas</strong> — beaucoup d'offres promotionnelles
+            augmentent après 12 mois sans préavis explicite. Vérifiez la date de fin de promo.</li>
+        <li><strong>La data "illimitée" plafonnée en 4G/5G</strong> — au-delà d'un certain volume,
+            le débit est bridé sans que ce soit toujours mis en avant.</li>
+        <li><strong>L'engagement caché sur le mobile associé à une box</strong> — certains packs
+            box + mobile prolongent l'engagement des deux lignes en cas de changement d'une seule.</li>
+      </ol>
+      <p>Notre conseiller peut vérifier gratuitement votre contrat actuel pour ces 3 points.</p>
+      {_pied_email_nurturing(url_desabonnement)}
+    </div>
+    """
+
+
+def template_email_nurturing_j3(prenom: str, url_desabonnement: str) -> str:
+    """« Comment changer d'opérateur sans coupure de service » (P4.2)."""
+    return f"""
+    <div style="font-family:system-ui,sans-serif;max-width:560px;margin:auto">
+      <h2>Bonjour {prenom},</h2>
+      <p>La peur n°1 avant de changer d'opérateur : la coupure de service. Voici comment
+         l'éviter :</p>
+      <ul>
+        <li><strong>Portabilité du numéro</strong> — votre numéro actuel est conservé
+            automatiquement, aucune démarche à faire vous-même.</li>
+        <li><strong>Chevauchement des deux lignes</strong> — le nouvel opérateur active votre
+            ligne avant la résiliation de l'ancienne, il n'y a jamais de jour sans service.</li>
+        <li><strong>Résiliation gérée pour vous</strong> — c'est notre conseiller qui s'occupe
+            des démarches de résiliation auprès de votre ancien fournisseur, vous n'avez
+            qu'à signer un mandat.</li>
+      </ul>
+      <p>Un conseiller peut vous expliquer le calendrier exact de la transition en 10 minutes.</p>
+      {_pied_email_nurturing(url_desabonnement)}
+    </div>
+    """
+
+
+def template_email_nurturing_j4(prenom: str, url_desabonnement: str) -> str:
+    """« Le bon réflexe avant de renégocier vos factures d'énergie » (P4.2)."""
+    return f"""
+    <div style="font-family:system-ui,sans-serif;max-width:560px;margin:auto">
+      <h2>Bonjour {prenom},</h2>
+      <p>Avant de renégocier votre contrat d'électricité ou de gaz, un seul réflexe compte :
+         comparez le <strong>prix du kWh hors taxes</strong>, pas le montant total de la
+         facture (qui dépend surtout de votre consommation, pas du fournisseur).</p>
+      <p>Sur cette base, les écarts entre fournisseurs peuvent représenter plusieurs centaines
+         d'euros par an pour un foyer moyen — sans changer vos habitudes de consommation.</p>
+      <p>Notre conseiller compare pour vous les offres actuellement disponibles sur votre
+         zone et vous indique s'il y a une économie réelle à la clé, sans engagement de
+         votre part.</p>
+      {_pied_email_nurturing(url_desabonnement)}
+    </div>
+    """
+
+
+def template_email_nurturing_j5(prenom: str, economie_annuelle: float, url_desabonnement: str) -> str:
+    """Dernier email de la séquence — relance directe avec l'estimation
+    initiale en rappel (P4.2)."""
+    eco = int(economie_annuelle)
+    return f"""
+    <div style="font-family:system-ui,sans-serif;max-width:560px;margin:auto">
+      <h2>Bonjour {prenom},</h2>
+      <p>Voici le dernier email de notre part sur cette estimation — votre économie potentielle
+         restait estimée à <strong>jusqu'à {eco} €/an*</strong>.</p>
+      <p>Si vous souhaitez qu'un conseiller y jette un œil, répondez simplement à cet email ou
+         rappelez-nous — sinon, vous ne recevrez plus d'autre message de notre part à ce sujet.</p>
+      <p style="font-size:11px;color:#666;margin-top:32px">
+        *Estimation indicative basée sur la médiane payée par nos clients dans la même catégorie.
+      </p>
+      {_pied_email_nurturing(url_desabonnement)}
+    </div>
+    """
+
+
 # ==============================================================================
 #  NOTIFICATIONS MÉTIER — relances, alerte fin d'engagement, digest quotidien
 #  admin, envoi du lien portail au prospect. Porté de src/notifications.py
@@ -394,6 +547,28 @@ async def notifier_offres_moins_cheres(db: AsyncSession, alertes: list[dict]) ->
     return await envoyer_digest_admin(texte, f"IA Conseil — {len(alertes)} offre(s) moins chère(s) détectée(s)", db)
 
 
+async def notifier_veille_marche_hebdomadaire(db: AsyncSession, rapport) -> bool:
+    """Alerte admin immédiate quand `veille_marche_agent.generer_rapport_hebdomadaire()`
+    détecte une ou plusieurs offres pas encore au catalogue IA Conseil —
+    à intégrer dans Admin > IA Conseil > Veille marché (§3.4)."""
+    offres = rapport.offres_detectees or []
+    if not offres:
+        return False
+    lignes = [
+        f"🔍 Veille marché « {rapport.categorie_slug} » — {len(offres)} offre(s) potentiellement "
+        f"nouvelle(s) à examiner dans Admin > IA Conseil > Veille marché :",
+        "",
+    ]
+    for o in offres:
+        prix = f"{o['prix_mensuel']:.2f} €/mois" if o.get("prix_mensuel") is not None else "prix à vérifier"
+        confiance = "✅ fiable" if o.get("confiance") == "fiable" else "⚠️ à vérifier"
+        lignes.append(f"- {o.get('fournisseur', '?')} — {o.get('nom_offre', '?')} — {prix} ({confiance})")
+    texte = "\n".join(lignes)
+    return await envoyer_digest_admin(
+        texte, f"IA Conseil — {len(offres)} offre(s) détectée(s) en veille marché ({rapport.categorie_slug})", db
+    )
+
+
 def envoyer_demande_documents_prospect(prospect: dict, url: str, duree_jours: int) -> dict:
     """Envoie au prospect (SMS + email, selon les coordonnées disponibles sur
     sa fiche) le lien à usage personnel lui permettant de transmettre
@@ -494,3 +669,44 @@ async def creer_notification_document(db: AsyncSession, dossier: "Dossier") -> N
         date_creation=datetime.now().strftime("%d/%m/%Y %H:%M"),
     ))
     await db.commit()
+
+
+async def creer_notification_generique(
+    db: AsyncSession, conseiller_id: int, message: str, *, lien: str | None = None
+) -> None:
+    """Notification in-app hors CRM (sous-système IA Conseil — §2.3, §2.6) :
+    pas de `Dossier` à pointer, `lien` porte une route relative à la place.
+    Résout le username depuis `conseiller_id` (Integer, `utilisateurs.id`),
+    contrairement à `creer_notification_conseiller` qui part d'un nom complet
+    stocké sur le dossier CRM. Ne fait rien si le compte est introuvable."""
+    from backend.models.notification import Notification
+    from backend.models.user import User
+
+    utilisateur = await db.get(User, conseiller_id)
+    if utilisateur is None:
+        return
+    db.add(Notification(
+        conseiller_username=utilisateur.username,
+        message=message,
+        lien=lien,
+        date_creation=datetime.now().strftime("%d/%m/%Y %H:%M"),
+    ))
+    await db.commit()
+
+
+def template_email_fin_engagement_conseil(prenom: str, categorie_slug: str | None) -> str:
+    categorie = categorie_slug or "votre contrat"
+    return (
+        f"<p>Bonjour {prenom},</p>"
+        f"<p>Votre engagement sur {categorie} arrive à échéance dans moins de 60 jours. "
+        "C'est le bon moment pour comparer les offres du marché et voir si une économie est possible.</p>"
+        "<p>Votre conseiller reprendra contact avec vous prochainement.</p>"
+    )
+
+
+def template_email_nps_j30_conseil(prenom: str) -> str:
+    return (
+        f"<p>Bonjour {prenom},</p>"
+        "<p>Cela fait un mois que nous avons finalisé votre dossier — nous aimerions savoir si tout "
+        "se passe bien. Répondez simplement à cet email pour nous faire part de votre retour.</p>"
+    )

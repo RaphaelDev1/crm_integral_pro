@@ -32,6 +32,7 @@ export const prospectBaseSchema = z.object({
   lignes_multi: z.string().optional(),
   economie_estimee_an: z.coerce.number().optional(),
   notes: z.string().optional(),
+  motif_refus: z.string().optional(),
   statut: z.string().optional(),
   date_relance: z.string().optional(),
   offres_interet: z.string().optional(),

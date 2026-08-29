@@ -3,7 +3,8 @@
 > Référence opérationnelle : comment configurer, lancer, tester et vérifier chaque brique du projet
 > (Streamlit conseiller — en cours d'extinction, voir `frontend-conseiller/LANCEMENT.md` pour son
 > remplaçant Next.js —, backend FastAPI, Celery, portail client Next.js, Docker).
-> Écrit après audit du code réel le 2026-07-24, mis à jour le 2026-08-01 — voir `SETUP_STATUS.md` et
+> Écrit après audit du code réel le 2026-07-24, mis à jour le 2026-08-26 (landing publique
+> `/economiser`, capture de leads, Dashboard UTM) — voir `SETUP_STATUS.md` et
 > `ROADMAP_EXECUTION.md` pour l'avancement fonctionnel détaillé par sprint/chantier.
 
 ---
@@ -20,26 +21,48 @@
 - Remplir au minimum :
   - `backend/.env` : `DATABASE_URL` (Neon Postgres), `ANTHROPIC_API_KEY`, `REDIS_URL`, `CRM_API_SECRET`.
   - `src/.env` : `ANTHROPIC_API_KEY` (nécessaire pour l'agent d'audit et le chatbot en Streamlit), `CRM_API_SECRET`.
-  - Optionnels selon les fonctionnalités testées : `S3_*` (upload documents), `YOUSIGN_API_KEY` (signature), `AR24_API_KEY` (LRE démarches), `STRIPE_*`, `RESEND_*`/`TWILIO_*`/`OVH_*` (notifications). Sans ces clés, le code dégrade proprement (pas de crash, juste la fonctionnalité désactivée).
+  - Optionnels selon les fonctionnalités testées : `S3_*` (upload documents), `YOUSIGN_API_KEY` (signature), `AR24_API_KEY` (LRE démarches), `STRIPE_*`, `RESEND_*`/`TWILIO_*`/`OVH_*` (notifications), `TURNSTILE_SECRET_KEY` (captcha landing), `ELIGIBILITE_FIBRE_API_URL` (déjà pré-rempli avec la valeur publique par défaut). Sans ces clés, le code dégrade proprement (pas de crash, juste la fonctionnalité désactivée).
+  - `RATE_LIMIT_STORAGE_URI` (déjà pré-rempli `memory://`) : suffisant en dev local (un seul process) pour le rate limiting de la landing publique `/economiser` — pas besoin de Redis pour ça, seulement pour Celery.
+  - `frontend-portail/.env.local` : `NEXT_PUBLIC_API_URL` + `BACKEND_URL` (déjà pré-remplis en local). Optionnels : `NEXT_PUBLIC_CALCOM_LINK` (prise de rendez-vous étape 4 landing), `NEXT_PUBLIC_LANDING_VARIANT` (A/B test), pixels `NEXT_PUBLIC_META_PIXEL_ID`/`NEXT_PUBLIC_TIKTOK_PIXEL_ID`/`NEXT_PUBLIC_GA_MEASUREMENT_ID`, `NEXT_PUBLIC_TURNSTILE_SITE_KEY` (doit rester cohérent avec `TURNSTILE_SECRET_KEY` côté backend). Vides = fonctionnalités correspondantes masquées/désactivées, pas de crash.
 - Installer les dépendances :
   ```powershell
   pip install -r backend/requirements-dev.txt
   pip install -r src/requirements-dev.txt
+  cd frontend-conseiller && npm install && cd ..
   cd frontend-portail && npm install && cd ..
   ```
+
+## 0bis. Démarrage rapide — Conseiller + Portail (prêt à l'emploi)
+
+Une fois §0 et §1 faits une première fois (`.env` remplis, `npm install` fait dans
+`frontend-conseiller/` et `frontend-portail/`, migrations appliquées), lance les 4 services
+(Redis, backend `:8000`, conseiller `:3001`, portail `:3000`) en une seule commande :
+
+**Depuis PowerShell** (ouvre 4 fenêtres séparées) :
+```powershell
+.\lancer-app.ps1
+```
+
+**Depuis VSCode** : `Ctrl+Shift+P` → *Tasks: Run Task* → **🚀 Lancer tout (conseiller + portail)**
+(définit 4 terminaux dédiés dans le panneau Terminal — `.vscode/tasks.json`).
+
+Pour arrêter : fermer chaque fenêtre/terminal (ou `Ctrl+C` dedans).
 
 ## 1. Appliquer les migrations Alembic (à faire avant tout, obligatoire)
 
 ```powershell
 python -m alembic upgrade head
-python -m alembic current   # doit afficher "0020 (head)"
+python -m alembic current   # doit afficher "0029 (head)"
 ```
 Sans cette étape, les tables des derniers chantiers (`demarches`, `tokens_publics`, `veille`,
-`catalogue_sources`/`offres_staging`, etc.) n'existent pas sur Postgres.
+`catalogue_sources`/`offres_staging`, `leads_capture`, `campagnes_cout`, `touchpoints`, etc.)
+n'existent pas sur Postgres.
 
-> ⚠️ Migrations 0009 à 0020 ajoutées le 2026-08-01 (conversion prospect, veille prix, documents
-> prospect, paramètres, login_tentatives, speedtest, alertes offres, historique actions, catalogue)
-> — pas encore appliquées/vérifiées sur le Neon du projet à cette date, à faire avant tout test.
+> ⚠️ Migrations 0027 à 0029 ajoutées le 2026-08-26 (`leads_capture` : table des leads landing
+> publique ; `leads_enrichissements` : colonnes détection FAI/éligibilité fibre/vérification
+> téléphone sur le lead ; `utm_dashboard_attribution` : `campagnes_cout` + `touchpoints` pour le
+> Dashboard UTM conseiller) — vérifier qu'elles sont appliquées avant de tester la landing
+> `/economiser` ou `/dashboard/utm`.
 
 ## 2. Lancer chaque brique en local (sans Docker)
 
@@ -67,9 +90,12 @@ npm run dev
 
 Vérifications rapides :
 - `http://localhost:8000/health` → `200 OK`
-- `http://localhost:8000/docs` → Swagger avec tous les routers (auth, clients, prospects, dossiers, demarches, portail_public, factures, honoraires, webhooks)
+- `http://localhost:8000/docs` → Swagger avec tous les routers (auth, clients, prospects, dossiers,
+  demarches, portail_public, factures, honoraires, webhooks, `leads_public` (formulaire landing
+  publique), `dashboard_utm` (attribution marketing))
 - `http://localhost:8501` → Streamlit se charge, login admin
-- `http://localhost:3000` → landing du portail
+- `http://localhost:3001` → frontend-conseiller, dont `/dashboard/utm` (Dashboard UTM)
+- `http://localhost:3000` → landing du portail, dont `/economiser` (formulaire de capture de lead)
 
 ## 3. Ou tout lancer via Docker Compose
 
@@ -134,6 +160,27 @@ Vérifier le refus si le mandat n'est pas signé, et la génération PDF si sign
 **Chantier 4 — Industrialisation**
 `docker compose up`, observer Flower, provoquer une exception pour vérifier qu'elle remonte dans Sentry (si un DSN est configuré).
 
+**Chantier 5 — Landing publique `/economiser` + attribution UTM** (nécessite les migrations
+0027-0029, backend + portail + conseiller lancés)
+1. Ouvrir `http://localhost:3000/economiser?utm_source=test&utm_medium=cpc&utm_campaign=demo`
+   → l'attribution UTM est capturée côté client (`lib/attribution.ts`) et transmise à la
+   soumission du formulaire.
+2. Dérouler les 4 étapes du formulaire (adresse avec autocomplétion, opérateur pré-rempli par
+   détection FAI, captcha invisible à l'étape 3, bannière éligibilité fibre + bouton Cal.com à
+   l'étape 4 si les clés correspondantes sont configurées, sinon masqués proprement).
+3. Soumettre → `POST /leads/capture` (rate-limité par IP, voir `backend/core/rate_limit.py`) crée
+   le lead, notifie Slack si `SLACK_WEBHOOK_URL` est configuré, et programme l'email J+1 via Celery
+   (nécessite worker + beat lancés, `-SansCelery` désactive ce dernier point).
+4. Vérifier le lien de désabonnement `GET /leads/desabonner/{ref}` renvoyé dans l'email (si
+   `RESEND_API_KEY` configuré).
+5. Dans `frontend-conseiller`, ouvrir `/dashboard/utm` → vérifier que le lead créé à l'étape 3
+   apparaît dans le tunnel et l'attribution par source/campagne (`GET /dashboard/utm-tunnel`,
+   `/dashboard/attribution`, `/dashboard/couts-campagne`).
+
+Voir `docs/RETARGETING_META_TIKTOK.md` (configuration des pixels/audiences) et
+`docs/REGISTRE_TRAITEMENTS_CNIL.md` (registre RGPD de ce traitement) pour le contexte métier de ce
+chantier.
+
 ## 6. État des blocages externes (comptes à créer)
 
 Aucune fonctionnalité ne crashe si ces comptes manquent — dégradation propre — mais restent bloqués :
@@ -142,5 +189,11 @@ Aucune fonctionnalité ne crashe si ces comptes manquent — dégradation propre
 - **AR24** : envoi LRE des démarches.
 - **Stripe** : facturation/abonnements.
 - **Resend / Twilio / OVH** : email et SMS transactionnels.
+- **Cloudflare Turnstile** : captcha du formulaire landing `/economiser` (sans clé, le formulaire
+  fonctionne sans vérification anti-bot).
+- **Twilio Lookup** : vérification de la validité des numéros de téléphone des leads landing
+  (réutilise `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`, indépendant de `SMS_PROVIDER`).
+- **Cal.com** : prise de rendez-vous directe à l'étape 4 de la landing (sans `NEXT_PUBLIC_CALCOM_LINK`, le bouton est masqué).
+- **Pixels Meta / TikTok / GA4** : retargeting des visiteurs de la landing (sans ID configuré, aucun pixel n'est chargé).
 
 Voir `SETUP_STATUS.md` pour le détail des étapes manuelles par compte.

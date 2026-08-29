@@ -92,8 +92,12 @@ export interface Dossier {
 
 export interface Notification {
   id: number;
-  dossier_id: number;
+  dossier_id: number | null;
   message: string;
+  // Route relative à suivre pour une notification hors CRM (IA Conseil,
+  // voir backend/models/notification.py) — prioritaire sur dossier_id quand
+  // les deux sont possibles.
+  lien: string | null;
   lu: boolean;
   date_creation: string | null;
 }
@@ -161,6 +165,30 @@ export interface FactureAnalyse {
   engagement_mois: number;
   date_fin_engagement: string;
   iban_prelevement: string;
+  type_couverture: string;
+  bonus_malus: string;
+}
+
+// Version persistée (table `factures_analysees`) — voir GET
+// /prospects/{id}/factures-analysees, alimentée automatiquement à l'upload
+// d'une facture par un prospect via son lien de collecte de documents.
+export interface FactureAnalysePersistee {
+  id: number;
+  client_id: number | null;
+  prospect_id: number | null;
+  dossier_id: number | null;
+  operateur: string | null;
+  prix_ht: number;
+  prix_ttc: number;
+  data_conso_go: number;
+  options: string[] | null;
+  engagement_mois: number;
+  date_fin_engagement: string | null;
+  iban_prelevement: string | null;
+  type_couverture: string | null;
+  bonus_malus: string | null;
+  date_analyse: string | null;
+  analyse_par: string | null;
 }
 
 export interface ClientDocument {
@@ -222,6 +250,17 @@ export interface Prospect {
   client_id: number | null;
   converti_at: string | null;
   dernier_contact: string | null;
+  code_insee: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  fibre_disponible: boolean | null;
+  fibre_taux_couverture: number | null;
+  telephone_verifie: boolean | null;
+  telephone_type_ligne: string | null;
+  operateur_detecte_ip: string | null;
+  bonus_malus_auto: string | null;
+  plage_horaire_rappel: string | null;
+  motif_refus: string | null;
 }
 
 export interface DetailScoreProspect {
@@ -282,7 +321,12 @@ export interface Recommandations {
 }
 
 export interface OffreCompareeItem {
-  offre_id: number;
+  // number pour une offre issue de l'ancien catalogue (backend/models/offre.py),
+  // string (UUID) pour une offre IA Conseil (backend/models/ia_conseil.py::OffreConseil)
+  // — voir EtapeTrame.tsx, qui alimente offres_comparees depuis une session de
+  // trame. Dossier.offre_cible_id (Integer) n'est renseigné que dans le premier cas,
+  // voir OffreCibleSection dans app/(conseiller)/dossiers/[id]/page.tsx.
+  offre_id: number | string;
   nom: string | null;
   fournisseur: string | null;
   prix_mensuel: number | null;
@@ -449,4 +493,81 @@ export interface AuditResult {
   points_attention: string[];
   niveau_confiance: number;
   tracabilite: Record<string, unknown>[];
+}
+
+// P4.1 — dashboard tunnel de conversion par UTM (backend/routers/dashboard_utm.py).
+export interface CampagneStats {
+  utm_source: string;
+  utm_campaign: string | null;
+  leads: number;
+  rappels_effectues: number;
+  conversions: number;
+  taux_conversion: number;
+  ca_genere: number;
+  cout_pub: number | null;
+  cac: number | null;
+}
+
+export interface DashboardUtm {
+  periode_debut: string | null;
+  periode_fin: string | null;
+  campagnes: CampagneStats[];
+  totaux: CampagneStats;
+}
+
+// P4.3 — attribution multi-touch "légère" (premier vs dernier contact).
+export interface ParcoursAttribution {
+  premier_touch_source: string;
+  dernier_touch_source: string;
+  nb_prospects: number;
+  nb_conversions: number;
+}
+
+export interface RepartitionSource {
+  utm_source: string;
+  nb_prospects: number;
+  nb_conversions: number;
+}
+
+export interface DashboardAttribution {
+  periode_debut: string | null;
+  periode_fin: string | null;
+  parcours: ParcoursAttribution[];
+  par_source_premier_touch: RepartitionSource[];
+  par_source_dernier_touch: RepartitionSource[];
+}
+
+// Liste nominative des inscrits (leads) sur la période — réservée aux Admin
+// ("Responsable"), voir backend/routers/dashboard_utm.py::inscrits_utm.
+export interface InscritUtm {
+  id: number;
+  prenom: string | null;
+  nom: string | null;
+  email: string | null;
+  telephone: string | null;
+  ville: string | null;
+  utm_source: string;
+  utm_campaign: string | null;
+  date_creation: string | null;
+  statut: string | null;
+}
+
+export interface DashboardUtmInscrits {
+  periode_debut: string | null;
+  periode_fin: string | null;
+  total: number;
+  inscrits: InscritUtm[];
+}
+
+// Dépense publicitaire saisie manuellement (pas d'intégration live Meta/TikTok/
+// Google Ads) — c'est elle qui rend le CAC calculable dans DashboardUtm ci-dessus.
+export interface CampagneCout {
+  id: number;
+  utm_source: string;
+  utm_campaign: string | null;
+  mois: string;
+  cout: number;
+  notes: string | null;
+  cree_par: string | null;
+  date_creation: string | null;
 }

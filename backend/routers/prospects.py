@@ -12,14 +12,23 @@ from backend.core.config import settings
 from backend.core.database import get_db
 from backend.core.security import get_current_user
 from backend.models.document_prospect import DocumentProspect
+from backend.models.facture_analyse import FactureAnalyse
 from backend.models.prospect import Prospect
 from backend.models.user import User
 from backend.schemas.client import ClientOut
 from backend.schemas.document_prospect import DocumentProspectOut
 from backend.schemas.dossier import EnvoiLienClient
+from backend.schemas.facture import FactureClientOut
 from backend.schemas.historique_action import HistoriqueActionOut
-from backend.schemas.prospect import ProspectCreate, ProspectOut, ProspectUpdate, ScoreProspectOut
+from backend.schemas.prospect import (
+    ContacterTelephoneIn,
+    ProspectCreate,
+    ProspectOut,
+    ProspectUpdate,
+    ScoreProspectOut,
+)
 from backend.services import audit_engine, notification_engine, prospect_scoring, reference_engine, token_engine
+from backend.services.ia_conseil_bridge import obtenir_ou_creer_client_conseil
 from backend.services.prospect_conversion import ProspectDejaConverti, convertir_prospect, obtenir_ou_creer_client_miroir
 from backend.services.storage_engine import StorageError, supprimer_document, url_signee
 
@@ -102,6 +111,23 @@ async def obtenir_client_miroir(
     return client
 
 
+@router.post("/{prospect_id}/ia-conseil-client", response_model=dict)
+async def obtenir_ia_conseil_client(
+    prospect_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Crée (ou réutilise) le ClientConseil IA Conseil rattaché à ce prospect —
+    utilisé par l'étape "Trame" du diagnostic pour pouvoir lancer des sessions
+    de trame adaptative (voir backend/services/ia_conseil_bridge.py)."""
+    prospect = await db.get(Prospect, prospect_id)
+    if prospect is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Prospect introuvable.")
+    client_conseil = await obtenir_ou_creer_client_conseil(db, prospect, "prospect", conseiller_id=user.id)
+    await db.commit()
+    return {"id": str(client_conseil.id)}
+
+
 @router.post("/{prospect_id}/token-documents", response_model=dict)
 async def generer_lien_documents_prospect(
     prospect_id: int,
@@ -128,6 +154,19 @@ async def generer_lien_documents_prospect(
             f"et/ou votre test de débit : {url} (valable 14 jours). Votre conseiller."
         ),
     }
+
+
+@router.get("/{prospect_id}/factures-analysees", response_model=list[FactureClientOut])
+async def factures_analysees_prospect(prospect_id: int, db: AsyncSession = Depends(get_db)):
+    """Analyses de factures (télécom/énergie/assurance) déclenchées
+    automatiquement à l'upload d'une facture par le prospect via son lien de
+    collecte de documents (voir backend/routers/portail_public.py)."""
+    result = await db.execute(
+        select(FactureAnalyse)
+        .where(FactureAnalyse.prospect_id == prospect_id)
+        .order_by(FactureAnalyse.id.desc())
+    )
+    return result.scalars().all()
 
 
 @router.get("/{prospect_id}/documents", response_model=list[DocumentProspectOut])
@@ -291,6 +330,50 @@ async def relance_effectuee(
     prospect.date_relance = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
     await db.commit()
     await db.refresh(prospect)
+
+    dernier_contact = await prospect_scoring.dernier_contact(db, prospect_id)
+    prospect.score = prospect_scoring.calculer_score(prospect, dernier_contact)
+    prospect.dernier_contact = prospect_scoring.dernier_contact_affiche(prospect, dernier_contact)
+    return prospect
+
+
+@router.post("/{prospect_id}/contacter-telephone", response_model=ProspectOut)
+async def contacter_telephone(
+    prospect_id: int,
+    payload: ContacterTelephoneIn,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Journalise un appel téléphonique passé au prospect et programme la
+    prochaine relance à +7 jours (même logique que /relance-effectuee).
+    Si le prospect n'a pas répondu, un SMS et/ou un email lui est envoyé pour
+    l'informer que nous avons essayé de le joindre."""
+    prospect = await db.get(Prospect, prospect_id)
+    if prospect is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Prospect introuvable.")
+
+    action = "Appel téléphonique (répondu)" if payload.repondu else "Appel téléphonique (sans réponse)"
+    await audit_engine.enregistrer_action(
+        db, entite_type="prospect", entite_id=prospect_id, action=action, auteur=user.nom_complet,
+    )
+    prospect.date_relance = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+    await db.commit()
+    await db.refresh(prospect)
+
+    if not payload.repondu:
+        prenom = prospect.prenom or ""
+        message = (
+            f"Bonjour {prenom}, nous avons essayé de vous joindre par téléphone concernant "
+            f"votre demande. Nous vous rappellerons prochainement. Votre conseiller IA Conseil."
+        )
+        if prospect.telephone:
+            notification_engine.envoyer_sms(prospect.telephone, message)
+        if prospect.email:
+            notification_engine.envoyer_email(
+                prospect.email,
+                "Nous avons essayé de vous joindre",
+                f"<p>Bonjour {prenom},</p><p>{message}</p>",
+            )
 
     dernier_contact = await prospect_scoring.dernier_contact(db, prospect_id)
     prospect.score = prospect_scoring.calculer_score(prospect, dernier_contact)

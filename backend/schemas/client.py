@@ -16,6 +16,8 @@ class ClientBase(BaseModel):
     operateur_actuel: str | None = None
     techno: str | None = None
     data_go: str | None = None
+    roaming_europe: str | None = None
+    sensibilite_prix: str | None = None
     offre_actuelle: str | None = None
     cout_mensuel_actuel: float | None = None
     satisfaction_reseau: str | None = None

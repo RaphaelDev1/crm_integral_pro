@@ -4,11 +4,14 @@
 #  création de table n'a lieu au démarrage.
 # ==============================================================================
 import sentry_sdk
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi.errors import RateLimitExceeded
 
 from backend.core.config import settings
 from backend.core.logging import configurer_logging
+from backend.core.rate_limit import limiter
 from backend.routers import (
     admin,
     alertes_offres,
@@ -19,11 +22,18 @@ from backend.routers import (
     comparaisons_offres,
     contrats,
     dashboard,
+    dashboard_utm,
     demarches,
     dossiers,
     factures,
     geo,
     honoraires,
+    ia_conseil_catalogue,
+    ia_conseil_clients,
+    ia_conseil_dashboard,
+    ia_conseil_sessions,
+    ia_conseil_souscriptions,
+    leads_public,
     mandats,
     notifications,
     offres,
@@ -43,6 +53,16 @@ if settings.sentry_dsn:
     sentry_sdk.init(dsn=settings.sentry_dsn, environment=settings.app_env, traces_sample_rate=0.1)
 
 app = FastAPI(title="IA Conseil — API", version="0.2.0")
+
+# Rate limiting (slowapi) — landing publique /economiser (backend/routers/leads_public.py)
+app.state.limiter = limiter
+
+
+@app.exception_handler(RateLimitExceeded)
+async def _gerer_depassement_rate_limit(request: Request, exc: RateLimitExceeded):
+    message = "Quota journalier atteint." if "day" in str(exc.detail) else "Trop de requêtes, réessayez dans 1 minute."
+    return JSONResponse(status_code=429, content={"detail": message})
+
 
 # CORS — autoriser le portail Next.js
 origines_autorisees = [
@@ -78,12 +98,23 @@ app.include_router(offres.router)
 app.include_router(veille.router)
 app.include_router(parametres.router)
 app.include_router(dashboard.router)
+app.include_router(dashboard_utm.router)
 app.include_router(notifications.router)
 app.include_router(users.router)
 app.include_router(geo.router)
 
+# Sous-système "IA Conseil" — trame adaptative + recommandation, préfixe
+# /api/v1, isolé du CRM existant ci-dessus (voir PLAN_IMPLEMENTATION_4_PHASES.md).
+app.include_router(ia_conseil_sessions.router)
+app.include_router(ia_conseil_catalogue.router)
+app.include_router(ia_conseil_catalogue.admin_router)
+app.include_router(ia_conseil_clients.router)
+app.include_router(ia_conseil_souscriptions.router)
+app.include_router(ia_conseil_dashboard.router)
+
 # Routers publics
 app.include_router(portail_public.router)
+app.include_router(leads_public.router)
 app.include_router(speedtest_backend.router)
 app.include_router(stockage_local.router)
 app.include_router(webhooks.router)

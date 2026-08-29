@@ -4,6 +4,29 @@
  */
 
 export interface paths {
+    "/admin/donnees-test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Purger Donnees Test
+         * @description Supprime TOUS les prospects et clients (et leurs dépendances : dossiers,
+         *     mandats, documents, factures...), fichiers de stockage inclus — outil de
+         *     dev/test pour désencombrer la base, voir purge_test_data.py. Irréversible,
+         *     bloqué en production.
+         */
+        delete: operations["purger_donnees_test_admin_donnees_test_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/alertes-offres": {
         parameters: {
             query?: never;
@@ -332,6 +355,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/clients/{client_id}/documents/{document_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Supprimer Document Client
+         * @description Supprime un document transmis par erreur (mauvais fichier, doublon) —
+         *     le conseiller peut alors renvoyer le lien de collecte du dossier.
+         */
+        delete: operations["supprimer_document_client_clients__client_id__documents__document_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/clients/{client_id}/documents/{document_id}/statut": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Valider Document Client
+         * @description Validation/rejet manuel d'un document par le conseiller, en plus de la
+         *     validation automatique KYC. Un rejet crée un signalement (notification
+         *     in-app) pour le conseiller responsable du dossier le plus récent du client.
+         */
+        patch: operations["valider_document_client_clients__client_id__documents__document_id__statut_patch"];
+        trace?: never;
+    };
     "/clients/{client_id}/historique": {
         parameters: {
             query?: never;
@@ -402,11 +468,40 @@ export interface paths {
         };
         /** Obtenir Client */
         get: operations["obtenir_client_clients__client_id__get"];
-        /** Maj Client */
+        /**
+         * Maj Client
+         * @description Réservé aux Admin : une fois une fiche client enregistrée, le conseiller
+         *     ne peut plus modifier ses informations (voir clients/[id]/page.tsx, champs
+         *     grisés) — seule la relance (POST /clients/{id}/relance) reste ouverte au
+         *     conseiller propriétaire. `ref` est immuable même pour un Admin (numéro de
+         *     dossier interne, ne doit plus bouger une fois la fiche créée).
+         */
         put: operations["maj_client_clients__client_id__put"];
         post?: never;
         /** Supprimer Client */
         delete: operations["supprimer_client_clients__client_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/clients/{client_id}/relance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Programmer Relance
+         * @description Programmer/mettre à jour la relance reste ouvert au conseiller
+         *     propriétaire (et à l'Admin) même après verrouillage de la fiche — c'est le
+         *     suivi courant du client, distinct de la modification de ses informations.
+         */
+        post: operations["programmer_relance_clients__client_id__relance_post"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -476,7 +571,12 @@ export interface paths {
         };
         /** Obtenir Prospect */
         get: operations["obtenir_prospect_prospects__prospect_id__get"];
-        /** Maj Prospect */
+        /**
+         * Maj Prospect
+         * @description `ref` est immuable une fois le prospect créé (numéro de dossier interne,
+         *     ne doit plus bouger) — silencieusement ignoré s'il est présent dans le
+         *     payload, plutôt que de rejeter toute la requête.
+         */
         put: operations["maj_prospect_prospects__prospect_id__put"];
         post?: never;
         /** Supprimer Prospect */
@@ -514,6 +614,30 @@ export interface paths {
         put?: never;
         /** Convertir En Client */
         post: operations["convertir_en_client_prospects__prospect_id__convertir_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/prospects/{prospect_id}/client-miroir": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Obtenir Client Miroir
+         * @description Crée (ou réutilise) le client "miroir" du prospect sans finaliser la
+         *     conversion — utilisé par le diagnostic pour créer un dossier avant que le
+         *     prospect ne soit officiellement converti (la conversion se déclenche
+         *     désormais à la signature du mandat, voir mandat_engine.traiter_mandat_signe,
+         *     pas à la génération de la restitution).
+         */
+        post: operations["obtenir_client_miroir_prospects__prospect_id__client_miroir_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -558,6 +682,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/prospects/{prospect_id}/documents/{document_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Supprimer Document Prospect
+         * @description Supprime un document transmis par erreur (mauvais fichier) avant
+         *     conversion — le conseiller peut alors renvoyer le lien de collecte.
+         */
+        delete: operations["supprimer_document_prospect_prospects__prospect_id__documents__document_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/prospects/{prospect_id}/historique": {
         parameters: {
             query?: never;
@@ -591,6 +736,28 @@ export interface paths {
          *     email) — automatise l'étape manuelle « copier le lien puis le transmettre ».
          */
         post: operations["envoyer_lien_documents_prospect_prospects__prospect_id__envoyer_lien_documents_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/prospects/{prospect_id}/relance-effectuee": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Relance Effectuee
+         * @description Marque une relance comme faite aujourd'hui : journalise l'action (source
+         *     du `dernier_contact` calculé, voir prospect_scoring.dernier_contact) et
+         *     programme la prochaine relance à +7 jours.
+         */
+        post: operations["relance_effectuee_prospects__prospect_id__relance_effectuee_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -684,6 +851,31 @@ export interface paths {
          *     servie au client via /portail/{token}/suivi).
          */
         get: operations["obtenir_timeline_dossier_dossiers__dossier_id__timeline_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dossiers/{dossier_id}/comparaison": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Obtenir Comparaison Dossier
+         * @description Dernière comparaison d'offres (voir ComparaisonOffre.offres_comparees)
+         *     faite pour le client de ce dossier, dans le même univers — permet à la
+         *     fiche dossier de proposer de choisir une autre offre parmi celles
+         *     comparées lors du diagnostic. Filtre sur `univers` en plus de `client_id`
+         *     (contrairement à `obtenir_pdf_restitution` ci-dessous) pour ne pas
+         *     remonter la comparaison d'un autre univers si le client en a plusieurs.
+         */
+        get: operations["obtenir_comparaison_dossier_dossiers__dossier_id__comparaison_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -832,6 +1024,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/dossiers/{dossier_id}/mandat-honoraires/pdf": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Telecharger Mandat Honoraires
+         * @description Génère à la volée le PDF du mandat d'honoraires (pas de stockage S3,
+         *     comme /pdf-restitution — reste rapide, pas de dépendance Celery).
+         */
+        get: operations["telecharger_mandat_honoraires_dossiers__dossier_id__mandat_honoraires_pdf_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dossiers/{dossier_id}/mandat-honoraires/envoyer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Envoyer Mandat Honoraires
+         * @description Envoie le mandat d'honoraires au client par email (PDF en pièce
+         *     jointe) ou par SMS (notification texte — pas de pièce jointe possible par
+         *     ce canal).
+         */
+        post: operations["envoyer_mandat_honoraires_dossiers__dossier_id__mandat_honoraires_envoyer_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/honoraires": {
         parameters: {
             query?: never;
@@ -843,6 +1078,64 @@ export interface paths {
         get: operations["lister_mandats_honoraires_honoraires_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/honoraires/taux-defaut": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Obtenir Taux Honoraires Defaut */
+        get: operations["obtenir_taux_honoraires_defaut_honoraires_taux_defaut_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dossiers/{dossier_id}/mandat": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Obtenir Mandat */
+        get: operations["obtenir_mandat_dossiers__dossier_id__mandat_get"];
+        put?: never;
+        /** Envoyer Mandat */
+        post: operations["envoyer_mandat_dossiers__dossier_id__mandat_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/mandats/{mandat_id}/marquer-signe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Marquer Mandat Signe
+         * @description Fallback manuel : marque le mandat signé sans passer par Yousign — tant
+         *     que la clé API n'est pas configurée, ou pour rattraper une signature
+         *     obtenue hors-ligne. Déclenche la même suite que le webhook Yousign
+         *     (progression du dossier, conversion prospect→client, relance).
+         */
+        post: operations["marquer_mandat_signe_mandats__mandat_id__marquer_signe_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1220,6 +1513,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/notifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Lister Notifications
+         * @description Les miennes, non lues en premier puis les plus récentes.
+         */
+        get: operations["lister_notifications_notifications_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/notifications/{notification_id}/lu": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Marquer Lu */
+        post: operations["marquer_lu_notifications__notification_id__lu_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/users": {
         parameters: {
             query?: never;
@@ -1248,6 +1578,29 @@ export interface paths {
         get?: never;
         /** Maj Utilisateur */
         put: operations["maj_utilisateur_users__user_id__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/geo/communes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Communes Par Code Postal
+         * @description Retourne les communes correspondant à un code postal (API officielle
+         *     gratuite geo.api.gouv.fr — un code postal peut couvrir plusieurs communes).
+         *     Ne lève jamais : une erreur réseau/timeout renvoie une liste vide plutôt
+         *     que de casser le formulaire du conseiller.
+         */
+        get: operations["communes_par_code_postal_geo_communes_get"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -1350,6 +1703,100 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/public/leads/capture": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Capturer Lead
+         * @description Capture un lead depuis la landing publique.
+         *
+         *     Étapes :
+         *       1. rate limit IP (slowapi) + honeypot silencieux + captcha Turnstile
+         *       2. estimation en temps réel (moteur estimation_publique) + éligibilité
+         *          fibre niveau commune (si adresse sélectionnée)
+         *       3. persistance dans `prospects` (origine="Landing <source>", statut="À relancer")
+         *       4. tâches asynchrones (Slack + SMS immédiats, vérif téléphone Twilio,
+         *          détection FAI par IP — email récap différé en J+1, voir tasks.py)
+         */
+        post: operations["capturer_lead_public_leads_capture_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/public/leads/adresse-autocomplete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Adresse Autocomplete
+         * @description Proxy vers l'API Adresse (Base Adresse Nationale, api-adresse.data.gouv.fr) —
+         *     proxifié côté backend car le support CORS de l'API n'est pas garanti pour
+         *     des appels directs depuis le navigateur. Sert l'autocomplétion d'adresse
+         *     de l'étape 3 du formulaire (P2.1).
+         */
+        get: operations["adresse_autocomplete_public_leads_adresse_autocomplete_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/public/leads/detecter-fai": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Detecter Fai
+         * @description Devine l'opérateur télécom actuel du visiteur à partir de son IP
+         *     (ipapi.co) — sert à pré-remplir (de façon éditable) le champ "Opérateur
+         *     actuel" à l'étape 2 du formulaire (P2.3).
+         */
+        get: operations["detecter_fai_public_leads_detecter_fai_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/public/leads/methodologie": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Methodologie
+         * @description Sert de justification légale pour la mention "jusqu'à X€*" affichée en pub.
+         *     Retourne aussi la liste des catégories calibrées sur BDD réelle vs fallback marché.
+         */
+        get: operations["methodologie_public_leads_methodologie_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/speedtest-backend/garbage": {
         parameters: {
             query?: never;
@@ -1427,6 +1874,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/stockage-local/{cle}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Obtenir Fichier Local */
+        get: operations["obtenir_fichier_local_stockage_local__cle__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/webhooks/yousign": {
         parameters: {
             query?: never;
@@ -1487,6 +1951,37 @@ export interface components {
              */
             token_type: string;
         };
+        /**
+         * AdresseSelection
+         * @description Adresse choisie dans l'autocomplétion BAN (étape 3) — sert à interroger
+         *     l'éligibilité fibre par commune (P2.1). Facultatif : le prospect peut
+         *     ignorer l'autocomplétion et ne saisir que le code postal.
+         */
+        AdresseSelection: {
+            /** Label */
+            label?: string | null;
+            /** Code Insee */
+            code_insee?: string | null;
+            /** Latitude */
+            latitude?: number | null;
+            /** Longitude */
+            longitude?: number | null;
+        };
+        /** AdresseSuggestionOut */
+        AdresseSuggestionOut: {
+            /** Label */
+            label: string;
+            /** Code Postal */
+            code_postal?: string | null;
+            /** Ville */
+            ville?: string | null;
+            /** Code Insee */
+            code_insee?: string | null;
+            /** Latitude */
+            latitude?: number | null;
+            /** Longitude */
+            longitude?: number | null;
+        };
         /** AlerteOffreOut */
         AlerteOffreOut: {
             /** Id */
@@ -1542,6 +2037,8 @@ export interface components {
         BlocRecommandationOut: {
             /** Titre */
             titre: string;
+            /** Categorie */
+            categorie: string;
             /** Offres */
             offres: components["schemas"]["OffreCompareeOut"][];
         };
@@ -1714,7 +2211,7 @@ export interface components {
              * @default 0
              */
             nb_dossiers: number;
-            mandat_representation?: components["schemas"]["MandatOut"] | null;
+            mandat_representation?: components["schemas"]["backend__schemas__mandat_honoraires__MandatOut"] | null;
             mandat_honoraires?: components["schemas"]["MandatHonorairesOut"] | null;
             /**
              * Documents
@@ -1742,6 +2239,10 @@ export interface components {
             adresse?: string | null;
             /** Type Client */
             type_client?: string | null;
+            /** Raison Sociale */
+            raison_sociale?: string | null;
+            /** Effectif */
+            effectif?: string | null;
             /** Operateur Actuel */
             operateur_actuel?: string | null;
             /** Techno */
@@ -1756,6 +2257,8 @@ export interface components {
             satisfaction_reseau?: string | null;
             /** Veut Rester */
             veut_rester?: string | null;
+            /** Defaut Technique */
+            defaut_technique?: string | null;
             /** Speed Down */
             speed_down?: number | null;
             /** Speed Up */
@@ -1795,6 +2298,10 @@ export interface components {
             adresse?: string | null;
             /** Type Client */
             type_client?: string | null;
+            /** Raison Sociale */
+            raison_sociale?: string | null;
+            /** Effectif */
+            effectif?: string | null;
             /** Operateur Actuel */
             operateur_actuel?: string | null;
             /** Techno */
@@ -1809,6 +2316,8 @@ export interface components {
             satisfaction_reseau?: string | null;
             /** Veut Rester */
             veut_rester?: string | null;
+            /** Defaut Technique */
+            defaut_technique?: string | null;
             /** Speed Down */
             speed_down?: number | null;
             /** Speed Up */
@@ -1833,6 +2342,8 @@ export interface components {
             date_creation?: string | null;
             /** Cree Par */
             cree_par?: string | null;
+            /** Conseiller Id */
+            conseiller_id?: number | null;
         };
         /** ClientUpdate */
         ClientUpdate: {
@@ -1854,6 +2365,10 @@ export interface components {
             adresse?: string | null;
             /** Type Client */
             type_client?: string | null;
+            /** Raison Sociale */
+            raison_sociale?: string | null;
+            /** Effectif */
+            effectif?: string | null;
             /** Operateur Actuel */
             operateur_actuel?: string | null;
             /** Techno */
@@ -1868,6 +2383,8 @@ export interface components {
             satisfaction_reseau?: string | null;
             /** Veut Rester */
             veut_rester?: string | null;
+            /** Defaut Technique */
+            defaut_technique?: string | null;
             /** Speed Down */
             speed_down?: number | null;
             /** Speed Up */
@@ -2144,6 +2661,31 @@ export interface components {
             /** Requises Non Creees */
             requises_non_creees: components["schemas"]["DemarcheRequiseOut"][];
         };
+        /**
+         * DepensesActuelles
+         * @description Chaque champ est facultatif — le prospect peut ne remplir qu'une partie
+         *     (télécom seul, énergie seule, mix des trois univers…). Bornes larges pour
+         *     éviter tout rejet accidentel, mais suffisamment serrées pour bloquer un
+         *     payload aberrant.
+         */
+        DepensesActuelles: {
+            /** Mobile */
+            mobile?: number | null;
+            /** Box Fibre */
+            box_fibre?: number | null;
+            /** Pack Box Mobile */
+            pack_box_mobile?: number | null;
+            /** Electricite */
+            electricite?: number | null;
+            /** Gaz */
+            gaz?: number | null;
+            /** Assurance Auto */
+            assurance_auto?: number | null;
+            /** Assurance Habitation */
+            assurance_habitation?: number | null;
+            /** Assurance Sante */
+            assurance_sante?: number | null;
+        };
         /** DetailScoreOut */
         DetailScoreOut: {
             /** Facteur */
@@ -2152,6 +2694,11 @@ export interface components {
             poids: number;
             /** Valeur */
             valeur: string;
+        };
+        /** DetectionFaiOut */
+        DetectionFaiOut: {
+            /** Operateur Probable */
+            operateur_probable?: string | null;
         };
         /**
          * DocumentDemandeOut
@@ -2210,6 +2757,20 @@ export interface components {
             /** Url */
             url: string;
         };
+        /**
+         * DocumentStatutUpdate
+         * @description Validation/rejet manuel d'un document par le conseiller (en plus de la
+         *     validation automatique KYC — voir backend/services/kyc_engine.py).
+         */
+        DocumentStatutUpdate: {
+            /**
+             * Statut Kyc
+             * @enum {string}
+             */
+            statut_kyc: "valide" | "rejete";
+            /** Motif Rejet */
+            motif_rejet?: string | null;
+        };
         /** DossierCreate */
         DossierCreate: {
             /** Univers */
@@ -2223,6 +2784,11 @@ export interface components {
              * @default 0
              */
             economie_annuelle_estimee: number;
+            /**
+             * Frais Annexes Cible
+             * @default 0
+             */
+            frais_annexes_cible: number;
             /** Client Id */
             client_id: number;
             /**
@@ -2244,6 +2810,11 @@ export interface components {
              * @default 0
              */
             economie_annuelle_estimee: number;
+            /**
+             * Frais Annexes Cible
+             * @default 0
+             */
+            frais_annexes_cible: number;
             /** Id */
             id: number;
             /** Client Id */
@@ -2291,6 +2862,13 @@ export interface components {
             conseiller_responsable?: string | null;
             /** Notes Workflow */
             notes_workflow?: unknown[] | null;
+            /**
+             * Documents Requis
+             * @default []
+             */
+            documents_requis: string[];
+            /** Offre Nom */
+            offre_nom?: string | null;
         };
         /** DossierUpdate */
         DossierUpdate: {
@@ -2300,6 +2878,8 @@ export interface components {
             offre_cible_id?: number | null;
             /** Economie Annuelle Estimee */
             economie_annuelle_estimee?: number | null;
+            /** Frais Annexes Cible */
+            frais_annexes_cible?: number | null;
             /** Reference Fournisseur */
             reference_fournisseur?: string | null;
             /** Date Activation Prevue */
@@ -2316,6 +2896,42 @@ export interface components {
              * @enum {string}
              */
             canal: "sms" | "email";
+        };
+        /** EnvoiMandatHonoraires */
+        EnvoiMandatHonoraires: {
+            /** Canal */
+            canal: string;
+        };
+        /** EnvoiMandatHonorairesResultat */
+        EnvoiMandatHonorairesResultat: {
+            /**
+             * Email Envoye
+             * @default false
+             */
+            email_envoye: boolean;
+            /**
+             * Sms Envoye
+             * @default false
+             */
+            sms_envoye: boolean;
+        };
+        /** EstimationOut */
+        EstimationOut: {
+            /** Lignes */
+            lignes: components["schemas"]["LigneEstimationOut"][];
+            /** Economie Annuelle Totale Basse */
+            economie_annuelle_totale_basse: number;
+            /** Economie Annuelle Totale Haute */
+            economie_annuelle_totale_haute: number;
+            /** Economie Annuelle Totale Typique */
+            economie_annuelle_totale_typique: number;
+            /**
+             * Methodologie Url
+             * @default /economiser/methodologie
+             */
+            methodologie_url: string;
+            /** Calculee Le */
+            calculee_le: string;
         };
         /** EtapeTimeline */
         EtapeTimeline: {
@@ -2394,6 +3010,19 @@ export interface components {
             /** Analyse Par */
             analyse_par?: string | null;
         };
+        /**
+         * FibreOut
+         * @description Résultat d'éligibilité fibre — au niveau commune (voir
+         *     backend/services/eligibilite_fibre.py), jamais au niveau adresse exacte.
+         *     `disponible`/`taux_couverture` restent None si le code INSEE est absent,
+         *     si le service tiers est désactivé, ou en cas d'échec/timeout.
+         */
+        FibreOut: {
+            /** Disponible */
+            disponible?: boolean | null;
+            /** Taux Couverture */
+            taux_couverture?: number | null;
+        };
         /** ForgotPasswordRequest */
         ForgotPasswordRequest: {
             /** Username */
@@ -2443,6 +3072,71 @@ export interface components {
             /** Dossiers En Cours */
             dossiers_en_cours: number;
         };
+        /** LeadEstimationRequest */
+        LeadEstimationRequest: {
+            /** Prenom */
+            prenom: string;
+            /** Telephone */
+            telephone: string;
+            /** Email */
+            email?: string | null;
+            /** Code Postal */
+            code_postal?: string | null;
+            /** Ville */
+            ville?: string | null;
+            /** Adresse */
+            adresse?: string | null;
+            /** Operateur Actuel */
+            operateur_actuel?: string | null;
+            /** Age */
+            age?: number | null;
+            depenses: components["schemas"]["DepensesActuelles"];
+            /** Consentement Rgpd */
+            consentement_rgpd: boolean;
+            /**
+             * Consentement Demarchage
+             * @default false
+             */
+            consentement_demarchage: boolean;
+            utm?: components["schemas"]["UTM"];
+            adresse_selection?: components["schemas"]["AdresseSelection"] | null;
+            /** Turnstile Token */
+            turnstile_token?: string | null;
+            /** Hp Field */
+            hp_field?: string | null;
+        };
+        /** LeadEstimationResponse */
+        LeadEstimationResponse: {
+            /** Ok */
+            ok: boolean;
+            /** Ref */
+            ref: string;
+            estimation: components["schemas"]["EstimationOut"];
+            /** Message */
+            message: string;
+            fibre?: components["schemas"]["FibreOut"];
+        };
+        /** LigneEstimationOut */
+        LigneEstimationOut: {
+            /** Categorie */
+            categorie: string;
+            /** Cout Actuel Mensuel */
+            cout_actuel_mensuel: number;
+            /** Notre Moyenne Mensuel */
+            notre_moyenne_mensuel: number;
+            /** Economie Mensuelle Basse */
+            economie_mensuelle_basse: number;
+            /** Economie Mensuelle Haute */
+            economie_mensuelle_haute: number;
+            /** Economie Annuelle Typique */
+            economie_annuelle_typique: number;
+            /** Source */
+            source: string;
+            /** Echantillon */
+            echantillon: number;
+            /** Tranche Age Utilisee */
+            tranche_age_utilisee?: string | null;
+        };
         /** LoginRequest */
         LoginRequest: {
             /** Username */
@@ -2459,7 +3153,7 @@ export interface components {
             montant: number;
             /**
              * Taux
-             * @default 0
+             * @default 20
              */
             taux: number;
         };
@@ -2488,34 +3182,46 @@ export interface components {
             /** Date Creation */
             date_creation?: string | null;
         };
-        /**
-         * MandatOut
-         * @description Vue minimale du mandat de représentation (Yousign) pour le briefing
-         *     conseiller — le modèle `Mandat` n'a pas d'autre router exposé à ce jour.
-         */
-        MandatOut: {
-            /** Id */
-            id: number;
-            /** Statut */
-            statut: string;
-            /** Pdf Url */
-            pdf_url?: string | null;
-            /** Pdf Signe Url */
-            pdf_signe_url?: string | null;
-            /** Date Envoi */
-            date_envoi?: string | null;
-            /** Date Signature */
-            date_signature?: string | null;
+        /** MarquerMandatSigne */
+        MarquerMandatSigne: {
+            /** Signataire */
+            signataire: string;
         };
         /** MarquerSigneHonoraires */
         MarquerSigneHonoraires: {
             /** Signataire */
             signataire: string;
         };
+        /** MethodologieOut */
+        MethodologieOut: {
+            /** Principe */
+            principe: string;
+            /** Fourchette */
+            fourchette: string;
+            /** Categories Calibrees Base Reelle */
+            categories_calibrees_base_reelle: string[];
+            /** Categories En Fallback Marche */
+            categories_en_fallback_marche: string[];
+            /** Derniere Maj */
+            derniere_maj?: string | null;
+        };
         /** NoteDossierCreate */
         NoteDossierCreate: {
             /** Texte */
             texte: string;
+        };
+        /** NotificationOut */
+        NotificationOut: {
+            /** Id */
+            id: number;
+            /** Dossier Id */
+            dossier_id: number;
+            /** Message */
+            message: string;
+            /** Lu */
+            lu: boolean;
+            /** Date Creation */
+            date_creation?: string | null;
         };
         /** OffreCompareeItem */
         OffreCompareeItem: {
@@ -2529,6 +3235,13 @@ export interface components {
             prix_mensuel?: number | null;
             /** Economie Mensuelle */
             economie_mensuelle?: number | null;
+            /** Frais Annexes Total */
+            frais_annexes_total?: number | null;
+            /**
+             * Comparable
+             * @default true
+             */
+            comparable: boolean;
         };
         /** OffreCompareeOut */
         OffreCompareeOut: {
@@ -2546,6 +3259,14 @@ export interface components {
             prix_mensuel: number;
             /** Frais Activation */
             frais_activation: number;
+            /** Frais Sim */
+            frais_sim: number;
+            /** Frais Resiliation */
+            frais_resiliation: number;
+            /** Frais Portabilite */
+            frais_portabilite: number;
+            /** Frais Annexes Total */
+            frais_annexes_total: number;
             /** Engagement */
             engagement: number;
             /** Caracteristiques */
@@ -2558,6 +3279,8 @@ export interface components {
             economie_mensuelle: number;
             /** Economie Annuelle */
             economie_annuelle: number;
+            /** Economie Annee 1 */
+            economie_annee_1: number;
             /** Cout 1 An */
             cout_1_an: number;
             /** Url Souscription */
@@ -2650,6 +3373,10 @@ export interface components {
             adresse?: string | null;
             /** Type Client */
             type_client?: string | null;
+            /** Raison Sociale */
+            raison_sociale?: string | null;
+            /** Effectif */
+            effectif?: string | null;
             /** Univers Interesse */
             univers_interesse?: string | null;
             /** Service Principal */
@@ -2668,6 +3395,8 @@ export interface components {
             satisfaction_reseau?: string | null;
             /** Veut Rester */
             veut_rester?: string | null;
+            /** Defaut Technique */
+            defaut_technique?: string | null;
             /** Speed Down */
             speed_down?: number | null;
             /** Speed Up */
@@ -2696,6 +3425,22 @@ export interface components {
             score?: number | null;
             /** Origine */
             origine?: string | null;
+            /** Code Insee */
+            code_insee?: string | null;
+            /** Latitude */
+            latitude?: number | null;
+            /** Longitude */
+            longitude?: number | null;
+            /** Fibre Disponible */
+            fibre_disponible?: boolean | null;
+            /** Fibre Taux Couverture */
+            fibre_taux_couverture?: number | null;
+            /** Telephone Verifie */
+            telephone_verifie?: boolean | null;
+            /** Telephone Type Ligne */
+            telephone_type_ligne?: string | null;
+            /** Operateur Detecte Ip */
+            operateur_detecte_ip?: string | null;
         };
         /** ProspectOut */
         ProspectOut: {
@@ -2717,6 +3462,10 @@ export interface components {
             adresse?: string | null;
             /** Type Client */
             type_client?: string | null;
+            /** Raison Sociale */
+            raison_sociale?: string | null;
+            /** Effectif */
+            effectif?: string | null;
             /** Univers Interesse */
             univers_interesse?: string | null;
             /** Service Principal */
@@ -2735,6 +3484,8 @@ export interface components {
             satisfaction_reseau?: string | null;
             /** Veut Rester */
             veut_rester?: string | null;
+            /** Defaut Technique */
+            defaut_technique?: string | null;
             /** Speed Down */
             speed_down?: number | null;
             /** Speed Up */
@@ -2763,6 +3514,22 @@ export interface components {
             score?: number | null;
             /** Origine */
             origine?: string | null;
+            /** Code Insee */
+            code_insee?: string | null;
+            /** Latitude */
+            latitude?: number | null;
+            /** Longitude */
+            longitude?: number | null;
+            /** Fibre Disponible */
+            fibre_disponible?: boolean | null;
+            /** Fibre Taux Couverture */
+            fibre_taux_couverture?: number | null;
+            /** Telephone Verifie */
+            telephone_verifie?: boolean | null;
+            /** Telephone Type Ligne */
+            telephone_type_ligne?: string | null;
+            /** Operateur Detecte Ip */
+            operateur_detecte_ip?: string | null;
             /** Id */
             id: number;
             /** Date Creation */
@@ -2773,6 +3540,8 @@ export interface components {
             client_id?: number | null;
             /** Converti At */
             converti_at?: string | null;
+            /** Dernier Contact */
+            dernier_contact?: string | null;
         };
         /** ProspectUpdate */
         ProspectUpdate: {
@@ -2794,6 +3563,10 @@ export interface components {
             adresse?: string | null;
             /** Type Client */
             type_client?: string | null;
+            /** Raison Sociale */
+            raison_sociale?: string | null;
+            /** Effectif */
+            effectif?: string | null;
             /** Univers Interesse */
             univers_interesse?: string | null;
             /** Service Principal */
@@ -2812,6 +3585,8 @@ export interface components {
             satisfaction_reseau?: string | null;
             /** Veut Rester */
             veut_rester?: string | null;
+            /** Defaut Technique */
+            defaut_technique?: string | null;
             /** Speed Down */
             speed_down?: number | null;
             /** Speed Up */
@@ -2840,6 +3615,31 @@ export interface components {
             score?: number | null;
             /** Origine */
             origine?: string | null;
+            /** Code Insee */
+            code_insee?: string | null;
+            /** Latitude */
+            latitude?: number | null;
+            /** Longitude */
+            longitude?: number | null;
+            /** Fibre Disponible */
+            fibre_disponible?: boolean | null;
+            /** Fibre Taux Couverture */
+            fibre_taux_couverture?: number | null;
+            /** Telephone Verifie */
+            telephone_verifie?: boolean | null;
+            /** Telephone Type Ligne */
+            telephone_type_ligne?: string | null;
+            /** Operateur Detecte Ip */
+            operateur_detecte_ip?: string | null;
+        };
+        /** PurgeDonneesTestOut */
+        PurgeDonneesTestOut: {
+            /** Clients Supprimes */
+            clients_supprimes: number;
+            /** Prospects Supprimes */
+            prospects_supprimes: number;
+            /** Fichiers Supprimes */
+            fichiers_supprimes: number;
         };
         /** RecommandationsOut */
         RecommandationsOut: {
@@ -2864,6 +3664,13 @@ export interface components {
         RefreshRequest: {
             /** Refresh Token */
             refresh_token: string;
+        };
+        /** RelanceUpdate */
+        RelanceUpdate: {
+            /** Date Relance */
+            date_relance?: string | null;
+            /** Statut Relance */
+            statut_relance?: string | null;
         };
         /** ResetPasswordRequest */
         ResetPasswordRequest: {
@@ -3080,6 +3887,11 @@ export interface components {
              * @default true
              */
             peut_transmettre_speedtest: boolean;
+            /**
+             * Speedtest Fait
+             * @default false
+             */
+            speedtest_fait: boolean;
         };
         /** TokenResponse */
         TokenResponse: {
@@ -3100,6 +3912,23 @@ export interface components {
             nouveau_statut: string;
             /** Commentaire */
             commentaire?: string | null;
+        };
+        /**
+         * UTM
+         * @description Paramètres UTM récupérés depuis la query string de la landing —
+         *     persistés côté prospect pour l'attribution des campagnes.
+         */
+        UTM: {
+            /** Source */
+            source?: string | null;
+            /** Medium */
+            medium?: string | null;
+            /** Campaign */
+            campaign?: string | null;
+            /** Content */
+            content?: string | null;
+            /** Term */
+            term?: string | null;
         };
         /** UploadResultOut */
         UploadResultOut: {
@@ -3127,6 +3956,8 @@ export interface components {
              * @default Conseiller
              */
             role: string;
+            /** Telephone */
+            telephone?: string | null;
         };
         /** UserOut */
         UserOut: {
@@ -3138,6 +3969,8 @@ export interface components {
             nom_complet: string;
             /** Role */
             role: string;
+            /** Telephone */
+            telephone?: string | null;
             /** Actif */
             actif: boolean;
             /** Doit Changer Mdp */
@@ -3149,6 +3982,8 @@ export interface components {
             nom_complet?: string | null;
             /** Role */
             role?: string | null;
+            /** Telephone */
+            telephone?: string | null;
             /** Actif */
             actif?: boolean | null;
             /** Password */
@@ -3195,6 +4030,44 @@ export interface components {
             /** Date Releve */
             date_releve?: string | null;
         };
+        /** MandatOut */
+        backend__schemas__mandat__MandatOut: {
+            /** Id */
+            id: number;
+            /** Client Id */
+            client_id?: number | null;
+            /** Statut */
+            statut: string;
+            /** Notes */
+            notes?: string | null;
+            /** Date Creation */
+            date_creation?: string | null;
+            /** Date Envoi */
+            date_envoi?: string | null;
+            /** Date Signature */
+            date_signature?: string | null;
+            /** Pdf Url */
+            pdf_url?: string | null;
+        };
+        /**
+         * MandatOut
+         * @description Vue minimale du mandat de représentation (Yousign) pour le briefing
+         *     conseiller — le modèle `Mandat` n'a pas d'autre router exposé à ce jour.
+         */
+        backend__schemas__mandat_honoraires__MandatOut: {
+            /** Id */
+            id: number;
+            /** Statut */
+            statut: string;
+            /** Pdf Url */
+            pdf_url?: string | null;
+            /** Pdf Signe Url */
+            pdf_signe_url?: string | null;
+            /** Date Envoi */
+            date_envoi?: string | null;
+            /** Date Signature */
+            date_signature?: string | null;
+        };
     };
     responses: never;
     parameters: never;
@@ -3204,6 +4077,26 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    purger_donnees_test_admin_donnees_test_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PurgeDonneesTestOut"];
+                };
+            };
+        };
+    };
     lister_alertes_alertes_offres_get: {
         parameters: {
             query?: {
@@ -3860,6 +4753,72 @@ export interface operations {
             };
         };
     };
+    supprimer_document_client_clients__client_id__documents__document_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                client_id: number;
+                document_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    valider_document_client_clients__client_id__documents__document_id__statut_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                client_id: number;
+                document_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DocumentStatutUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     historique_client_clients__client_id__historique_get: {
         parameters: {
             query?: never;
@@ -4038,6 +4997,41 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    programmer_relance_clients__client_id__relance_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                client_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RelanceUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClientOut"];
+                };
             };
             /** @description Validation Error */
             422: {
@@ -4419,6 +5413,37 @@ export interface operations {
             };
         };
     };
+    obtenir_client_miroir_prospects__prospect_id__client_miroir_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                prospect_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClientOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     generer_lien_documents_prospect_prospects__prospect_id__token_documents_post: {
         parameters: {
             query?: never;
@@ -4471,6 +5496,36 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["DocumentProspectOut"][];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    supprimer_document_prospect_prospects__prospect_id__documents__document_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                prospect_id: number;
+                document_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
@@ -4538,6 +5593,37 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    relance_effectuee_prospects__prospect_id__relance_effectuee_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                prospect_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProspectOut"];
                 };
             };
             /** @description Validation Error */
@@ -4755,6 +5841,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EtapeTimeline"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    obtenir_comparaison_dossier_dossiers__dossier_id__comparaison_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dossier_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ComparaisonOffreOut"] | null;
                 };
             };
             /** @description Validation Error */
@@ -5038,6 +6155,72 @@ export interface operations {
             };
         };
     };
+    telecharger_mandat_honoraires_dossiers__dossier_id__mandat_honoraires_pdf_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dossier_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    envoyer_mandat_honoraires_dossiers__dossier_id__mandat_honoraires_envoyer_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dossier_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EnvoiMandatHonoraires"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnvoiMandatHonorairesResultat"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     lister_mandats_honoraires_honoraires_get: {
         parameters: {
             query?: never;
@@ -5054,6 +6237,125 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MandatHonorairesOut"][];
+                };
+            };
+        };
+    };
+    obtenir_taux_honoraires_defaut_honoraires_taux_defaut_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    obtenir_mandat_dossiers__dossier_id__mandat_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dossier_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["backend__schemas__mandat__MandatOut"] | null;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    envoyer_mandat_dossiers__dossier_id__mandat_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dossier_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["backend__schemas__mandat__MandatOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    marquer_mandat_signe_mandats__mandat_id__marquer_signe_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mandat_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MarquerMandatSigne"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["backend__schemas__mandat__MandatOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -5831,6 +7133,57 @@ export interface operations {
             };
         };
     };
+    lister_notifications_notifications_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationOut"][];
+                };
+            };
+        };
+    };
+    marquer_lu_notifications__notification_id__lu_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                notification_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     lister_utilisateurs_users_get: {
         parameters: {
             query?: never;
@@ -5906,6 +7259,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UserOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    communes_par_code_postal_geo_communes_get: {
+        parameters: {
+            query: {
+                code_postal: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */
@@ -6089,6 +7475,110 @@ export interface operations {
             };
         };
     };
+    capturer_lead_public_leads_capture_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LeadEstimationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LeadEstimationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    adresse_autocomplete_public_leads_adresse_autocomplete_get: {
+        parameters: {
+            query: {
+                q: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdresseSuggestionOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    detecter_fai_public_leads_detecter_fai_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DetectionFaiOut"];
+                };
+            };
+        };
+    };
+    methodologie_public_leads_methodologie_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MethodologieOut"];
+                };
+            };
+        };
+    };
     garbage_speedtest_backend_garbage_get: {
         parameters: {
             query?: {
@@ -6176,6 +7666,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    obtenir_fichier_local_stockage_local__cle__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cle: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

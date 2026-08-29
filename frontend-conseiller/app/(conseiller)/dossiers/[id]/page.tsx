@@ -168,7 +168,7 @@ function TimelineSection({ dossierId }: { dossierId: number }) {
 }
 
 interface OffreChoisie {
-  offre_id: number;
+  offre_id: number | string;
   nom?: string | null;
   fournisseur?: string | null;
   economie_mensuelle?: number | null;
@@ -185,6 +185,7 @@ function OffreCibleSection({ dossier }: { dossier: import("@/lib/types").Dossier
   const [rechercheOuverte, setRechercheOuverte] = useState(false);
 
   const choisirOffre = (offre: OffreChoisie) => {
+    if (typeof offre.offre_id !== "number") return;
     updateMutation.mutate(
       {
         id: dossier.id,
@@ -232,8 +233,9 @@ function OffreCibleSection({ dossier }: { dossier: import("@/lib/types").Dossier
                   <Button
                     size="sm"
                     variant={active ? "secondary" : "outline"}
-                    disabled={active || updateMutation.isPending}
+                    disabled={active || updateMutation.isPending || typeof offre.offre_id !== "number"}
                     onClick={() => choisirOffre(offre)}
+                    title={typeof offre.offre_id !== "number" ? "Offre IA Conseil — pas de fiche catalogue à cibler" : undefined}
                   >
                     {active ? "Offre visée" : "Choisir"}
                   </Button>

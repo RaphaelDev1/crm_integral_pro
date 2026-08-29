@@ -1,6 +1,6 @@
 "use client";
 
-import { BookOpen, FileSearch, Settings, Trash2, Users as UsersIcon, TrendingDown, type LucideIcon } from "lucide-react";
+import { BookOpen, FileSearch, Settings, Sparkles, Trash2, Users as UsersIcon, TrendingDown, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 
 import { AdminGuard } from "@/components/layout/AdminGuard";
@@ -45,6 +45,12 @@ const SECTIONS: AdminSection[] = [
     icon: BookOpen,
   },
   {
+    href: "/ia-conseil/admin/catalogue",
+    label: "IA Conseil — Catalogue",
+    description: "Offres mobile / box / énergie du sous-système IA Conseil (trame adaptative).",
+    icon: Sparkles,
+  },
+  {
     href: "/admin/donnees-test",
     label: "Données de test",
     description: "Supprimer tous les prospects et clients (et fichiers associés) pour désencombrer la base.",
@@ -56,7 +62,7 @@ export default function AdminPage() {
   return (
     <AdminGuard>
       <div className="space-y-4">
-        <h1 className="text-xl font-bold text-primary">Admin</h1>
+        <h1 className="text-xl font-bold text-primary">Responsable</h1>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {SECTIONS.map(({ href, label, description, icon: Icon }) => (
             <Link key={href} href={href}>

@@ -1,6 +1,6 @@
 "use client";
 
-import { Bell } from "lucide-react";
+import { Bell, Check } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 import {
@@ -24,7 +24,14 @@ export function NotificationsBell() {
 
   const handleClick = (notification: Notification) => {
     if (!notification.lu) marquerLuMutation.mutate(notification.id);
-    router.push(`/dossiers/${notification.dossier_id}`);
+    // `lien` (IA Conseil) prime sur `dossier_id` (CRM) — voir
+    // backend/models/notification.py, les deux ne sont jamais renseignés
+    // ensemble en pratique.
+    if (notification.lien) {
+      router.push(notification.lien);
+    } else if (notification.dossier_id != null) {
+      router.push(`/dossiers/${notification.dossier_id}`);
+    }
   };
 
   return (
@@ -52,14 +59,25 @@ export function NotificationsBell() {
             <DropdownMenuItem
               key={notification.id}
               onSelect={() => handleClick(notification)}
-              className="flex flex-col items-start gap-0.5 whitespace-normal py-2"
+              className="flex items-start gap-2 whitespace-normal py-2"
             >
-              <span className={notification.lu ? "text-muted-foreground" : "font-medium"}>
-                {notification.message}
+              <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center">
+                {notification.lu ? (
+                  <Check size={14} className="text-emerald-600" />
+                ) : (
+                  <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-danger px-1 text-[10px] font-medium text-white">
+                    1
+                  </span>
+                )}
               </span>
-              {notification.date_creation && (
-                <span className="text-xs text-muted-foreground">{notification.date_creation}</span>
-              )}
+              <span className="flex flex-1 flex-col items-start gap-0.5">
+                <span className={notification.lu ? "text-muted-foreground" : "font-medium"}>
+                  {notification.message}
+                </span>
+                {notification.date_creation && (
+                  <span className="text-xs text-muted-foreground">{notification.date_creation}</span>
+                )}
+              </span>
             </DropdownMenuItem>
           ))
         )}

@@ -9,18 +9,22 @@
 #    - IP loggée à chaque accès pour audit
 #    - Pas de données sensibles remontées
 # ==============================================================================
+import logging
+import os
+import tempfile
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Path, Request, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Path, Request, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.core.database import get_db
+from backend.core.database import AsyncSessionLocal, get_db
 from backend.models.client import Client
 from backend.models.demarche import Demarche
 from backend.models.document import Document
 from backend.models.document_prospect import DocumentProspect
 from backend.models.dossier import Dossier
+from backend.models.facture_analyse import FactureAnalyse
 from backend.models.mandat import Mandat
 from backend.models.prospect import Prospect
 from backend.models.token_public import TokenPublic
@@ -36,11 +40,44 @@ from backend.schemas.portail_public import (
     UploadResultOut,
 )
 from backend.services import demarches_engine, dossier_engine, notification_engine, storage_engine, token_engine
+from backend.services.facture_analyzer import FactureAnalyzerError, analyser_facture
 from backend.services.kyc_engine import KycError, valider_document
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/portail", tags=["portail_public"])
 
 MIME_AUTORISES_SPEEDTEST = {"application/pdf", "image/jpeg", "image/png", "image/webp"}
+
+
+async def _analyser_facture_prospect_arriere_plan(prospect_id: int, contenu: bytes) -> None:
+    """Analyse automatique (Claude Haiku vision) de la facture qu'un prospect
+    vient de transmettre via son lien personnel — exécutée après la réponse
+    HTTP (le client n'attend pas le temps d'appel LLM). Un PDF illisible ou
+    une clé API absente ne doit jamais faire échouer l'upload lui-même,
+    d'où le try/except large (même logique que
+    backend/routers/leads_public.py::_enrichir_lead_arriere_plan)."""
+    fd, chemin_tmp = tempfile.mkstemp(suffix=".pdf")
+    try:
+        with os.fdopen(fd, "wb") as tmp:
+            tmp.write(contenu)
+        resultat = analyser_facture(chemin_tmp)
+    except FactureAnalyzerError as exc:
+        logger.warning("Analyse facture échouée pour le prospect %s : %s", prospect_id, exc)
+        return
+    finally:
+        os.unlink(chemin_tmp)
+
+    try:
+        async with AsyncSessionLocal() as db:
+            db.add(FactureAnalyse(
+                prospect_id=prospect_id,
+                **resultat,
+                date_analyse=datetime.now().strftime("%d/%m/%Y %H:%M"),
+                analyse_par="ia-automatique",
+            ))
+            await db.commit()
+    except Exception as exc:
+        logger.exception("Persistance de l'analyse facture échouée pour le prospect %s : %s", prospect_id, exc)
 
 
 async def _resoudre_token(
@@ -212,7 +249,12 @@ def _vers_demarche_a_fournir(demarche: Demarche, champs_a_afficher: dict[str, di
 
 
 async def _uploader_document_prospect(
-    token_obj: TokenPublic, type_document: str, contenu: bytes, nom_fichier: str | None, db: AsyncSession,
+    token_obj: TokenPublic,
+    type_document: str,
+    contenu: bytes,
+    nom_fichier: str | None,
+    db: AsyncSession,
+    background_tasks: BackgroundTasks,
 ) -> UploadResultOut:
     """Upload d'un document (facture, speedtest) par un prospect pas encore
     client — équivalent de src/prospects_engine.py::enregistrer_document_prospect.
@@ -247,6 +289,9 @@ async def _uploader_document_prospect(
     await db.commit()
     await db.refresh(document)
 
+    if type_document == "facture" and nom_fichier.lower().endswith(".pdf"):
+        background_tasks.add_task(_analyser_facture_prospect_arriere_plan, token_obj.prospect_id, contenu)
+
     return UploadResultOut(
         document_id=document.id,
         type_detecte=None,
@@ -258,6 +303,7 @@ async def _uploader_document_prospect(
 @router.post("/{token}/documents", response_model=UploadResultOut)
 async def uploader_document(
     request: Request,
+    background_tasks: BackgroundTasks,
     token: str = Path(..., min_length=32),
     type_document: str = "cni",
     fichier: UploadFile = None,
@@ -276,7 +322,9 @@ async def uploader_document(
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Fichier trop volumineux (max 10 Mo).")
 
     if token_obj.prospect_id is not None:
-        return await _uploader_document_prospect(token_obj, type_document, contenu, fichier.filename, db)
+        return await _uploader_document_prospect(
+            token_obj, type_document, contenu, fichier.filename, db, background_tasks,
+        )
 
     try:
         cle_s3 = storage_engine.upload_document(
@@ -408,6 +456,7 @@ async def renseigner_champs_demarche(
 @router.post("/{token}/speedtest", response_model=SpeedtestResultatOut)
 async def soumettre_speedtest(
     request: Request,
+    background_tasks: BackgroundTasks,
     token: str = Path(..., min_length=32),
     download_mbps: float | None = Form(None),
     upload_mbps: float | None = Form(None),
@@ -464,7 +513,7 @@ async def soumettre_speedtest(
 
         if token_obj.prospect_id is not None:
             resultat = await _uploader_document_prospect(
-                token_obj, "speedtest", contenu, fichier.filename, db,
+                token_obj, "speedtest", contenu, fichier.filename, db, background_tasks,
             )
             return SpeedtestResultatOut(
                 document_id=resultat.document_id,
