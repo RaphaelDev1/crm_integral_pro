@@ -111,6 +111,24 @@ Vérification : `http://localhost:8000/health` → `200 OK`, `http://localhost:8
 > celery -A backend.workers.celery_app worker --loglevel=info --pool=solo
 > ```
 
+## 5bis. Démarrage rapide — tout en une commande
+
+Une fois §0 à §4 faits une première fois (`.env` remplis, migrations appliquées), lance Redis,
+backend, Celery worker/beat/Flower, `frontend-conseiller` et `frontend-portail` en une seule
+commande, depuis la racine du dépôt :
+
+```bash
+chmod +x lancer-app.sh   # une seule fois
+./lancer-app.sh
+# ./lancer-app.sh --sans-celery   # saute worker/beat/Flower (dev rapide, sans tâches de fond)
+```
+
+Contrairement à `lancer-app.ps1` (Windows, une fenêtre PowerShell par service), tout tourne ici en
+arrière-plan dans le terminal courant : chaque service écrit son propre log dans `logs/` (ex.
+`tail -f logs/backend.log`). `Ctrl+C` dans ce terminal arrête proprement tous les services (et le
+conteneur Redis). Nécessite `npm install` déjà fait dans `frontend-conseiller/` et
+`frontend-portail/` (voir §6).
+
 ## 6. Configurer et lancer frontend-conseiller
 
 Dans un second terminal :
