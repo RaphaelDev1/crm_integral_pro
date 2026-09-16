@@ -10,16 +10,25 @@
 # ==============================================================================
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
-from sqlalchemy import update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models.client import Client
+from backend.models.comparaison_offre import ComparaisonOffre
+from backend.models.contrat import Contrat
+from backend.models.document_prospect import DocumentProspect
 from backend.models.dossier import Dossier
+from backend.models.facture_analyse import FactureAnalyse
 from backend.models.prospect import Prospect
 from backend.models.token_public import TokenPublic
+from backend.models.touchpoint import Touchpoint
 from backend.services import audit_engine, reference_engine
+from backend.services.storage_engine import supprimer_document
+
+logger = logging.getLogger(__name__)
 
 FORMAT_DATE = "%d/%m/%Y %H:%M"
 
@@ -33,7 +42,8 @@ CHAMPS_PROSPECT_VERS_CLIENT = (
     "type_client", "raison_sociale", "effectif", "operateur_actuel", "techno", "data_go", "offre_actuelle",
     "cout_mensuel_actuel", "satisfaction_reseau", "veut_rester", "speed_down", "speed_up",
     "fournisseur_energie", "cout_elec", "cout_gaz", "economie_estimee_an", "notes",
-    "date_relance",
+    "date_relance", "age", "tranche_age", "consentement_rgpd", "consentement_demarchage", "date_consentement",
+    "objectif_principal", "date_naissance", "departement_naissance", "ville_naissance",
 )
 
 
@@ -68,6 +78,18 @@ async def obtenir_ou_creer_client_miroir(db: AsyncSession, prospect: Prospect, *
     else:
         for champ in CHAMPS_PROSPECT_VERS_CLIENT:
             setattr(client, champ, getattr(prospect, champ))
+
+    # Les contrats saisis avant la création du miroir (landing /economiser,
+    # onglet Contrats du prospect) restent rattachés à `prospect_id` — sans
+    # cette réassignation, ils disparaissent de la vue "Contrats" de la fiche
+    # dès qu'un client_id existe, celle-ci filtrant alors par client_id (voir
+    # frontend prospects/[id]/page.tsx). On ne les détache pas de prospect_id
+    # (juste ajout de client_id), un contrat reste donc retrouvable des deux côtés.
+    await db.execute(
+        update(Contrat)
+        .where(Contrat.prospect_id == prospect.id, Contrat.client_id.is_(None))
+        .values(client_id=client.id)
+    )
 
     return client
 
@@ -114,3 +136,56 @@ async def convertir_prospect(
     await db.refresh(client)
     await db.refresh(prospect)
     return client
+
+
+async def supprimer_prospect(db: AsyncSession, prospect: Prospect) -> None:
+    """Supprime un prospect et tout ce qui ne dépend que de lui (touchpoints
+    d'attribution, documents/factures/comparaisons/tokens de collecte
+    pré-conversion). Corrige le 500 précédent : `db.delete(prospect)` seul
+    échouait dès qu'une ligne dépendante existait (violation de contrainte FK
+    non gérée, voir DELETE /prospects/{id}).
+
+    Si le prospect a déjà été converti (`client_id` renseigné), ses contrats
+    sont aussi rattachés au client miroir (voir
+    `obtenir_ou_creer_client_miroir` ci-dessus, qui ne les détache jamais de
+    `prospect_id`) : on les détache seulement (prospect_id=NULL) au lieu de
+    les supprimer, pour ne pas casser le dossier/les contrats du client."""
+    documents = (
+        await db.execute(select(DocumentProspect).where(DocumentProspect.prospect_id == prospect.id))
+    ).scalars().all()
+    for document in documents:
+        try:
+            if document.cle_stockage:
+                supprimer_document(document.cle_stockage)
+        except Exception:
+            # Best-effort : une erreur de stockage (S3 indisponible, clé
+            # corrompue/manquante...) ne doit jamais faire échouer (500) toute
+            # la suppression du prospect — seule la ligne DB compte vraiment,
+            # un fichier orphelin sur le stockage n'est pas bloquant.
+            logger.warning(
+                "Suppression stockage échouée pour le document %s (prospect %s)", document.id, prospect.id,
+                exc_info=True,
+            )
+        await db.delete(document)
+
+    await db.execute(delete(Touchpoint).where(Touchpoint.prospect_id == prospect.id))
+    await db.execute(delete(ComparaisonOffre).where(ComparaisonOffre.prospect_id == prospect.id))
+    await db.execute(delete(TokenPublic).where(TokenPublic.prospect_id == prospect.id))
+
+    # Facture liée uniquement au prospect (jamais rattachée à un client) :
+    # supprimée avec lui. Sinon (client_id renseigné) : juste détachée, le
+    # client garde l'analyse.
+    await db.execute(
+        delete(FactureAnalyse).where(FactureAnalyse.prospect_id == prospect.id, FactureAnalyse.client_id.is_(None))
+    )
+    await db.execute(
+        update(FactureAnalyse).where(FactureAnalyse.prospect_id == prospect.id).values(prospect_id=None)
+    )
+
+    if prospect.client_id is None:
+        await db.execute(delete(Contrat).where(Contrat.prospect_id == prospect.id))
+    else:
+        await db.execute(update(Contrat).where(Contrat.prospect_id == prospect.id).values(prospect_id=None))
+
+    await db.delete(prospect)
+    await db.commit()

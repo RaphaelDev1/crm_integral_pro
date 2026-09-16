@@ -3,16 +3,12 @@
 import { AppForm } from "@/components/forms/AppForm";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { DialogFooter } from "@/components/ui/dialog";
 import { FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import {
-  LISTE_OPERATEURS_TEL,
-  NIVEAUX_DEFAUT_TECHNIQUE,
-  SATISFACTION_RESEAU,
-  VEUT_RESTER_OPTIONS,
-} from "@/lib/diagnosticConstants";
+import { OBJECTIFS_PRINCIPAUX_OPTIONS, TRANCHES_AGE_OPTIONS } from "@/lib/diagnosticConstants";
 import {
   clientCreateSchema,
   clientUpdateSchema,
@@ -46,11 +42,12 @@ export function clientToFormValues(client: Client): ClientUpdateInput {
     ville: client.ville ?? "",
     adresse: client.adresse ?? "",
     type_client: client.type_client ?? "",
+    objectif_principal: client.objectif_principal ?? "",
     notes: client.notes ?? "",
-    operateur_actuel: client.operateur_actuel ?? "",
-    satisfaction_reseau: client.satisfaction_reseau ?? "",
-    veut_rester: client.veut_rester ?? "",
-    defaut_technique: client.defaut_technique ?? "",
+    age: client.age ?? undefined,
+    tranche_age: client.tranche_age ?? "",
+    consentement_rgpd: client.consentement_rgpd ?? false,
+    consentement_demarchage: client.consentement_demarchage ?? false,
   };
 }
 
@@ -184,104 +181,86 @@ export function ClientForm({
               </FormItem>
             )}
           />
+          <FormField
+            control={form.control}
+            name="objectif_principal"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Objectif de la demande</FormLabel>
+                <p className="text-xs text-muted-foreground">
+                  Renseigné d'office si le client vient de la landing /economiser — indique si sa
+                  démarche est motivée par une raison financière ou un gain de temps.
+                </p>
+                <Select onValueChange={field.onChange} value={field.value || undefined}>
+                  <FormControl>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Sélectionner…" />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent>
+                    {OBJECTIFS_PRINCIPAUX_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">Réseau actuel</CardTitle>
+              <CardTitle className="text-sm">Consentements</CardTitle>
             </CardHeader>
-            <CardContent className="grid grid-cols-2 gap-4">
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <FormField
+                  control={form.control}
+                  name="tranche_age"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Tranche d'âge</FormLabel>
+                      <Select onValueChange={field.onChange} value={field.value || undefined}>
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Sélectionner…" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          {TRANCHES_AGE_OPTIONS.map((option) => (
+                            <SelectItem key={option} value={option}>
+                              {option}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
               <FormField
                 control={form.control}
-                name="operateur_actuel"
+                name="consentement_rgpd"
                 render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Opérateur actuel</FormLabel>
-                    <Select onValueChange={field.onChange} value={field.value || undefined}>
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Sélectionner…" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {LISTE_OPERATEURS_TEL.map((option) => (
-                          <SelectItem key={option} value={option}>
-                            {option}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
+                  <FormItem className="flex items-center gap-2 space-y-0">
+                    <FormControl>
+                      <Checkbox checked={field.value ?? false} onCheckedChange={field.onChange} />
+                    </FormControl>
+                    <FormLabel className="!mt-0">Consentement RGPD</FormLabel>
                   </FormItem>
                 )}
               />
               <FormField
                 control={form.control}
-                name="satisfaction_reseau"
+                name="consentement_demarchage"
                 render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Satisfaction réseau</FormLabel>
-                    <Select onValueChange={field.onChange} value={field.value || undefined}>
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Sélectionner…" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {SATISFACTION_RESEAU.map((option) => (
-                          <SelectItem key={option} value={option}>
-                            {option}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name="veut_rester"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Souhaite rester chez son opérateur actuel</FormLabel>
-                    <Select onValueChange={field.onChange} value={field.value || undefined}>
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Sélectionner…" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {VEUT_RESTER_OPTIONS.map((option) => (
-                          <SelectItem key={option} value={option}>
-                            {option}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name="defaut_technique"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Défaut technique potentiel</FormLabel>
-                    <Select onValueChange={field.onChange} value={field.value || undefined}>
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Aucun signalé" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {NIVEAUX_DEFAUT_TECHNIQUE.map((option) => (
-                          <SelectItem key={option} value={option}>
-                            {option}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
+                  <FormItem className="flex items-center gap-2 space-y-0">
+                    <FormControl>
+                      <Checkbox checked={field.value ?? false} onCheckedChange={field.onChange} />
+                    </FormControl>
+                    <FormLabel className="!mt-0">Consentement démarchage téléphonique</FormLabel>
                   </FormItem>
                 )}
               />

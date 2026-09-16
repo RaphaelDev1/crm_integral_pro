@@ -3,6 +3,8 @@
 #  Le schéma de base de données est géré par Alembic (voir alembic.ini) ; aucune
 #  création de table n'a lieu au démarrage.
 # ==============================================================================
+import logging
+
 import sentry_sdk
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -48,6 +50,7 @@ from backend.routers import (
 )
 
 configurer_logging()
+logger = logging.getLogger(__name__)
 
 if settings.sentry_dsn:
     sentry_sdk.init(dsn=settings.sentry_dsn, environment=settings.app_env, traces_sample_rate=0.1)
@@ -62,6 +65,17 @@ app.state.limiter = limiter
 async def _gerer_depassement_rate_limit(request: Request, exc: RateLimitExceeded):
     message = "Quota journalier atteint." if "day" in str(exc.detail) else "Trop de requêtes, réessayez dans 1 minute."
     return JSONResponse(status_code=429, content={"detail": message})
+
+
+@app.exception_handler(Exception)
+async def _gerer_exception_non_geree(request: Request, exc: Exception):
+    # Filet de sécurité : toute exception non gérée jusqu'ici (contrainte FK
+    # non couverte, bug non anticipé...) remontait un 500 brut, sans trace
+    # exploitable côté client ni log serveur clair. On journalise le
+    # traceback complet ici et on renvoie un message générique — le détail
+    # technique ne doit jamais fuiter au client.
+    logger.error("Exception non gérée sur %s %s", request.method, request.url.path, exc_info=exc)
+    return JSONResponse(status_code=500, content={"detail": "Une erreur inattendue est survenue. Réessayez ou contactez le support."})
 
 
 # CORS — autoriser le portail Next.js

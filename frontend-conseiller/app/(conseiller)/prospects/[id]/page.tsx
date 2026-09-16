@@ -1,6 +1,7 @@
 "use client";
 
 import type { ColumnDef } from "@tanstack/react-table";
+import { AlertTriangle } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -18,6 +19,8 @@ import { AEnvoyerBadge, RecuBadge } from "@/components/ui/recu-badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatDateRelance } from "@/lib/dateRelance";
+import { labelObjectifPrincipal } from "@/lib/diagnosticConstants";
+import { useContrats } from "@/lib/hooks/useContrats";
 import { useDossiersClient } from "@/lib/hooks/useDossiers";
 import { useProspectFacturesAnalysees } from "@/lib/hooks/useFactures";
 import {
@@ -28,12 +31,42 @@ import {
   useGenererLienDocumentsProspect,
   useProspectDocuments,
   useProspectHistorique,
-  useProspectScore,
   useRelanceEffectuee,
   useSupprimerDocumentProspect,
 } from "@/lib/hooks/useProspects";
 import type { ProspectUpdateInput } from "@/lib/schemas/prospect";
 import type { Dossier } from "@/lib/types";
+
+// Champs obligatoires pour lancer un nouveau diagnostic (identité minimale
+// requise dès l'étape 2 du wizard, voir etapeIdentiteSchema côté /diagnostic)
+// — base commune du bandeau d'alerte et du blocage du bouton, pour ne plus
+// risquer de divergence entre les deux.
+const CHAMPS_BLOQUANT_DIAGNOSTIC: { champ: keyof import("@/lib/types").Prospect; label: string }[] = [
+  { champ: "prenom", label: "Prénom" },
+  { champ: "nom", label: "Nom" },
+  { champ: "telephone", label: "Téléphone" },
+  { champ: "code_postal", label: "Code postal" },
+  { champ: "ville", label: "Ville" },
+];
+
+// Champs affichés dans le bandeau d'alerte mais qui ne bloquent pas le
+// diagnostic (redemandés plus tard si besoin) — Email en fait partie : jamais
+// requis pour diagnostiquer, mais indispensable pour la suite (envoi des
+// mandats, du lien personnel...), donc signalé au conseiller au plus vite.
+const CHAMPS_IMPORTANTS_NON_BLOQUANTS: { champ: keyof import("@/lib/types").Prospect; label: string }[] = [
+  { champ: "email", label: "Email" },
+  { champ: "adresse", label: "Adresse" },
+];
+
+function champsManquantsProspect(prospect: import("@/lib/types").Prospect): string[] {
+  return [...CHAMPS_BLOQUANT_DIAGNOSTIC, ...CHAMPS_IMPORTANTS_NON_BLOQUANTS]
+    .filter(({ champ }) => !prospect[champ])
+    .map(({ label }) => label);
+}
+
+function champsObligatoiresDiagnosticManquants(prospect: import("@/lib/types").Prospect): string[] {
+  return CHAMPS_BLOQUANT_DIAGNOSTIC.filter(({ champ }) => !prospect[champ]).map(({ label }) => label);
+}
 
 export default function ProspectDetailPage() {
   const params = useParams<{ id: string }>();
@@ -56,6 +89,7 @@ export default function ProspectDetailPage() {
   }
 
   const prospect = prospectQuery.data;
+  const manquants = champsManquantsProspect(prospect);
 
   return (
     <div className="space-y-4">
@@ -66,7 +100,17 @@ export default function ProspectDetailPage() {
         {prospect.converti_at != null && <Badge variant="secondary">Converti en client</Badge>}
       </div>
 
-      <TableauBordProspect prospectId={prospectId} prospect={prospect} />
+      {manquants.length > 0 && (
+        <div className="flex items-start gap-2 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <p>
+            <span className="font-semibold">Informations manquantes à compléter au plus vite :</span>{" "}
+            {manquants.join(", ")}.
+          </p>
+        </div>
+      )}
+
+      <TableauBordProspect prospect={prospect} />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
@@ -80,7 +124,7 @@ export default function ProspectDetailPage() {
               <TabsTrigger value="historique">Historique</TabsTrigger>
             </TabsList>
             <TabsContent value="infos">
-              <InfosTab prospectId={prospectId} defaultValues={prospectToFormValues(prospect)} />
+              <InfosTab prospect={prospect} defaultValues={prospectToFormValues(prospect)} />
             </TabsContent>
             <TabsContent value="scoring">
               <ScoringPanel prospectId={prospectId} />
@@ -90,15 +134,11 @@ export default function ProspectDetailPage() {
                 <DossiersTab clientId={prospect.client_id} />
               </TabsContent>
             )}
-            <TabsContent value="contrats">
+            <TabsContent value="contrats" className="space-y-4">
               {prospect.client_id != null ? (
-                <ContratsTab clientId={prospect.client_id} />
+                <ContratsTab clientId={prospect.client_id} nbLignesMobilesDeclare={prospect.nb_lignes_mobiles} />
               ) : (
-                <Card>
-                  <CardContent className="pt-6 text-sm text-muted-foreground">
-                    Les contrats apparaîtront ici une fois une fiche client associée (après un premier diagnostic).
-                  </CardContent>
-                </Card>
+                <ContratsTab prospectId={prospectId} nbLignesMobilesDeclare={prospect.nb_lignes_mobiles} />
               )}
             </TabsContent>
             <TabsContent value="documents">
@@ -111,10 +151,12 @@ export default function ProspectDetailPage() {
         </div>
         <div className="lg:col-span-1">
           <ActionsCard
+            prospect={prospect}
             prospectId={prospectId}
             dejaConverti={prospect.converti_at != null}
             clientId={prospect.client_id}
             convertiLe={prospect.converti_at}
+            manquantsDiagnostic={champsObligatoiresDiagnosticManquants(prospect)}
             onSuppression={() => router.push("/prospects")}
           />
         </div>
@@ -126,9 +168,7 @@ export default function ProspectDetailPage() {
 // Bandeau "dashboard" en tête de fiche — les indicateurs que le conseiller
 // veut voir d'un coup d'œil pour prioriser : économie estimée, prochaine
 // relance programmée, dernier contact enregistré, température du score.
-function TableauBordProspect({ prospectId, prospect }: { prospectId: number; prospect: import("@/lib/types").Prospect }) {
-  const scoreQuery = useProspectScore(prospectId);
-
+function TableauBordProspect({ prospect }: { prospect: import("@/lib/types").Prospect }) {
   const tuiles = [
     { label: "Économie estimée", valeur: prospect.economie_estimee_an != null ? `${prospect.economie_estimee_an.toFixed(0)} €/an` : "—" },
     {
@@ -137,11 +177,12 @@ function TableauBordProspect({ prospectId, prospect }: { prospectId: number; pro
       sousTitre: prospect.statut || undefined,
     },
     { label: "Dernier contact", valeur: prospect.dernier_contact || "Jamais" },
-    { label: "Priorité", valeur: scoreQuery.data?.indicateur ?? "—" },
+    { label: "Créneau de rappel souhaité", valeur: prospect.plage_horaire_rappel || "—" },
+    { label: "Objectif de la demande", valeur: labelObjectifPrincipal(prospect.objectif_principal) || "—" },
   ];
 
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
       {tuiles.map((tuile) => (
         <Card key={tuile.label}>
           <CardContent className="pt-4 pb-3">
@@ -155,24 +196,33 @@ function TableauBordProspect({ prospectId, prospect }: { prospectId: number; pro
   );
 }
 
-function InfosTab({ prospectId, defaultValues }: { prospectId: number; defaultValues: ProspectUpdateInput }) {
+function InfosTab({
+  prospect,
+  defaultValues,
+}: {
+  prospect: import("@/lib/types").Prospect;
+  defaultValues: ProspectUpdateInput;
+}) {
+  const prospectId = prospect.id;
   const updateMutation = prospectsResource.useUpdate({
     onSuccess: () => toast.success("Prospect mis à jour."),
   });
 
   return (
-    <Card>
-      <CardContent className="pt-6">
-        <ProspectForm
-          mode="edit"
-          defaultValues={defaultValues}
-          onSubmit={(values) => updateMutation.mutate({ id: prospectId, values: values as ProspectUpdateInput })}
-          submitError={updateMutation.error}
-          submitLabel="Enregistrer"
-          isSubmitting={updateMutation.isPending}
-        />
-      </CardContent>
-    </Card>
+    <div className="space-y-4">
+      <Card>
+        <CardContent className="pt-6">
+          <ProspectForm
+            mode="edit"
+            defaultValues={defaultValues}
+            onSubmit={(values) => updateMutation.mutate({ id: prospectId, values: values as ProspectUpdateInput })}
+            submitError={updateMutation.error}
+            submitLabel="Enregistrer"
+            isSubmitting={updateMutation.isPending}
+          />
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 
@@ -195,6 +245,21 @@ function DossiersTab({ clientId }: { clientId: number }) {
         id: "economie",
         header: "Économie annuelle estimée",
         accessorFn: (d) => `${d.economie_annuelle_estimee ?? 0} €`,
+      },
+      {
+        id: "pdf",
+        header: "",
+        cell: ({ row }) => (
+          <a
+            href={`/api/backend/dossiers/${row.original.id}/pdf-restitution`}
+            download
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Button variant="outline" size="sm">
+              Télécharger le PDF
+            </Button>
+          </a>
+        ),
       },
     ],
     []
@@ -378,22 +443,27 @@ function HistoriqueTab({ prospectId }: { prospectId: number }) {
 }
 
 function ActionsCard({
+  prospect,
   prospectId,
   dejaConverti,
   clientId,
   convertiLe,
+  manquantsDiagnostic,
   onSuppression,
 }: {
+  prospect: import("@/lib/types").Prospect;
   prospectId: number;
   dejaConverti: boolean;
   clientId: number | null;
   convertiLe: string | null;
+  manquantsDiagnostic: string[];
   onSuppression: () => void;
 }) {
   const router = useRouter();
   const [lienOpen, setLienOpen] = useState(false);
   const [lienUrl, setLienUrl] = useState<string | null>(null);
   const [appelOpen, setAppelOpen] = useState(false);
+  const [modeLienOpen, setModeLienOpen] = useState(false);
 
   const lienMutation = useGenererLienDocumentsProspect();
   const envoyerLienMutation = useEnvoyerLienDocumentsProspect();
@@ -401,6 +471,7 @@ function ActionsCard({
   const relanceMutation = useRelanceEffectuee();
   const convertirMutation = useConvertirProspect();
   const appelMutation = useContacterTelephone();
+  const contratsQuery = useContrats({ prospectId });
 
   const handleConvertir = () => {
     convertirMutation.mutate(prospectId, {
@@ -431,13 +502,34 @@ function ActionsCard({
     );
   };
 
-  const handleEnvoyerLien = () => {
-    lienMutation.mutate(prospectId, {
-      onSuccess: (data) => {
-        setLienUrl(data.url);
-        setLienOpen(true);
-      },
-    });
+  const handleChoisirModeLien = (remplissageAutonome: boolean) => {
+    setModeLienOpen(false);
+    if (remplissageAutonome) {
+      lienMutation.mutate(
+        { prospectId, remplissageAutonome: true },
+        {
+          onSuccess: (data) => {
+            setLienUrl(data.url);
+            setLienOpen(true);
+          },
+        }
+      );
+      return;
+    }
+    // Mode "au téléphone" : le conseiller remplit lui-même le lien avec le
+    // client — ouverture synchrone (avant tout await) pour ne pas être
+    // bloquée par le navigateur, même principe que handlePreRemplir côté
+    // dossiers/[id]/page.tsx.
+    const fenetre = window.open("", "_blank");
+    lienMutation.mutate(
+      { prospectId, remplissageAutonome: false },
+      {
+        onSuccess: (data) => {
+          if (fenetre) fenetre.location.href = data.url;
+          else toast.warning("Autorisez les fenêtres popup pour ouvrir le lien directement.");
+        },
+      }
+    );
   };
 
   const handleEnvoyerParEmail = () => {
@@ -455,6 +547,26 @@ function ActionsCard({
     if (!lienUrl) return;
     await navigator.clipboard.writeText(lienUrl);
     toast.success("Lien copié.");
+  };
+
+  const handleAideMemoire = () => {
+    const lignesMobiles = contratsQuery.data?.filter((c) => c.categorie === "Forfait mobile" || c.categorie === "Mobile");
+    const ligneMobile = lignesMobiles?.find((c) => c.ligne_principale) ?? lignesMobiles?.[0];
+    const params = new URLSearchParams({
+      prenom: prospect.prenom ?? "",
+      nom: prospect.nom ?? "",
+      telephone: prospect.telephone ?? "",
+      email: prospect.email ?? "",
+      adresse: prospect.adresse ?? "",
+      code_postal: prospect.code_postal ?? "",
+      ville: prospect.ville ?? "",
+      conserver_numero: ligneMobile?.conserver_numero ?? "",
+      rio: ligneMobile?.rio ?? "",
+      numero_ligne: ligneMobile?.numero_ligne ?? "",
+      type_sim: ligneMobile?.type_sim ?? "",
+    });
+    const fenetre = window.open(`/souscription-reference?${params.toString()}`, "cmr-reference-souscription");
+    if (!fenetre) toast.warning("Autorisez les fenêtres popup pour ce site afin d'ouvrir l'aide-mémoire.");
   };
 
   const handleSupprimer = () => {
@@ -499,8 +611,11 @@ function ActionsCard({
         <Button variant="outline" className="w-full" onClick={() => setAppelOpen(true)}>
           Contacter par téléphone
         </Button>
-        <Button variant="outline" className="w-full" onClick={handleEnvoyerLien} disabled={lienMutation.isPending}>
+        <Button variant="outline" className="w-full" onClick={() => setModeLienOpen(true)} disabled={lienMutation.isPending}>
           Envoyer lien collecte docs
+        </Button>
+        <Button variant="outline" className="w-full" onClick={handleAideMemoire}>
+          Aide-mémoire souscription
         </Button>
         <Button variant="outline" className="w-full" onClick={handleRelanceEffectuee} disabled={relanceMutation.isPending}>
           Relance effectuée ce jour
@@ -508,6 +623,12 @@ function ActionsCard({
         <Button
           variant="outline"
           className="w-full"
+          disabled={manquantsDiagnostic.length > 0}
+          title={
+            manquantsDiagnostic.length > 0
+              ? `Complétez d'abord la fiche (${manquantsDiagnostic.join(", ")}) avant de lancer un diagnostic.`
+              : undefined
+          }
           onClick={() => router.push(`/diagnostic?entiteType=prospect&entiteId=${prospectId}`)}
         >
           Nouveau diagnostic
@@ -516,6 +637,37 @@ function ActionsCard({
           Supprimer
         </Button>
       </CardContent>
+
+      <Dialog open={modeLienOpen} onOpenChange={setModeLienOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Comment le client va-t-il répondre ?</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Button
+              className="w-full justify-start"
+              onClick={() => handleChoisirModeLien(true)}
+              disabled={lienMutation.isPending}
+            >
+              Le client répond seul
+            </Button>
+            <p className="text-xs text-muted-foreground px-1">
+              Formulaire allégé (questions importantes uniquement) — le reste sera redemandé à la signature des mandats.
+            </p>
+            <Button
+              variant="outline"
+              className="w-full justify-start"
+              onClick={() => handleChoisirModeLien(false)}
+              disabled={lienMutation.isPending}
+            >
+              Je réponds avec lui au téléphone
+            </Button>
+            <p className="text-xs text-muted-foreground px-1">
+              Ouvre directement le lien complet dans un nouvel onglet pour le remplir en direct avec le client.
+            </p>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={lienOpen} onOpenChange={setLienOpen}>
         <DialogContent>

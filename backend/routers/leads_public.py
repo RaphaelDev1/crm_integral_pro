@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.database import AsyncSessionLocal, get_db
 from backend.core.rate_limit import limiter
+from backend.models.contrat import Contrat
 from backend.models.prospect import Prospect
 from backend.models.touchpoint import Touchpoint
 from backend.schemas.lead_public import (
@@ -45,7 +46,7 @@ from backend.schemas.lead_public import (
     MethodologieOut,
 )
 from backend.services import audit_engine, captcha, eligibilite_fibre, estimation_publique, geo_ip, telephone_verification
-from backend.services.estimation_publique import tranche_age
+from backend.services.estimation_publique import resoudre_tranche
 
 # Notifications — import soft pour rester tolérant si le service n'a pas encore
 # implémenté ces helpers dans l'environnement local du dev.
@@ -61,6 +62,24 @@ router = APIRouter(prefix="/public/leads", tags=["public-landing"])
 
 LIMITE_MINUTE = "10/minute"
 LIMITE_JOUR = "100/day"
+
+# Catégorie de `DepensesActuelles.to_categories()` pour laquelle
+# `operateur_mobile` s'applique comme fournisseur — distincte de la box, un
+# prospect pouvant avoir un opérateur différent pour chaque service.
+_CATEGORIE_MOBILE = "Mobile"
+_CATEGORIES_BOX = {"Box / Fibre", "Pack Box + Mobile"}
+# Idem pour `fournisseur_energie` (EDF, Engie…).
+_CATEGORIES_ENERGIE = {"Électricité", "Gaz"}
+
+
+def _fournisseur_pour_categorie(categorie: str, payload: LeadEstimationRequest) -> str | None:
+    if categorie == _CATEGORIE_MOBILE:
+        return payload.operateur_mobile or None
+    if categorie in _CATEGORIES_BOX:
+        return payload.operateur_box or None
+    if categorie in _CATEGORIES_ENERGIE:
+        return payload.fournisseur_energie or None
+    return None
 
 
 def _ip_reelle(request: Request) -> str:
@@ -116,14 +135,16 @@ async def capturer_lead(
     if not await captcha.verifier(payload.turnstile_token, ip):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Vérification anti-bot échouée, réessayez.")
 
-    # Éligibilité fibre (niveau commune) — synchrone car affichée immédiatement
-    # à l'étape 4 du formulaire, timeout court pour ne jamais ralentir la réponse.
-    code_insee = payload.adresse_selection.code_insee if payload.adresse_selection else None
+    # Adresse (socle S1, docs/QUESTIONS_PAR_SECTEUR.md) — posée si un secteur
+    # box ou énergie est sélectionné, reste facultative sinon. verifier(None)
+    # est un no-op qui renvoie un résultat vide si le prospect ne l'a pas fournie.
+    adresse_in = payload.adresse
+    code_insee = adresse_in.code_insee if adresse_in else None
     resultat_fibre = await eligibilite_fibre.verifier(code_insee)
 
     # Estimation live
     estimation_dc = await estimation_publique.estimer(
-        db, payload.depenses.to_categories(), age=payload.age,
+        db, payload.depenses.to_categories(), age=payload.age, tranche=payload.tranche_age,
     )
     estimation_out = EstimationOut(
         lignes=[LigneEstimationOut(**l.__dict__) for l in estimation_dc.lignes],
@@ -145,15 +166,23 @@ async def capturer_lead(
         nom="",   # non demandé sur la landing (friction minimum)
         telephone=payload.telephone,
         email=payload.email or None,
-        code_postal=payload.code_postal or None,
-        ville=payload.ville or None,
-        adresse=payload.adresse or None,
-        operateur_actuel=payload.operateur_actuel or None,
+        operateur_actuel=payload.operateur_mobile or None,
+        operateur_box=payload.operateur_box or None,
+        # Réutilisation de techno (existant, pas dédié au mobile) pour l'offre
+        # ADSL/Fibre déclarée sur la landing. `debit_declare` (distinct de
+        # speed_down, réservé au vrai test mesuré) porte le débit déclaré ici.
+        techno=payload.offre_box or None,
+        debit_declare=payload.debit_box,
+        fournisseur_energie=payload.fournisseur_energie or None,
         data_go=str(payload.conso_data_go) if payload.conso_data_go is not None else None,
         roaming_europe=payload.roaming_europe or None,
+        roaming_hors_ue=payload.roaming_hors_ue or None,
         sensibilite_prix=payload.sensibilite_prix or None,
         bonus_malus_auto=payload.bonus_malus_auto or None,
         plage_horaire_rappel=payload.plage_horaire_rappel or None,
+        objectif_principal=payload.objectif_principal or None,
+        nb_lignes_mobiles=payload.nb_lignes_mobiles or None,
+        qualite_reseau_mobile=payload.qualite_reseau_mobile or None,
         type_client="Particulier",
         univers_interesse=_detecter_univers(depenses),
         cout_mensuel_actuel=round(sum(v for v in depenses.values() if v), 2),
@@ -174,7 +203,7 @@ async def capturer_lead(
         utm_content=payload.utm.content,
         utm_term=payload.utm.term,
         age=payload.age,
-        tranche_age=tranche_age(payload.age),
+        tranche_age=resoudre_tranche(payload.age, payload.tranche_age),
         consentement_rgpd=payload.consentement_rgpd,
         consentement_demarchage=payload.consentement_demarchage,
         date_consentement=datetime.now().strftime("%d/%m/%Y %H:%M"),
@@ -184,15 +213,60 @@ async def capturer_lead(
         # Un lead landing est chaud par nature — score plancher pour remonter en tête
         # du tableau de bord conseiller avant le premier appel.
         score=200.0,
-        # Colonnes ajoutées par la migration 0028_leads_enrichissements
+        # Colonnes ajoutées par la migration 0028_leads_enrichissements —
+        # renseignées uniquement si le prospect a fourni son adresse (socle S1,
+        # posée seulement si un secteur box ou énergie est sélectionné).
+        code_postal=adresse_in.code_postal if adresse_in else None,
+        ville=adresse_in.ville if adresse_in else None,
+        adresse=adresse_in.label if adresse_in else None,
+        latitude=adresse_in.latitude if adresse_in else None,
+        longitude=adresse_in.longitude if adresse_in else None,
         code_insee=code_insee,
-        latitude=payload.adresse_selection.latitude if payload.adresse_selection else None,
-        longitude=payload.adresse_selection.longitude if payload.adresse_selection else None,
         fibre_disponible=resultat_fibre.disponible,
         fibre_taux_couverture=resultat_fibre.taux_couverture,
     )
     db.add(prospect)
     await db.flush()
+
+    # Contrats structurés (P5) — un contrat "Actuel" (situation avant nous, pas
+    # encore chez nous) par service déclaré non nul, pour que le conseiller
+    # retrouve opérateur/fournisseur/consommation dans l'onglet Contrats du
+    # prospect plutôt que noyés dans les notes texte. `categorie` reprend
+    # exactement les clés de `depenses` (déjà celles attendues par
+    # estimation_publique.FALLBACK_MARCHE).
+    for categorie, cout in depenses.items():
+        if not cout:
+            continue
+        est_box = categorie in _CATEGORIES_BOX
+        est_electricite = categorie == "Électricité"
+        est_energie = categorie in _CATEGORIES_ENERGIE
+        db.add(Contrat(
+            prospect_id=prospect.id,
+            categorie=categorie,
+            cout_mensuel=cout,
+            statut_contrat="Actuel",
+            chez_nous=False,
+            fournisseur=_fournisseur_pour_categorie(categorie, payload),
+            consommation=(
+                f"{payload.conso_data_go:g} Go" if categorie == _CATEGORIE_MOBILE and payload.conso_data_go is not None
+                else f"{payload.debit_box:g} Mbps" if est_box and payload.debit_box is not None
+                else None
+            ),
+            # Offre ADSL/Fibre + débit déclarés — uniquement pertinents pour
+            # les catégories box (voir Prospect.techno/debit_declare ci-dessus).
+            nom_offre=payload.offre_box if est_box else None,
+            debit_declare=payload.debit_box if est_box else None,
+            # Trame box (B3, B3b) — voir docs/QUESTIONS_PAR_SECTEUR.md.
+            usage_tv=payload.usage_tv if est_box else None,
+            abonnements_payants=payload.abonnements_payants if est_box else None,
+            # Trame énergie (E1) — le chauffage concerne le contrat Électricité
+            # comme le contrat Gaz s'il existe ; (E5, E5a, E6) sont propres au
+            # compteur électrique (kVA, option tarifaire), donc Électricité seule.
+            chauffage_principal=payload.chauffage_principal if est_energie else None,
+            puissance_kva=payload.puissance_kva if est_electricite else None,
+            option_tarifaire=payload.option_tarifaire if est_electricite else None,
+            gros_equipement_electrique=payload.gros_equipement_electrique if est_electricite else None,
+        ))
 
     # Historique d'attribution (P4.3) — chaque point de contact constitué côté
     # client avant conversion (voir frontend-portail/lib/attribution.ts).
@@ -344,14 +418,29 @@ def _detecter_univers(depenses: dict) -> str:
 def _construire_notes(payload: LeadEstimationRequest, estimation, ip: str, ua: str) -> str:
     parts = [
         "== Lead landing publique ==",
-        f"Âge déclaré : {payload.age or 'non renseigné'} (tranche {tranche_age(payload.age) or 'n/a'})",
+        f"Tranche d'âge déclarée : {resoudre_tranche(payload.age, payload.tranche_age) or 'non renseignée'}",
         f"Consentement RGPD : {'✅' if payload.consentement_rgpd else '❌'}",
         f"Consentement démarchage tél : {'✅' if payload.consentement_demarchage else '❌'}",
         f"Créneau de rappel souhaité : {payload.plage_horaire_rappel or 'non renseigné'}",
-        f"Opérateur actuel déclaré : {payload.operateur_actuel or 'non renseigné'}",
+        f"Opérateur mobile déclaré : {payload.operateur_mobile or 'non renseigné'}",
+        f"Opérateur box déclaré : {payload.operateur_box or 'non renseigné'}",
+        f"Offre box déclarée : {payload.offre_box or 'non renseignée'}",
+        f"Débit box déclaré : {payload.debit_box if payload.debit_box is not None else 'non renseigné'} Mbps",
+        f"Fournisseur d'énergie déclaré : {payload.fournisseur_energie or 'non renseigné'}",
         f"Consommation data mensuelle déclarée : {payload.conso_data_go if payload.conso_data_go is not None else 'non renseignée'} Go",
         f"Voyage en Europe : {payload.roaming_europe or 'non renseigné'}",
+        f"Voyage hors UE : {payload.roaming_hors_ue or 'non renseigné'}",
         f"Priorité du client : {payload.sensibilite_prix or 'non renseignée'}",
+        f"Objectif principal : {payload.objectif_principal or 'non renseigné'}",
+        f"Nombre de lignes mobiles : {payload.nb_lignes_mobiles or 'non renseigné'}",
+        f"Qualité réseau déclarée : {payload.qualite_reseau_mobile or 'non renseignée'}",
+        f"Chauffage principal : {payload.chauffage_principal or 'non renseigné'}",
+        f"Puissance souscrite : {payload.puissance_kva or 'non renseignée'} kVA"
+        + (f" (gros équipement : {'oui' if payload.gros_equipement_electrique else 'non'})"
+           if payload.puissance_kva else ""),
+        f"Option tarifaire énergie : {payload.option_tarifaire or 'non renseignée'}",
+        f"Usage TV : {payload.usage_tv or 'non renseigné'}"
+        + (f" — abonnements : {payload.abonnements_payants}" if payload.abonnements_payants else ""),
         f"UTM : source={payload.utm.source} / medium={payload.utm.medium} / "
         f"campaign={payload.utm.campaign} / content={payload.utm.content}",
         f"IP : {ip}",

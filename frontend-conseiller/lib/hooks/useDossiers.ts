@@ -52,6 +52,33 @@ export function useTransitionDossier() {
   });
 }
 
+interface PreRemplirSouscriptionParams {
+  dossierId: number;
+  // Position/taille écran (pixels) souhaitées pour la fenêtre Playwright, pour
+  // l'ouvrir à côté de la fenêtre de référence (voir handlePreRemplir dans
+  // dossiers/[id]/page.tsx) — optionnel, sans quoi Chromium choisit lui-même.
+  windowPosition?: [number, number];
+  windowSize?: [number, number];
+}
+
+// Ouvre, sur la machine où tourne le backend, un navigateur pré-rempli sur le
+// formulaire de souscription de l'offre cible du dossier (Free/Bouygues) —
+// voir backend/services/souscription_engine.py. Ne soumet jamais, ne
+// fonctionne qu'en local.
+export function usePreRemplirSouscription() {
+  return useMutation({
+    mutationFn: ({ dossierId, windowPosition, windowSize }: PreRemplirSouscriptionParams) =>
+      apiFetch<{ ok: boolean; message: string; url_manuelle: string | null }>(`/dossiers/${dossierId}/souscription/pre-remplir`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          window_position: windowPosition ?? null,
+          window_size: windowSize ?? null,
+        }),
+      }),
+  });
+}
+
 export function useAjouterNoteDossier() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -106,9 +133,14 @@ interface LienClientResult {
 }
 
 export function useGenererLienClientDossier() {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (dossierId: number) =>
       apiFetch<LienClientResult>(`/dossiers/${dossierId}/token-client`, { method: "POST" }),
+    onSuccess: (_data, dossierId) => {
+      queryClient.invalidateQueries({ queryKey: dossiersResource.keys.detail(dossierId) });
+      queryClient.invalidateQueries({ queryKey: ["dossiers", "timeline", dossierId] });
+    },
   });
 }
 
@@ -121,6 +153,7 @@ interface EnvoiLienResult {
 }
 
 export function useEnvoyerLienClientDossier() {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ dossierId, canal }: { dossierId: number; canal: "sms" | "email" }) =>
       apiFetch<EnvoiLienResult>(`/dossiers/${dossierId}/envoyer-lien-client`, {
@@ -128,5 +161,9 @@ export function useEnvoyerLienClientDossier() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ canal }),
       }),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: dossiersResource.keys.detail(variables.dossierId) });
+      queryClient.invalidateQueries({ queryKey: ["dossiers", "timeline", variables.dossierId] });
+    },
   });
 }

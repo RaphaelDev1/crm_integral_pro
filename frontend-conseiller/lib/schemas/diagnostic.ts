@@ -55,9 +55,30 @@ export const etapeIdentiteSchema = z
   });
 export type EtapeIdentiteValues = z.infer<typeof etapeIdentiteSchema>;
 
-// Étape 3 ("Trame") — situation actuelle Télécom/Énergie désormais collectée
-// par les sessions de trame IA Conseil (voir components/diagnostic/EtapeTrame.tsx),
-// plus de schéma de validation local ici.
+// Étape 3 — Situation actuelle, sous-schéma Télécom (requis uniquement si
+// "Télécom" a été coché à l'étape 1 — voir _champs_obligatoires_telecom()
+// dans src/app.py, reproduit ici via .superRefine côté page).
+export const situationTelecomSchema = z.object({
+  operateurActuel: z.string().min(1, "Renseignez l'opérateur actuel."),
+  techno: z.string().min(1),
+  offreActuelle: z.string().optional(),
+  coutMensuelActuel: z.coerce.number().min(0.01, "Le coût mensuel actuel est requis."),
+  dataGoMin: z.string().optional(),
+  debitSouhaite: z.string().optional(),
+  satisfactionReseau: z.string().min(1, "Renseignez la satisfaction réseau du client."),
+  defautTechnique: z.string().min(1, "Renseignez le défaut technique potentiel."),
+  veutRester: z.string().min(1, "Indiquez si le client souhaite rester chez son opérateur actuel."),
+  speedDown: z.coerce.number().min(0).optional(),
+  speedUp: z.coerce.number().min(0).optional(),
+});
+export type SituationTelecomValues = z.infer<typeof situationTelecomSchema>;
+
+export const situationEnergieSchema = z.object({
+  fournisseurEnergie: z.string().optional(),
+  coutElec: z.coerce.number().min(0).optional(),
+  coutGaz: z.coerce.number().min(0).optional(),
+});
+export type SituationEnergieValues = z.infer<typeof situationEnergieSchema>;
 
 export const abonnementItemSchema = z.object({
   nom: z.string().trim().min(1, "Le nom de l'abonnement est requis."),

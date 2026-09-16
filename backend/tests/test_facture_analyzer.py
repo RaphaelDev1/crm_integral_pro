@@ -73,6 +73,16 @@ def facture_energie_pdf(tmp_path):
     return chemin
 
 
+@pytest.fixture
+def facture_mobile_jpeg(tmp_path):
+    # Vraie en-tête JPEG (magic bytes FF D8 FF) — une photo de facture prise
+    # depuis le portail client, cas que l'extraction doit désormais accepter
+    # (voir MIME_AUTORISES_FACTURE).
+    chemin = tmp_path / "facture_mobile_anonymisee.jpg"
+    chemin.write_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00" + b"\x00" * 64)
+    return chemin
+
+
 class TestExtractionParUnivers:
     def test_facture_mobile_avec_engagement(self, facture_mobile_pdf, monkeypatch):
         fake_client = _patch_claude(monkeypatch, {
@@ -128,6 +138,24 @@ class TestExtractionParUnivers:
         assert res["date_fin_engagement"] == ""
         assert res["iban_prelevement"] == ""
 
+    def test_facture_photo_jpeg_est_analysee_comme_une_image(self, facture_mobile_jpeg, monkeypatch):
+        # Une photo de facture (JPG) doit être envoyée à Claude comme un bloc
+        # "image", pas "document" (réservé au PDF) — sinon l'appel échoue ou
+        # renvoie un résultat vide, symptôme du bug "opérateur/prix jamais
+        # détectés" pour les factures envoyées en photo depuis le portail.
+        fake_client = _patch_claude(monkeypatch, {
+            "operateur": "Orange", "prix_ht": 38.33, "prix_ttc": 45.99,
+            "data_conso_go": 150.0, "options": [], "engagement_mois": 12,
+            "date_fin_engagement": "15/03/2027", "iban_prelevement": "",
+        })
+        res = facture_analyzer.analyser_facture(facture_mobile_jpeg)
+
+        assert res["operateur"] == "Orange"
+        assert res["prix_ttc"] == 45.99
+        bloc_fichier = fake_client.messages.dernier_appel["messages"][0]["content"][0]
+        assert bloc_fichier["type"] == "image"
+        assert bloc_fichier["source"]["media_type"] == "image/jpeg"
+
 
 class TestParsingReponse:
     def test_reponse_entouree_de_balises_markdown(self, facture_mobile_pdf, monkeypatch):
@@ -148,7 +176,11 @@ class TestGestionErreurs:
         with pytest.raises(facture_analyzer.FactureAnalyzerError):
             facture_analyzer.analyser_facture(tmp_path / "absent.pdf")
 
-    def test_extension_non_pdf_rejetee(self, tmp_path, monkeypatch):
+    def test_contenu_non_reconnu_rejete(self, tmp_path, monkeypatch):
+        # Le format est détecté par contenu réel (magic bytes), pas par
+        # l'extension : un ".jpg" dont le contenu n'est ni un PDF ni une
+        # image reconnaissable reste rejeté (voir test_facture_photo_jpeg_...
+        # pour le cas d'une vraie photo, qui elle est acceptée).
         monkeypatch.setattr(settings, "anthropic_api_key", "fake-key")
         chemin = tmp_path / "facture.jpg"
         chemin.write_bytes(b"donnees-image")
@@ -194,7 +226,12 @@ class TestGestionErreurs:
         with pytest.raises(facture_analyzer.FactureAnalyzerError):
             facture_analyzer.analyser_facture(facture_mobile_pdf)
 
-    def test_erreur_api_anthropic_degrade_proprement_hors_production(self, facture_mobile_pdf, monkeypatch):
+    def test_erreur_api_anthropic_remonte_aussi_hors_production(self, facture_mobile_pdf, monkeypatch):
+        # Contrairement à la clé API absente (repli intentionnel), un échec
+        # d'appel Claude est une vraie anomalie : la masquer en dev derrière un
+        # résultat vide ne laissait aucune trace exploitable pour comprendre
+        # pourquoi "l'analyse ne détecte jamais rien" (voir docstring
+        # analyser_facture) — elle doit donc remonter dans tous les cas.
         import anthropic
 
         class ClientEnErreur:
@@ -206,5 +243,5 @@ class TestGestionErreurs:
         monkeypatch.setattr(settings, "anthropic_api_key", "fake-key")
         monkeypatch.setattr(settings, "app_env", "development")
         monkeypatch.setattr(facture_analyzer.anthropic, "Anthropic", lambda api_key: ClientEnErreur())
-        res = facture_analyzer.analyser_facture(facture_mobile_pdf)
-        assert res == facture_analyzer._resultat_vide()
+        with pytest.raises(facture_analyzer.FactureAnalyzerError):
+            facture_analyzer.analyser_facture(facture_mobile_pdf)

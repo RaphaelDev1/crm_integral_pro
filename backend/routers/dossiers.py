@@ -2,6 +2,7 @@
 #  DOSSIERS — CRUD + machine à états. Protégé par JWT (conseillers uniquement).
 # ==============================================================================
 from datetime import datetime
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
@@ -9,11 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.database import get_db
 from backend.core.security import get_current_user
+from backend.models.client import Client
 from backend.models.comparaison_offre import ComparaisonOffre
-from backend.models.document import Document
+from backend.models.contrat import Contrat
 from backend.models.dossier import Dossier
 from backend.models.offre import Offre
-from backend.models.parametre import Parametre
 from backend.models.user import User
 from backend.schemas.comparaison_offre import ComparaisonOffreOut
 from backend.schemas.dossier import (
@@ -23,9 +24,18 @@ from backend.schemas.dossier import (
     EnvoiLienClient,
     EtapeTimeline,
     NoteDossierCreate,
+    PreRemplirSouscriptionIn,
+    PreRemplirSouscriptionOut,
     TransitionStatut,
 )
-from backend.services import dossier_engine, dossier_notifications, token_engine
+from backend.services import (
+    audit_engine,
+    demarches_engine,
+    dossier_engine,
+    dossier_notifications,
+    souscription_engine,
+    token_engine,
+)
 
 router = APIRouter(prefix="/dossiers", tags=["dossiers"], dependencies=[Depends(get_current_user)])
 
@@ -143,10 +153,8 @@ async def obtenir_timeline_dossier(dossier_id: int, db: AsyncSession = Depends(g
     dossier = await db.get(Dossier, dossier_id)
     if dossier is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Dossier introuvable.")
-    documents_recus = (
-        await db.execute(select(Document.id).where(Document.client_id == dossier.client_id).limit(1))
-    ).scalar_one_or_none() is not None
-    return dossier_engine.construire_timeline(dossier, documents_recus=documents_recus)
+    signaux = await dossier_engine.signaux_timeline(db, dossier)
+    return dossier_engine.construire_timeline(dossier, **signaux)
 
 
 @router.get("/{dossier_id}/comparaison", response_model=ComparaisonOffreOut | None)
@@ -168,6 +176,68 @@ async def obtenir_comparaison_dossier(dossier_id: int, db: AsyncSession = Depend
             .order_by(ComparaisonOffre.id.desc())
         )
     ).scalars().first()
+
+
+@router.post("/{dossier_id}/souscription/pre-remplir", response_model=PreRemplirSouscriptionOut)
+async def pre_remplir_souscription(
+    dossier_id: int,
+    payload: PreRemplirSouscriptionIn | None = None,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Ouvre, sur la machine où tourne ce backend, un navigateur pré-rempli avec
+    les coordonnées du client sur le formulaire de souscription de l'offre
+    cible du dossier (Free/Bouygues uniquement pour l'instant — voir
+    souscription_engine.OPERATEURS_SUPPORTES). Ne soumet jamais la commande :
+    le conseiller vérifie puis valide lui-même sur le site de l'opérateur.
+    Portage de src/souscription_engine.py (app Streamlit en cours d'extinction)
+    — ne fonctionne que si ce backend tourne en local, pas depuis un
+    déploiement distant (le navigateur s'ouvre sur l'écran du process)."""
+    dossier = await db.get(Dossier, dossier_id)
+    if dossier is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Dossier introuvable.")
+    if not dossier.offre_cible_id:
+        return PreRemplirSouscriptionOut(ok=False, message="Aucune offre cible sélectionnée pour ce dossier.")
+    offre = await db.get(Offre, dossier.offre_cible_id)
+    if offre is None:
+        return PreRemplirSouscriptionOut(ok=False, message="Offre cible introuvable.")
+    client = await db.get(Client, dossier.client_id)
+    if client is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Client introuvable.")
+
+    contrat_mobile = None
+    if "Mobile" in (offre.categorie or ""):
+        # Ligne mobile de référence du client — même sélection que l'aide-mémoire
+        # souscription (ligne_principale en priorité, voir demarches_engine.
+        # _synchroniser_contrat_portabilite) — pilote conserver_numero/type_sim
+        # dans le tunnel d'options Free Mobile (souscription_engine.
+        # _remplir_options_mobile_free).
+        contrat_mobile = (await db.execute(
+            select(Contrat)
+            .where(Contrat.client_id == client.id, Contrat.categorie == "Forfait mobile")
+            .order_by(Contrat.ligne_principale.desc(), Contrat.id)
+        )).scalars().first()
+
+    donnees = souscription_engine.construire_donnees_client(client, contrat_mobile)
+    ok, message = souscription_engine.lancer_souscription(
+        offre.fournisseur or "", offre.url_souscription or "", donnees,
+        code_affiliation=offre.code_affiliation or "", nom_offre=offre.nom_offre or "",
+        categorie=offre.categorie or "",
+        position=payload.window_position if payload else None,
+        taille=payload.window_size if payload else None,
+    )
+    await audit_engine.enregistrer_action(
+        db, entite_type="dossier", entite_id=dossier_id,
+        action="Pré-remplissage souscription",
+        details=f"{offre.fournisseur} — {offre.nom_offre or ''} ({'ouvert' if ok else 'échec'})",
+        auteur=user.nom_complet,
+    )
+    await db.commit()
+
+    url_manuelle = None
+    if not ok and offre.url_souscription and not (urlsplit(offre.url_souscription).hostname or "").endswith(".invalid"):
+        url_manuelle = offre.url_souscription
+    return PreRemplirSouscriptionOut(ok=ok, message=message, url_manuelle=url_manuelle)
 
 
 @router.post("/{dossier_id}/notes", response_model=DossierOut)
@@ -217,7 +287,14 @@ async def generer_lien_client(
         dossier_id=dossier.id,
         cree_par=user.username,
     )
+    # Copier le lien fait déjà partie de la démarche de demande de documents
+    # (le conseiller ne le génère que pour le transmettre) — voir
+    # _marquer_docs_demandes_si_besoin et construire_timeline.
     await _marquer_docs_demandes_si_besoin(db, dossier, par=user.username)
+    # Garantit que la trame de questions du secteur (audit_*/portabilite) et
+    # les autres démarches attendues existent déjà quand le client arrive sur
+    # son lien — voir demarches_engine.creer_demarches_manquantes.
+    await demarches_engine.creer_demarches_manquantes(db, dossier)
 
     url = token_engine.construire_url_client(token.token, base_url=settings.portail_client_base_url)
     return {
@@ -260,6 +337,7 @@ async def envoyer_lien_client(
         cree_par=user.username,
     )
     await _marquer_docs_demandes_si_besoin(db, dossier, par=user.username)
+    await demarches_engine.creer_demarches_manquantes(db, dossier)
 
     url = token_engine.construire_url_client(token.token, base_url=settings.portail_client_base_url)
     prenom = client.prenom or ""
@@ -304,7 +382,7 @@ async def obtenir_pdf_restitution(
     backend/services/restitution_pdf_engine.py) — outil conseiller, jamais
     exposé côté portail client."""
     from backend.models.client import Client
-    from backend.services import restitution_pdf_engine, storage_engine
+    from backend.services import mandat_engine, restitution_pdf_engine
 
     dossier = await db.get(Dossier, dossier_id)
     if dossier is None:
@@ -327,35 +405,7 @@ async def obtenir_pdf_restitution(
             "Aucune comparaison d'offres enregistrée pour ce client — créez-en une avant de générer le PDF.",
         )
 
-    async def _parametre(cle: str) -> str | None:
-        p = await db.get(Parametre, cle)
-        return p.valeur if p else None
-
-    logo_bytes = None
-    cle_logo = await _parametre("pdf_logo_cle_stockage")
-    if cle_logo:
-        try:
-            logo_bytes = storage_engine.telecharger_document(cle_logo)
-        except storage_engine.StorageError:
-            logo_bytes = None
-
-    # Conseiller à afficher sur le PDF : le propriétaire de la fiche client
-    # s'il est renseigné (conseiller_id), sinon celui qui génère le PDF.
-    conseiller = user
-    if client.conseiller_id is not None and client.conseiller_id != user.id:
-        conseiller_proprietaire = await db.get(User, client.conseiller_id)
-        if conseiller_proprietaire is not None:
-            conseiller = conseiller_proprietaire
-
-    branding = {
-        "nom_societe": await _parametre("nom_societe"),
-        "couleur_primaire_hex": await _parametre("pdf_couleur_primaire_hex"),
-        "couleur_accent_hex": await _parametre("pdf_couleur_accent_hex"),
-        "logo_bytes": logo_bytes,
-        "conseiller_nom": conseiller.nom_complet,
-        "conseiller_telephone": conseiller.telephone,
-    }
-
+    branding = await mandat_engine.charger_branding(db, client, user)
     pdf_bytes = restitution_pdf_engine.generer_pdf_restitution_dossier(dossier, client, comparaison, branding)
 
     return Response(

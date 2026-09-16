@@ -43,6 +43,12 @@ class TokenPublic(Base):
     peut_voir_suivi: Mapped[bool] = mapped_column(Boolean, default=True)
     peut_renseigner_demarches: Mapped[bool] = mapped_column(Boolean, default=True)
     peut_transmettre_speedtest: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Uniquement posé sur un token prospect (voir token_engine::
+    # generer_token_prospect_documents) — True = le prospect répond seul sur
+    # /dossier/{token}/situation (formulaire allégé, sans les questions
+    # confort B4-B7), False = le conseiller répond avec lui au téléphone
+    # (formulaire complet). Sans objet sur un token client. Migration 0052.
+    remplissage_autonome: Mapped[bool] = mapped_column(Boolean, default=True)
 
     # Cycle de vie
     date_creation: Mapped[str | None] = mapped_column(String, nullable=True)

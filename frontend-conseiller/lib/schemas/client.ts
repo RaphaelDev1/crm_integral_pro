@@ -28,10 +28,15 @@ export const clientBaseSchema = z.object({
   fournisseur_energie: z.string().optional(),
   cout_elec: z.coerce.number().optional(),
   cout_gaz: z.coerce.number().optional(),
+  objectif_principal: z.string().optional(),
   economie_estimee_an: z.coerce.number().optional(),
   notes: z.string().optional(),
   date_relance: z.string().optional(),
   statut_relance: z.string().optional(),
+  age: z.coerce.number().optional(),
+  tranche_age: z.string().optional(),
+  consentement_rgpd: z.boolean().optional(),
+  consentement_demarchage: z.boolean().optional(),
 });
 
 export const clientCreateSchema = clientBaseSchema.extend({

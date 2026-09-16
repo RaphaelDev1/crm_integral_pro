@@ -98,13 +98,16 @@ def test_comparer_offres_data_go_min_sans_effet_si_offre_sans_quota():
 # ------------------------------------------------------------------------------
 #  construire_recommandations()
 # ------------------------------------------------------------------------------
-def test_construire_recommandations_mobile_uniquement_propose_du_cross_sell():
+def test_construire_recommandations_mobile_uniquement_sans_cross_sell():
+    # Mobile et Box sont deux services distincts et non comparables : une
+    # situation "Mobile uniquement" ne doit plus faire remonter de cross-sell
+    # Box/Pack (retour terrain, voir offres_engine.py::construire_recommandations).
     db = FakeSession()
     with patch.object(offres_engine, "comparer_offres", new=AsyncMock(return_value=[{"id": 1}])):
         resultat = _run(offres_engine.construire_recommandations(db, "Mobile uniquement", 20.0))
 
     assert resultat["principal"][0].startswith("📱")
-    assert len(resultat["cross_sell"]) == 2
+    assert resultat["cross_sell"] == []
 
 
 def test_construire_recommandations_pack_sans_cross_sell():

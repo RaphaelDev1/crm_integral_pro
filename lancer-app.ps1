@@ -23,6 +23,12 @@ if (Get-Command docker -ErrorAction SilentlyContinue) {
     Write-Host "⚠ Docker introuvable dans le PATH : Redis non lancé (nécessaire pour Celery/KYC async ; sans lui, la trame IA Conseil du diagnostic fonctionne aussi mais sans les mises à jour temps réel entre onglets)." -ForegroundColor Yellow
 }
 
+Write-Host "Application des migrations (alembic upgrade head)..." -ForegroundColor DarkGray
+& "$root\.venv\Scripts\python.exe" -m alembic -c "$root\alembic.ini" upgrade head
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "⚠ Échec des migrations alembic — le backend risque de renvoyer des 500 (schéma BDD désynchronisé du code). Corrige l'erreur ci-dessus avant de continuer." -ForegroundColor Red
+}
+
 Start-Process powershell -ArgumentList "-NoExit", "-Command", `
   "cd '$root'; .venv\Scripts\python.exe -m uvicorn backend.main:app --reload --port 8000"
 
@@ -64,9 +70,7 @@ Write-Host "Fermer chaque fenêtre (ou Ctrl+C dedans) pour arrêter le service c
 Write-Host ""
 Write-Host "Rappel : la landing /economiser (capture de leads, autocomplétion adresse, détection FAI," -ForegroundColor DarkGray
 Write-Host "captcha Turnstile, éligibilité fibre) fonctionne sans clé API externe configurée (dégradation" -ForegroundColor DarkGray
-Write-Host "propre) mais nécessite les migrations 0027-0029 appliquées (leads_capture, leads_enrichissements," -ForegroundColor DarkGray
-Write-Host "utm_dashboard_attribution) — voir GUIDE_LANCEMENT.md §1." -ForegroundColor DarkGray
+Write-Host "propre) — les migrations sont désormais appliquées automatiquement ci-dessus." -ForegroundColor DarkGray
 Write-Host ""
-Write-Host "Rappel : IA Conseil (trame adaptative mobile/box/énergie) nécessite les migrations 0032-0036" -ForegroundColor DarkGray
-Write-Host "appliquées (python -m alembic upgrade head) et un catalogue seedé une première fois :" -ForegroundColor DarkGray
-Write-Host "python -m backend.scripts.seed_ia_conseil (idempotent, à relancer sans risque)." -ForegroundColor DarkGray
+Write-Host "Rappel : IA Conseil (trame adaptative mobile/box/énergie) nécessite un catalogue seedé une" -ForegroundColor DarkGray
+Write-Host "première fois : python -m backend.scripts.seed_ia_conseil (idempotent, à relancer sans risque)." -ForegroundColor DarkGray

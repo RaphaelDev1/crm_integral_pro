@@ -5,7 +5,7 @@
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Float, ForeignKey, Integer, String
+from sqlalchemy import Boolean, Float, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -47,7 +47,15 @@ class Client(Base):
     # voir backend/scripts/seed_ia_conseil.py) — désormais posées aussi sur la
     # landing publique /economiser. Migration : 0038_landing_roaming_priorite.
     roaming_europe: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Voyage hors UE ("roaming_hors_ue" dans la trame) — posé sur la landing
+    # /economiser en complément de roaming_europe ci-dessus. Migration : 0045.
+    roaming_hors_ue: Mapped[str | None] = mapped_column(String, nullable=True)
     sensibilite_prix: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Objectif de la demande, repris du prospect à la conversion (voir
+    # prospect_conversion.CHAMPS_PROSPECT_VERS_CLIENT) — valeurs dans
+    # backend/schemas/lead_public.py::OBJECTIFS_PRINCIPAUX ("economiser" =
+    # motivation financière, "simplifier" = gain de temps, etc.). Migration : 0048.
+    objectif_principal: Mapped[str | None] = mapped_column(String, nullable=True)
     offre_actuelle: Mapped[str | None] = mapped_column(String, nullable=True)
     cout_mensuel_actuel: Mapped[float | None] = mapped_column(Float, default=0)
     satisfaction_reseau: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -56,8 +64,8 @@ class Client(Base):
     # du client ("Faible" | "Moyen" | "Critique"), voir NIVEAUX_DEFAUT_TECHNIQUE
     # côté frontend (lib/diagnosticConstants.ts).
     defaut_technique: Mapped[str | None] = mapped_column(String, nullable=True)
-    speed_down: Mapped[float | None] = mapped_column(Float, default=0)
-    speed_up: Mapped[float | None] = mapped_column(Float, default=0)
+    speed_down: Mapped[float | None] = mapped_column(Float)
+    speed_up: Mapped[float | None] = mapped_column(Float)
     fournisseur_energie: Mapped[str | None] = mapped_column(String, nullable=True)
     cout_elec: Mapped[float | None] = mapped_column(Float, default=0)
     cout_gaz: Mapped[float | None] = mapped_column(Float, default=0)
@@ -70,3 +78,17 @@ class Client(Base):
 
     contrats: Mapped[list["Contrat"]] = relationship(back_populates="client")
     age: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Miroir des colonnes de consentement de `prospects` (0027/0028), reprises
+    # à la conversion (voir prospect_conversion.CHAMPS_PROSPECT_VERS_CLIENT).
+    # Migration : 0039_contrats_prospect_et_consentements_client.
+    tranche_age: Mapped[str | None] = mapped_column(String, nullable=True)
+    consentement_rgpd: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    consentement_demarchage: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    date_consentement: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Date/lieu de naissance, repris du prospect à la conversion (voir
+    # prospect_conversion.CHAMPS_PROSPECT_VERS_CLIENT) — requis par la page
+    # "informations personnelles" du tunnel de souscription Free Mobile (voir
+    # souscription_engine.py). Migration : 0053_date_lieu_naissance.
+    date_naissance: Mapped[str | None] = mapped_column(String, nullable=True)
+    departement_naissance: Mapped[str | None] = mapped_column(String, nullable=True)
+    ville_naissance: Mapped[str | None] = mapped_column(String, nullable=True)

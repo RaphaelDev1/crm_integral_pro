@@ -16,8 +16,9 @@
  *   - UTM auto-récupérés depuis URL + localStorage
  *   - Pixels Meta/TikTok/GA4 sur les étapes clés
  */
-import { FormEvent, useCallback, useEffect, useState } from 'react';
+import { FormEvent, ReactNode, useCallback, useEffect, useState } from 'react';
 
+import { AdresseAutocomplete, type AdresseSuggestion } from '@/components/landing/AdresseAutocomplete';
 import { CalBooking, calBookingEnabled } from '@/components/landing/CalBooking';
 import { TurnstileWidget } from '@/components/landing/TurnstileWidget';
 import { enregistrerTouchpoint, getStoredTouchpoints, reinitialiserTouchpoints } from '@/lib/attribution';
@@ -36,13 +37,18 @@ type Depenses = {
 };
 
 const PLAGES_HORAIRES = ['Matin (9h-12h)', 'Après-midi (12h-17h)', 'Soir (17h-20h)'] as const;
+const JOURS_RAPPEL = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Peu importe'] as const;
+
+// Mêmes tranches que backend/services/estimation_publique.py::TRANCHES_AGE —
+// on ne demande plus l'âge exact, seulement la tranche.
+const TRANCHES_AGE = ['18-25', '26-35', '36-45', '46-55', '56-65', '66+'] as const;
 
 // Sous-choix télécom (étape 1) — évite de comparer mobile ET box/fibre quand
 // une seule des deux intéresse le prospect (étape 2 n'affiche alors que le(s)
 // champ(s) pertinent(s)).
 const TELECOM_CHOIX = [
   { key: 'mobile', label: '📱 Mobile' },
-  { key: 'box', label: '📶 Box / Fibre' },
+  { key: 'box', label: '📶 Box internet' },
   { key: 'les_deux', label: '📱📶 Les deux' },
 ] as const;
 type TelecomChoix = (typeof TELECOM_CHOIX)[number]['key'] | '';
@@ -51,7 +57,16 @@ type TelecomChoix = (typeof TELECOM_CHOIX)[number]['key'] | '';
 // sensibilite_prix, voir backend/scripts/seed_ia_conseil.py) — posées ici
 // pour que le conseiller n'ait plus à les redemander au téléphone.
 const ROAMING_OPTIONS = ['Jamais', 'Occasionnellement', 'Souvent'] as const;
-const SENSIBILITE_PRIX_OPTIONS = ['Prix avant tout', 'Équilibre', 'Qualité avant tout'] as const;
+
+// Mêmes opérateurs que la trame conseiller (backend/scripts/seed_ia_conseil.py
+// pour le mobile, seed_ia_conseil_box.py pour la box) — un client peut avoir
+// deux opérateurs différents (mobile ≠ box), donc deux listes distinctes.
+const OPERATEURS_MOBILE = ['Orange', 'Sosh', 'SFR', 'RED by SFR', 'Bouygues Telecom', 'B&You', 'Free Mobile'] as const;
+const OPERATEURS_BOX = [
+  'Orange', 'Sosh', 'SFR', 'RED by SFR', 'Bouygues Telecom', 'Free',
+  'Coriolis Telecom', 'Nordnet', 'La Poste Mobile', 'Ozone',
+] as const;
+const OFFRES_BOX = ['ADSL', 'Fibre'] as const;
 
 type UTM = {
   source?: string;
@@ -93,6 +108,29 @@ const SECTEURS = [
 
 const TEL_RE = /^(?:(?:\+|00)33|0)\s*[1-9](?:[\s.-]*\d{2}){4}$/;
 
+// Questions par secteur (docs/QUESTIONS_PAR_SECTEUR.md) — uniquement les
+// questions à fort pouvoir de filtrage ou de valeur pour le conseiller ; les
+// questions de confort (5G, engagement, isolation…) restent posées au
+// téléphone, pas sur la landing (« moins on a de questions, meilleur c'est »).
+const OBJECTIFS_PRINCIPAUX = [
+  { key: 'economiser', label: '💰 Économiser' },
+  { key: 'simplifier', label: '✨ Simplifier' },
+  { key: 'ameliorer_qualite', label: '🚀 Améliorer la qualité' },
+  { key: 'regrouper', label: '📦 Tout regrouper' },
+] as const;
+const NB_LIGNES_MOBILES = ['1', '2+'] as const;
+const CHAUFFAGES_PRINCIPAUX = ['Électrique', 'Gaz', 'Bois / fioul / PAC', 'Chauffage collectif inclus'] as const;
+const PUISSANCES_KVA = ['3', '6', '9', '12+'] as const;
+const OPTIONS_TARIFAIRES = ['Base', 'Heures Pleines-Creuses', 'Tempo'] as const;
+const USAGES_TV = ['Jamais, uniquement streaming', 'Quelques chaînes', 'Bouquet premium'] as const;
+
+// B3b (docs/QUESTIONS_PAR_SECTEUR.md) — liste standard des abonnements
+// payants les plus fréquents en plus du bouquet box, + "Autre" en texte
+// libre (voir SelectionMultiple ci-dessous).
+const ABONNEMENTS_PAYANTS_OPTIONS = [
+  'Canal+', 'beIN Sports', 'RMC Sport', 'OCS', 'Ligue 1+', 'Netflix (inclus box)', 'Disney+', 'Paramount+',
+] as const;
+
 export function EstimationForm({
   variant = 'A',
   ctaFinalLabel = 'Obtenir mon estimation 🎯',
@@ -101,19 +139,45 @@ export function EstimationForm({
   ctaFinalLabel?: string;
 }) {
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
+  // Position dans la liste dynamique de sous-questions de l'étape 2 (une
+  // question affichée à la fois, style Typeform) — voir questionsEtape2
+  // ci-dessous, calculée à partir des réponses déjà données.
+  const [subStep, setSubStep] = useState(0);
   const [showBooking, setShowBooking] = useState(false);
   const [secteurs, setSecteurs] = useState<string[]>([]);
   const [telecomChoix, setTelecomChoix] = useState<TelecomChoix>('');
   const [depenses, setDepenses] = useState<Depenses>({});
-  const [operateurActuel, setOperateurActuel] = useState('');
+  const [operateurMobile, setOperateurMobile] = useState('');
+  const [operateurBox, setOperateurBox] = useState('');
+  const [offreBox, setOffreBox] = useState('');
+  const [debitBox, setDebitBox] = useState<number | ''>('');
+  const [fournisseurEnergie, setFournisseurEnergie] = useState('');
   const [consoDataGo, setConsoDataGo] = useState<number | ''>('');
   const [roamingEurope, setRoamingEurope] = useState('');
-  const [sensibilitePrix, setSensibilitePrix] = useState('');
-  const [age, setAge] = useState<number | ''>('');
+  const [roamingMonde, setRoamingMonde] = useState('');
+  const [trancheAge, setTrancheAge] = useState('');
   const [bonusMalusAuto, setBonusMalusAuto] = useState('');
+  // Socle commun (S5, toujours posé) + adresse (S1, posée seulement si énergie
+  // sélectionné — inutile pour le télécom seul : le client indique déjà s'il a
+  // l'ADSL ou la fibre via la question "Offre actuelle" juste après).
+  const [objectifPrincipal, setObjectifPrincipal] = useState('');
+  const [adresseTexte, setAdresseTexte] = useState('');
+  const [adresseSuggestion, setAdresseSuggestion] = useState<AdresseSuggestion | null>(null);
+  // Trame mobile (M1)
+  const [nbLignesMobiles, setNbLignesMobiles] = useState('');
+  // Trame énergie (E1, E5, E5a, E6)
+  const [chauffagePrincipal, setChauffagePrincipal] = useState('');
+  const [puissanceKva, setPuissanceKva] = useState('');
+  const [grosEquipementElectrique, setGrosEquipementElectrique] = useState<boolean | null>(null);
+  const [optionTarifaire, setOptionTarifaire] = useState('');
+  // Trame box (B3, B3b)
+  const [usageTv, setUsageTv] = useState('');
+  const [abonnementsSelection, setAbonnementsSelection] = useState<string[]>([]);
+  const [abonnementAutre, setAbonnementAutre] = useState('');
   const [prenom, setPrenom] = useState('');
   const [telephone, setTelephone] = useState('');
   const [email, setEmail] = useState('');
+  const [jourRappel, setJourRappel] = useState('');
   const [plageHoraire, setPlageHoraire] = useState('');
   const [turnstileToken, setTurnstileToken] = useState('');
   const [consentement, setConsentement] = useState(false);
@@ -160,9 +224,534 @@ export function EstimationForm({
   const boxPertinent = secteurs.includes('telecom') && (telecomChoix === 'box' || telecomChoix === 'les_deux');
 
   const canGoStep2 = secteurs.length > 0 && (!secteurs.includes('telecom') || telecomChoix !== '');
-  const canGoStep3 = Object.values(depenses).some((v) => v && v > 0) && age !== '';
+  const canGoStep3 = Object.values(depenses).some((v) => v && v > 0) && trancheAge !== '';
   const canSubmit =
     prenom.trim().length > 0 && TEL_RE.test(telephone.trim()) && consentement;
+
+  const avancerSousEtape = () => setSubStep((s) => s + 1);
+  const reculerSousEtape = () => (subStep > 0 ? setSubStep((s) => s - 1) : setStep(1));
+
+  // Liste ordonnée des sous-questions de l'étape 2 — même ordre et mêmes
+  // conditions d'affichage que l'ancien formulaire "tout en un", mais une
+  // seule question rendue à la fois (voir `step === 2` plus bas). Un item
+  // masqué (`visible: false`) est simplement retiré de la liste filtrée :
+  // une question qui devient pertinente après une réponse (ex. "Offre
+  // actuelle" après avoir saisi une dépense box) apparaît alors à sa place
+  // naturelle, juste après la question qui l'a révélée.
+  type QuestionEtape2 = { key: string; visible: boolean; content: ReactNode };
+
+  const questionsEtape2: QuestionEtape2[] = [
+    {
+      key: 'objectif',
+      visible: true,
+      content: (
+        <div>
+          <h3 className="mb-4 text-lg font-semibold text-slate-900">Votre objectif principal ?</h3>
+          <div className="grid grid-cols-2 gap-2">
+            {OBJECTIFS_PRINCIPAUX.map((opt) => (
+              <button
+                key={opt.key}
+                type="button"
+                onClick={() => {
+                  const nouveau = objectifPrincipal === opt.key ? '' : opt.key;
+                  setObjectifPrincipal(nouveau);
+                  if (nouveau) avancerSousEtape();
+                }}
+                className={`rounded-lg border-2 px-2 py-2.5 text-sm font-medium transition-all ${
+                  objectifPrincipal === opt.key
+                    ? 'border-sky-600 bg-sky-600 text-white'
+                    : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: 'adresse',
+      visible: secteurs.includes('energie'),
+      content: (
+        <div>
+          <h3 className="mb-4 text-lg font-semibold text-slate-900">Votre adresse</h3>
+          <AdresseAutocomplete
+            value={adresseTexte}
+            onChange={(v) => {
+              setAdresseTexte(v);
+              setAdresseSuggestion(null);
+            }}
+            onSelect={setAdresseSuggestion}
+          />
+        </div>
+      ),
+    },
+    {
+      key: 'depense_mobile',
+      visible: mobilePertinent,
+      content: <MoneyInput label="Forfait mobile — combien payez-vous par mois ?" value={depenses.mobile}
+        onChange={(v) => setDepenses({ ...depenses, mobile: v })} />,
+    },
+    {
+      key: 'depense_box',
+      visible: boxPertinent,
+      content: <MoneyInput label="Box internet — combien payez-vous par mois ?" value={depenses.box_fibre}
+        onChange={(v) => setDepenses({ ...depenses, box_fibre: v })} />,
+    },
+    {
+      key: 'box_operateur',
+      visible: boxPertinent && Boolean(depenses.box_fibre),
+      content: (
+        <SelectOperateur
+          label="Opérateur box actuel (optionnel)"
+          options={OPERATEURS_BOX}
+          value={operateurBox}
+          onChange={setOperateurBox}
+        />
+      ),
+    },
+    {
+      key: 'box_offre',
+      visible: boxPertinent && Boolean(depenses.box_fibre),
+      content: (
+        <div>
+          <h3 className="mb-4 text-lg font-semibold text-slate-900">Offre actuelle</h3>
+          <div className="grid grid-cols-2 gap-2">
+            {OFFRES_BOX.map((opt) => (
+              <button
+                key={opt}
+                type="button"
+                onClick={() => {
+                  const nouveau = offreBox === opt ? '' : opt;
+                  setOffreBox(nouveau);
+                  if (nouveau) avancerSousEtape();
+                }}
+                className={`rounded-lg border-2 px-2 py-2 text-sm font-medium transition-all ${
+                  offreBox === opt
+                    ? 'border-sky-600 bg-sky-50 text-sky-900'
+                    : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
+                }`}
+              >
+                {opt}
+              </button>
+            ))}
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: 'box_debit',
+      visible: boxPertinent && Boolean(depenses.box_fibre),
+      content: (
+        <div>
+          <label className="mb-1 block text-lg font-semibold text-slate-900">Débit box (optionnel)</label>
+          <div className="relative">
+            <input
+              type="number"
+              inputMode="numeric"
+              min={0}
+              value={debitBox}
+              onChange={(e) => setDebitBox(e.target.value ? Number(e.target.value) : '')}
+              placeholder="Ex : 400"
+              className="w-full rounded-lg border border-slate-300 py-3 pl-4 pr-16 text-lg focus:border-sky-600 focus:outline-none focus:ring-2 focus:ring-sky-200"
+            />
+            <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm text-slate-500">Mbps</span>
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: 'box_usage_tv',
+      visible: boxPertinent && Boolean(depenses.box_fibre),
+      content: (
+        <div>
+          <h3 className="mb-4 text-lg font-semibold text-slate-900">Regardez-vous la TV via la box ?</h3>
+          <div className="grid grid-cols-1 gap-2">
+            {USAGES_TV.map((opt) => (
+              <button
+                key={opt}
+                type="button"
+                onClick={() => {
+                  const nouveau = usageTv === opt ? '' : opt;
+                  setUsageTv(nouveau);
+                  if (nouveau) avancerSousEtape();
+                }}
+                className={`rounded-lg border-2 px-2 py-2 text-sm font-medium transition-all ${
+                  usageTv === opt
+                    ? 'border-sky-600 bg-sky-50 text-sky-900'
+                    : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
+                }`}
+              >
+                {opt}
+              </button>
+            ))}
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: 'box_abonnements',
+      visible: boxPertinent && Boolean(depenses.box_fibre) && usageTv !== '' && usageTv !== 'Jamais, uniquement streaming',
+      content: (
+        <SelectionMultiple
+          label="Abonnements payants en plus (optionnel)"
+          options={ABONNEMENTS_PAYANTS_OPTIONS}
+          selection={abonnementsSelection}
+          onChangeSelection={setAbonnementsSelection}
+          autre={abonnementAutre}
+          onChangeAutre={setAbonnementAutre}
+        />
+      ),
+    },
+    {
+      key: 'depense_electricite',
+      visible: secteurs.includes('energie'),
+      content: <MoneyInput label="Électricité — combien payez-vous par mois ?" value={depenses.electricite}
+        onChange={(v) => setDepenses({ ...depenses, electricite: v })} />,
+    },
+    {
+      key: 'depense_gaz',
+      visible: secteurs.includes('energie'),
+      content: <MoneyInput label="Gaz — combien payez-vous par mois ?" value={depenses.gaz}
+        onChange={(v) => setDepenses({ ...depenses, gaz: v })} />,
+    },
+    {
+      key: 'energie_fournisseur',
+      visible: secteurs.includes('energie') && Boolean(depenses.electricite || depenses.gaz),
+      content: (
+        <div>
+          <label className="mb-1 block text-lg font-semibold text-slate-900">
+            Fournisseur d'énergie actuel (optionnel)
+          </label>
+          <input
+            type="text"
+            value={fournisseurEnergie}
+            onChange={(e) => setFournisseurEnergie(e.target.value)}
+            placeholder="Ex : EDF, Engie, TotalEnergies…"
+            className="w-full rounded-lg border border-slate-300 px-4 py-3 text-lg focus:border-sky-600 focus:outline-none focus:ring-2 focus:ring-sky-200"
+          />
+        </div>
+      ),
+    },
+    {
+      key: 'energie_chauffage',
+      visible: secteurs.includes('energie') && Boolean(depenses.electricite || depenses.gaz),
+      content: (
+        <div>
+          <h3 className="mb-4 text-lg font-semibold text-slate-900">Chauffage principal du logement</h3>
+          <div className="grid grid-cols-2 gap-2">
+            {CHAUFFAGES_PRINCIPAUX.map((opt) => (
+              <button
+                key={opt}
+                type="button"
+                onClick={() => {
+                  const nouveau = chauffagePrincipal === opt ? '' : opt;
+                  setChauffagePrincipal(nouveau);
+                  if (nouveau) avancerSousEtape();
+                }}
+                className={`rounded-lg border-2 px-2 py-2 text-xs font-medium transition-all sm:text-sm ${
+                  chauffagePrincipal === opt
+                    ? 'border-sky-600 bg-sky-50 text-sky-900'
+                    : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
+                }`}
+              >
+                {opt}
+              </button>
+            ))}
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: 'energie_puissance',
+      visible: Boolean(depenses.electricite),
+      content: (
+        <div>
+          <h3 className="mb-4 text-lg font-semibold text-slate-900">
+            Puissance souscrite (kVA — sur votre facture, en haut)
+          </h3>
+          <div className="grid grid-cols-4 gap-2">
+            {PUISSANCES_KVA.map((opt) => (
+              <button
+                key={opt}
+                type="button"
+                onClick={() => {
+                  const nouveau = puissanceKva === opt ? '' : opt;
+                  setPuissanceKva(nouveau);
+                  if (nouveau) avancerSousEtape();
+                }}
+                className={`rounded-lg border-2 px-2 py-2 text-sm font-medium transition-all ${
+                  puissanceKva === opt
+                    ? 'border-sky-600 bg-sky-600 text-white'
+                    : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
+                }`}
+              >
+                {opt}
+              </button>
+            ))}
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: 'energie_gros_equipement',
+      visible: puissanceKva === '9' || puissanceKva === '12+',
+      content: (
+        <div>
+          <h3 className="mb-4 text-lg font-semibold text-slate-900">
+            Avez-vous une clim, une piscine, un véhicule électrique ou des plaques induction puissantes ?
+          </h3>
+          <div className="grid grid-cols-2 gap-2">
+            {[{ label: 'Oui', value: true }, { label: 'Non', value: false }].map((opt) => (
+              <button
+                key={opt.label}
+                type="button"
+                onClick={() => {
+                  const nouveau = grosEquipementElectrique === opt.value ? null : opt.value;
+                  setGrosEquipementElectrique(nouveau);
+                  if (nouveau !== null) avancerSousEtape();
+                }}
+                className={`rounded-lg border-2 px-2 py-2 text-sm font-medium transition-all ${
+                  grosEquipementElectrique === opt.value
+                    ? 'border-sky-600 bg-sky-50 text-sky-900'
+                    : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          {grosEquipementElectrique === false && (
+            <p className="mt-2 rounded-lg bg-emerald-50 p-3 text-xs text-emerald-800">
+              💡 Sans gros équipement, vous pourriez économiser en baissant votre puissance souscrite à
+              6 kVA — le conseiller vérifiera ça avec vous.
+            </p>
+          )}
+        </div>
+      ),
+    },
+    {
+      key: 'energie_option_tarifaire',
+      visible: Boolean(depenses.electricite),
+      content: (
+        <div>
+          <h3 className="mb-4 text-lg font-semibold text-slate-900">Option tarifaire actuelle</h3>
+          <div className="grid grid-cols-3 gap-2">
+            {OPTIONS_TARIFAIRES.map((opt) => (
+              <button
+                key={opt}
+                type="button"
+                onClick={() => {
+                  const nouveau = optionTarifaire === opt ? '' : opt;
+                  setOptionTarifaire(nouveau);
+                  if (nouveau) avancerSousEtape();
+                }}
+                className={`rounded-lg border-2 px-2 py-2 text-xs font-medium transition-all sm:text-sm ${
+                  optionTarifaire === opt
+                    ? 'border-sky-600 bg-sky-50 text-sky-900'
+                    : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
+                }`}
+              >
+                {opt}
+              </button>
+            ))}
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: 'depense_assurance_auto',
+      visible: secteurs.includes('assurances'),
+      content: <MoneyInput label="Assurance auto — combien payez-vous par mois ?" value={depenses.assurance_auto}
+        onChange={(v) => setDepenses({ ...depenses, assurance_auto: v })} />,
+    },
+    {
+      key: 'assurance_bonus_malus',
+      visible: secteurs.includes('assurances') && Boolean(depenses.assurance_auto),
+      content: (
+        <div>
+          <label className="mb-1 block text-lg font-semibold text-slate-900">
+            Bonus/malus assurance auto (optionnel)
+          </label>
+          <input
+            type="text"
+            inputMode="decimal"
+            value={bonusMalusAuto}
+            onChange={(e) => setBonusMalusAuto(e.target.value)}
+            placeholder="Ex : 0.85"
+            className="w-full rounded-lg border border-slate-300 px-4 py-3 text-lg focus:border-sky-600 focus:outline-none focus:ring-2 focus:ring-sky-200"
+          />
+        </div>
+      ),
+    },
+    {
+      key: 'depense_assurance_habitation',
+      visible: secteurs.includes('assurances'),
+      content: <MoneyInput label="Assurance habitation — combien payez-vous par mois ?" value={depenses.assurance_habitation}
+        onChange={(v) => setDepenses({ ...depenses, assurance_habitation: v })} />,
+    },
+    {
+      key: 'depense_assurance_sante',
+      visible: secteurs.includes('assurances'),
+      content: <MoneyInput label="Mutuelle santé — combien payez-vous par mois ?" value={depenses.assurance_sante}
+        onChange={(v) => setDepenses({ ...depenses, assurance_sante: v })} />,
+    },
+    {
+      key: 'mobile_nb_lignes',
+      visible: mobilePertinent,
+      content: (
+        <div>
+          <h3 className="mb-4 text-lg font-semibold text-slate-900">Combien de lignes mobiles à optimiser ?</h3>
+          <div className="grid grid-cols-2 gap-2">
+            {NB_LIGNES_MOBILES.map((opt) => (
+              <button
+                key={opt}
+                type="button"
+                onClick={() => {
+                  const nouveau = nbLignesMobiles === opt ? '' : opt;
+                  setNbLignesMobiles(nouveau);
+                  if (nouveau) avancerSousEtape();
+                }}
+                className={`rounded-lg border-2 px-2 py-2 text-sm font-medium transition-all ${
+                  nbLignesMobiles === opt
+                    ? 'border-sky-600 bg-sky-50 text-sky-900'
+                    : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
+                }`}
+              >
+                {opt}
+              </button>
+            ))}
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: 'mobile_operateur',
+      visible: mobilePertinent,
+      content: (
+        <SelectOperateur
+          label="Opérateur mobile actuel (optionnel)"
+          options={OPERATEURS_MOBILE}
+          value={operateurMobile}
+          onChange={setOperateurMobile}
+        />
+      ),
+    },
+    {
+      key: 'mobile_conso_data',
+      visible: mobilePertinent,
+      content: (
+        <div>
+          <label className="mb-1 block text-lg font-semibold text-slate-900">
+            Consommation data mensuelle (optionnel)
+          </label>
+          <div className="relative">
+            <input
+              type="number"
+              inputMode="numeric"
+              min={0}
+              max={1000}
+              value={consoDataGo}
+              onChange={(e) => setConsoDataGo(e.target.value ? Number(e.target.value) : '')}
+              placeholder="20 (moyenne nationale)"
+              className="w-full rounded-lg border border-slate-300 py-3 pl-4 pr-12 text-lg focus:border-sky-600 focus:outline-none focus:ring-2 focus:ring-sky-200"
+            />
+            <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm text-slate-500">Go</span>
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: 'mobile_roaming_europe',
+      visible: mobilePertinent,
+      content: (
+        <div>
+          <h3 className="mb-4 text-lg font-semibold text-slate-900">Voyagez-vous en Europe ?</h3>
+          <div className="grid grid-cols-3 gap-2">
+            {ROAMING_OPTIONS.map((opt) => (
+              <button
+                key={opt}
+                type="button"
+                onClick={() => {
+                  const nouveau = roamingEurope === opt ? '' : opt;
+                  setRoamingEurope(nouveau);
+                  if (nouveau) avancerSousEtape();
+                }}
+                className={`rounded-lg border-2 px-2 py-2 text-xs font-medium transition-all sm:text-sm ${
+                  roamingEurope === opt
+                    ? 'border-sky-600 bg-sky-50 text-sky-900'
+                    : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
+                }`}
+              >
+                {opt}
+              </button>
+            ))}
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: 'mobile_roaming_monde',
+      visible: mobilePertinent && roamingEurope !== '',
+      content: (
+        <div>
+          <h3 className="mb-4 text-lg font-semibold text-slate-900">Voyagez-vous dans le monde (hors Europe) ?</h3>
+          <div className="grid grid-cols-3 gap-2">
+            {ROAMING_OPTIONS.map((opt) => (
+              <button
+                key={opt}
+                type="button"
+                onClick={() => {
+                  const nouveau = roamingMonde === opt ? '' : opt;
+                  setRoamingMonde(nouveau);
+                  if (nouveau) avancerSousEtape();
+                }}
+                className={`rounded-lg border-2 px-2 py-2 text-xs font-medium transition-all sm:text-sm ${
+                  roamingMonde === opt
+                    ? 'border-sky-600 bg-sky-50 text-sky-900'
+                    : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
+                }`}
+              >
+                {opt}
+              </button>
+            ))}
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: 'tranche_age',
+      visible: true,
+      content: (
+        <div>
+          <h3 className="mb-4 text-lg font-semibold text-slate-900">
+            Votre tranche d'âge (pour comparer avec des clients similaires)
+          </h3>
+          <div className="grid grid-cols-3 gap-2">
+            {TRANCHES_AGE.map((tr) => (
+              <button
+                key={tr}
+                type="button"
+                onClick={() => setTrancheAge((prev) => (prev === tr ? '' : tr))}
+                className={`rounded-lg border-2 px-2 py-2.5 text-sm font-medium transition-all ${
+                  trancheAge === tr
+                    ? 'border-sky-600 bg-sky-600 text-white'
+                    : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
+                }`}
+              >
+                {tr}
+              </button>
+            ))}
+          </div>
+        </div>
+      ),
+    },
+  ];
+
+  const questionsEtape2Visibles = questionsEtape2.filter((q) => q.visible);
+  const subStepClamped = Math.min(subStep, questionsEtape2Visibles.length - 1);
+  const questionActuelle = questionsEtape2Visibles[subStepClamped];
 
   const toggleSecteur = (key: string) => {
     setSecteurs((prev) => {
@@ -185,14 +774,37 @@ export function EstimationForm({
           prenom: prenom.trim(),
           telephone: telephone.trim(),
           email: email.trim() || undefined,
-          age: typeof age === 'number' ? age : undefined,
+          tranche_age: trancheAge || undefined,
           depenses,
-          operateur_actuel: operateurActuel.trim() || undefined,
+          operateur_mobile: operateurMobile.trim() || undefined,
+          operateur_box: operateurBox.trim() || undefined,
+          offre_box: offreBox || undefined,
+          debit_box: typeof debitBox === 'number' ? debitBox : undefined,
+          fournisseur_energie: fournisseurEnergie.trim() || undefined,
           conso_data_go: typeof consoDataGo === 'number' ? consoDataGo : undefined,
           roaming_europe: roamingEurope || undefined,
-          sensibilite_prix: sensibilitePrix || undefined,
+          roaming_hors_ue: roamingMonde || undefined,
           bonus_malus_auto: bonusMalusAuto.trim() || undefined,
-          plage_horaire_rappel: plageHoraire || undefined,
+          plage_horaire_rappel: [jourRappel, plageHoraire].filter(Boolean).join(' · ') || undefined,
+          objectif_principal: objectifPrincipal || undefined,
+          adresse: adresseSuggestion
+            ? {
+                label: adresseTexte || undefined,
+                code_postal: adresseSuggestion.code_postal,
+                ville: adresseSuggestion.ville,
+                code_insee: adresseSuggestion.code_insee,
+                latitude: adresseSuggestion.latitude,
+                longitude: adresseSuggestion.longitude,
+              }
+            : undefined,
+          nb_lignes_mobiles: nbLignesMobiles || undefined,
+          chauffage_principal: chauffagePrincipal || undefined,
+          puissance_kva: puissanceKva || undefined,
+          gros_equipement_electrique: grosEquipementElectrique ?? undefined,
+          option_tarifaire: optionTarifaire || undefined,
+          usage_tv: usageTv || undefined,
+          abonnements_payants:
+            [...abonnementsSelection, abonnementAutre.trim()].filter(Boolean).join(', ') || undefined,
           consentement_rgpd: consentement,
           consentement_demarchage: consentementDemarchage,
           utm,
@@ -238,7 +850,10 @@ export function EstimationForm({
       {step < 4 && (
         <div className="mb-6">
           <div className="mb-2 flex justify-between text-xs font-medium text-slate-500">
-            <span>Étape {step}/3</span>
+            <span>
+              Étape {step}/3
+              {step === 2 && ` · question ${subStepClamped + 1}/${questionsEtape2Visibles.length}`}
+            </span>
             <span>{Math.round((step / 3) * 100)}%</span>
           </div>
           <div className="h-2 overflow-hidden rounded-full bg-slate-100">
@@ -247,6 +862,16 @@ export function EstimationForm({
               style={{ width: `${(step / 3) * 100}%` }}
             />
           </div>
+          {step === 2 && (
+            <div className="mt-1 h-1 overflow-hidden rounded-full bg-slate-100">
+              <div
+                className="h-full bg-sky-300 transition-all duration-300"
+                style={{
+                  width: `${questionsEtape2Visibles.length > 0 ? ((subStepClamped + 1) / questionsEtape2Visibles.length) * 100 : 0}%`,
+                }}
+              />
+            </div>
+          )}
         </div>
       )}
 
@@ -321,7 +946,10 @@ export function EstimationForm({
           <button
             type="button"
             disabled={!canGoStep2}
-            onClick={() => setStep(2)}
+            onClick={() => {
+              setSubStep(0);
+              setStep(2);
+            }}
             className="mt-6 w-full rounded-xl bg-sky-600 py-4 text-lg font-semibold text-white transition-opacity hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-40"
           >
             Continuer →
@@ -329,175 +957,38 @@ export function EstimationForm({
         </div>
       )}
 
-      {step === 2 && (
+      {step === 2 && questionActuelle && (
         <div>
-          <h2 className="mb-4 text-xl font-bold text-slate-900">Combien payez-vous aujourd'hui ?</h2>
-          <p className="mb-6 text-sm text-slate-600">
-            Une estimation suffit — on affinera au téléphone.
-          </p>
-
-          <div className="space-y-3">
-            {mobilePertinent && (
-              <MoneyInput label="Forfait mobile" value={depenses.mobile}
-                onChange={(v) => setDepenses({ ...depenses, mobile: v })} />
-            )}
-            {boxPertinent && (
-              <MoneyInput label="Box / Fibre" value={depenses.box_fibre}
-                onChange={(v) => setDepenses({ ...depenses, box_fibre: v })} />
-            )}
-            {secteurs.includes('energie') && (
-              <>
-                <MoneyInput label="Électricité" value={depenses.electricite}
-                  onChange={(v) => setDepenses({ ...depenses, electricite: v })} />
-                <MoneyInput label="Gaz" value={depenses.gaz}
-                  onChange={(v) => setDepenses({ ...depenses, gaz: v })} />
-              </>
-            )}
-            {secteurs.includes('assurances') && (
-              <>
-                <MoneyInput label="Assurance auto" value={depenses.assurance_auto}
-                  onChange={(v) => setDepenses({ ...depenses, assurance_auto: v })} />
-                {depenses.assurance_auto ? (
-                  <div>
-                    <label className="mb-1 block text-sm font-medium text-slate-700">
-                      Bonus/malus assurance auto (optionnel)
-                    </label>
-                    <input
-                      type="text"
-                      inputMode="decimal"
-                      value={bonusMalusAuto}
-                      onChange={(e) => setBonusMalusAuto(e.target.value)}
-                      placeholder="Ex : 0.85"
-                      className="w-full rounded-lg border border-slate-300 px-4 py-3 text-lg focus:border-sky-600 focus:outline-none focus:ring-2 focus:ring-sky-200"
-                    />
-                  </div>
-                ) : null}
-                <MoneyInput label="Assurance habitation" value={depenses.assurance_habitation}
-                  onChange={(v) => setDepenses({ ...depenses, assurance_habitation: v })} />
-                <MoneyInput label="Mutuelle santé" value={depenses.assurance_sante}
-                  onChange={(v) => setDepenses({ ...depenses, assurance_sante: v })} />
-              </>
-            )}
-          </div>
-
-          {mobilePertinent && (
-            <div className="mt-6 space-y-4 rounded-xl border-2 border-sky-100 bg-sky-50/60 p-4">
-              <p className="text-sm font-medium text-slate-700">
-                Quelques infos en plus — pour que le conseiller ne vous les redemande pas au téléphone.
-              </p>
-
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700">
-                  Opérateur mobile actuel (optionnel)
-                </label>
-                <input
-                  type="text"
-                  value={operateurActuel}
-                  onChange={(e) => setOperateurActuel(e.target.value)}
-                  placeholder="Ex : Orange, SFR, Free…"
-                  className="w-full rounded-lg border border-slate-300 px-4 py-3 text-lg focus:border-sky-600 focus:outline-none focus:ring-2 focus:ring-sky-200"
-                />
-              </div>
-
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700">
-                  Consommation data mensuelle (optionnel)
-                </label>
-                <div className="relative">
-                  <input
-                    type="number"
-                    inputMode="numeric"
-                    min={0}
-                    max={1000}
-                    value={consoDataGo}
-                    onChange={(e) => setConsoDataGo(e.target.value ? Number(e.target.value) : '')}
-                    placeholder="20 (moyenne nationale)"
-                    className="w-full rounded-lg border border-slate-300 py-3 pl-4 pr-12 text-lg focus:border-sky-600 focus:outline-none focus:ring-2 focus:ring-sky-200"
-                  />
-                  <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm text-slate-500">
-                    Go
-                  </span>
-                </div>
-              </div>
-
-              <div>
-                <label className="mb-2 block text-sm font-medium text-slate-700">
-                  Voyagez-vous en Europe ?
-                </label>
-                <div className="grid grid-cols-3 gap-2">
-                  {ROAMING_OPTIONS.map((opt) => (
-                    <button
-                      key={opt}
-                      type="button"
-                      onClick={() => setRoamingEurope((prev) => (prev === opt ? '' : opt))}
-                      className={`rounded-lg border-2 px-2 py-2 text-xs font-medium transition-all sm:text-sm ${
-                        roamingEurope === opt
-                          ? 'border-sky-600 bg-sky-50 text-sky-900'
-                          : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
-                      }`}
-                    >
-                      {opt}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <label className="mb-2 block text-sm font-medium text-slate-700">
-                  Ce qui compte le plus pour vous ?
-                </label>
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                  {SENSIBILITE_PRIX_OPTIONS.map((opt) => (
-                    <button
-                      key={opt}
-                      type="button"
-                      onClick={() => setSensibilitePrix((prev) => (prev === opt ? '' : opt))}
-                      className={`rounded-lg border-2 px-2 py-2 text-xs font-medium transition-all sm:text-sm ${
-                        sensibilitePrix === opt
-                          ? 'border-sky-600 bg-sky-50 text-sky-900'
-                          : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
-                      }`}
-                    >
-                      {opt}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-
-          <div className="mt-6">
-            <label className="mb-2 block text-sm font-medium text-slate-700">
-              Votre âge (pour comparer avec des clients similaires)
-            </label>
-            <input
-              type="number"
-              inputMode="numeric"
-              min={18}
-              max={120}
-              value={age}
-              onChange={(e) => setAge(e.target.value ? Number(e.target.value) : '')}
-              className="w-full rounded-lg border border-slate-300 px-4 py-3 text-lg focus:border-sky-600 focus:outline-none focus:ring-2 focus:ring-sky-200"
-              placeholder="35"
-            />
-          </div>
+          <QuestionSlide slideKey={questionActuelle.key}>
+            {questionActuelle.content}
+          </QuestionSlide>
 
           <div className="mt-6 flex gap-3">
             <button
               type="button"
-              onClick={() => setStep(1)}
+              onClick={reculerSousEtape}
               className="rounded-xl border border-slate-300 px-4 py-3 text-slate-600 hover:bg-slate-50"
             >
               ← Retour
             </button>
-            <button
-              type="button"
-              disabled={!canGoStep3}
-              onClick={() => setStep(3)}
-              className="flex-1 rounded-xl bg-sky-600 py-4 text-lg font-semibold text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Voir mon estimation →
-            </button>
+            {subStepClamped === questionsEtape2Visibles.length - 1 ? (
+              <button
+                type="button"
+                disabled={!canGoStep3}
+                onClick={() => setStep(3)}
+                className="flex-1 rounded-xl bg-sky-600 py-4 text-lg font-semibold text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Voir mon estimation →
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={avancerSousEtape}
+                className="flex-1 rounded-xl bg-sky-600 py-4 text-lg font-semibold text-white hover:bg-sky-700"
+              >
+                Suivant →
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -522,7 +1013,23 @@ export function EstimationForm({
             <label className="mb-2 block text-sm font-medium text-slate-700">
               Quand préférez-vous être rappelé ? (optionnel)
             </label>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {JOURS_RAPPEL.map((jour) => (
+                <button
+                  key={jour}
+                  type="button"
+                  onClick={() => setJourRappel((prev) => (prev === jour ? '' : jour))}
+                  className={`rounded-lg border-2 px-3 py-2 text-sm font-medium transition-all ${
+                    jourRappel === jour
+                      ? 'border-sky-600 bg-sky-50 text-sky-900'
+                      : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
+                  }`}
+                >
+                  {jour}
+                </button>
+              ))}
+            </div>
+            <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
               {PLAGES_HORAIRES.map((plage) => (
                 <button
                   key={plage}
@@ -577,7 +1084,10 @@ export function EstimationForm({
           <div className="mt-6 flex gap-3">
             <button
               type="button"
-              onClick={() => setStep(2)}
+              onClick={() => {
+                setSubStep(questionsEtape2Visibles.length - 1);
+                setStep(2);
+              }}
               className="rounded-xl border border-slate-300 px-4 py-3 text-slate-600 hover:bg-slate-50"
             >
               ← Retour
@@ -683,6 +1193,30 @@ export function EstimationForm({
   );
 }
 
+// Enveloppe une sous-question de l'étape 2 avec une transition fondu +
+// léger glissement à chaque changement de `slideKey` (sans démonter le
+// contenu — juste un aller-retour opacity/translate piloté par CSS) : donne
+// l'effet "une question à la fois" façon Typeform sans dépendance externe.
+function QuestionSlide({ slideKey, children }: { slideKey: string; children: ReactNode }) {
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    setVisible(false);
+    const frame = requestAnimationFrame(() => setVisible(true));
+    return () => cancelAnimationFrame(frame);
+  }, [slideKey]);
+
+  return (
+    <div
+      className={`transition-all duration-300 ease-out ${
+        visible ? 'translate-x-0 opacity-100' : 'translate-x-2 opacity-0'
+      }`}
+    >
+      {children}
+    </div>
+  );
+}
+
 function MoneyInput({
   label, value, onChange,
 }: {
@@ -692,7 +1226,7 @@ function MoneyInput({
 }) {
   return (
     <div>
-      <label className="mb-1 block text-sm font-medium text-slate-700">{label}</label>
+      <label className="mb-3 block text-lg font-semibold text-slate-900">{label}</label>
       <div className="relative">
         <input
           type="number"
@@ -708,6 +1242,109 @@ function MoneyInput({
           €/mois
         </span>
       </div>
+    </div>
+  );
+}
+
+// Menu déroulant "opérateur" avec option "Autre" qui révèle un champ texte
+// libre — même liste réutilisable pour mobile et box (valeurs différentes).
+function SelectOperateur({
+  label, options, value, onChange,
+}: {
+  label: string;
+  options: readonly string[];
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const [modeAutre, setModeAutre] = useState(() => value !== '' && !options.includes(value));
+
+  return (
+    <div>
+      <label className="mb-1 block text-sm font-medium text-slate-700">{label}</label>
+      <select
+        value={modeAutre ? 'Autre' : value}
+        onChange={(e) => {
+          if (e.target.value === 'Autre') {
+            setModeAutre(true);
+            onChange('');
+          } else {
+            setModeAutre(false);
+            onChange(e.target.value);
+          }
+        }}
+        className="w-full rounded-lg border border-slate-300 px-4 py-3 text-lg focus:border-sky-600 focus:outline-none focus:ring-2 focus:ring-sky-200"
+      >
+        <option value="">Sélectionner…</option>
+        {options.map((o) => (
+          <option key={o} value={o}>{o}</option>
+        ))}
+        <option value="Autre">Autre</option>
+      </select>
+      {modeAutre && (
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="Précisez l'opérateur…"
+          className="mt-2 w-full rounded-lg border border-slate-300 px-4 py-3 text-lg focus:border-sky-600 focus:outline-none focus:ring-2 focus:ring-sky-200"
+        />
+      )}
+    </div>
+  );
+}
+
+// Menu déroulant multi-choix (B3b) — cases à cocher parmi une liste standard
+// + "Autre" en texte libre. Les valeurs sont jointes en une chaîne
+// ", "-séparée par l'appelant avant envoi (pas de changement de schéma
+// backend, `abonnements_payants` reste une simple chaîne).
+function SelectionMultiple({
+  label, options, selection, onChangeSelection, autre, onChangeAutre,
+}: {
+  label: string;
+  options: readonly string[];
+  selection: string[];
+  onChangeSelection: (v: string[]) => void;
+  autre: string;
+  onChangeAutre: (v: string) => void;
+}) {
+  const toggle = (option: string) => {
+    onChangeSelection(
+      selection.includes(option) ? selection.filter((o) => o !== option) : [...selection, option]
+    );
+  };
+  return (
+    <div>
+      <label className="mb-2 block text-sm font-medium text-slate-700">{label}</label>
+      <div className="grid grid-cols-2 gap-2">
+        {options.map((option) => (
+          <button
+            key={option}
+            type="button"
+            onClick={() => toggle(option)}
+            className={`flex items-center gap-2 rounded-lg border-2 px-2 py-2 text-sm font-medium transition-all ${
+              selection.includes(option)
+                ? 'border-sky-600 bg-sky-50 text-sky-900'
+                : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
+            }`}
+          >
+            <span
+              className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border text-[10px] ${
+                selection.includes(option) ? 'border-sky-600 bg-sky-600 text-white' : 'border-slate-300'
+              }`}
+            >
+              {selection.includes(option) && '✓'}
+            </span>
+            {option}
+          </button>
+        ))}
+      </div>
+      <input
+        type="text"
+        value={autre}
+        onChange={(e) => onChangeAutre(e.target.value)}
+        placeholder="Autre (précisez)…"
+        className="mt-2 w-full rounded-lg border border-slate-300 px-4 py-3 text-lg focus:border-sky-600 focus:outline-none focus:ring-2 focus:ring-sky-200"
+      />
     </div>
   );
 }

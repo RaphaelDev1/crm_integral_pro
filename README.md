@@ -38,7 +38,8 @@ Identifiants par défaut au premier lancement : `admin` / `Admin2026!`
 
 ## Documentation
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — organisation du code et du flux applicatif
+- [docs/CARTOGRAPHIE_APPLICATION.md](docs/CARTOGRAPHIE_APPLICATION.md) — vue d'ensemble de a à z : ce que fait l'application, comment elle est construite (backend, frontends, module IA Conseil), structure des dossiers
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — organisation du code et du flux applicatif (legacy Streamlit)
 - [docs/DATABASE.md](docs/DATABASE.md) — schéma SQLite
 - [docs/API.md](docs/API.md) — placeholder pour une future API
 - [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) — conventions de contribution

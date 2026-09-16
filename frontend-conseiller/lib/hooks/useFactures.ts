@@ -22,9 +22,19 @@ export function useAnalyserFacture() {
 
 // Analyses automatiques (à l'upload via le lien de collecte documents, voir
 // backend/routers/portail_public.py) d'un prospect.
-export function useProspectFacturesAnalysees(prospectId: number) {
+export function useProspectFacturesAnalysees(prospectId: number | undefined) {
   return useQuery({
-    queryKey: ["prospects", "factures-analysees", prospectId],
+    queryKey: ["prospects", "factures-analysees", prospectId ?? ""],
     queryFn: () => apiFetch<FactureAnalysePersistee[]>(`/prospects/${prospectId}/factures-analysees`),
+    enabled: prospectId !== undefined,
+  });
+}
+
+// Équivalent client — même lien de collecte, redemandé après conversion.
+export function useClientFacturesAnalysees(clientId: number | undefined) {
+  return useQuery({
+    queryKey: ["clients", "factures-analysees", clientId ?? ""],
+    queryFn: () => apiFetch<FactureAnalysePersistee[]>(`/clients/${clientId}/factures-analysees`),
+    enabled: clientId !== undefined,
   });
 }

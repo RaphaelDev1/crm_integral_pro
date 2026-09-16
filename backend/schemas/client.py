@@ -17,7 +17,9 @@ class ClientBase(BaseModel):
     techno: str | None = None
     data_go: str | None = None
     roaming_europe: str | None = None
+    roaming_hors_ue: str | None = None
     sensibilite_prix: str | None = None
+    objectif_principal: str | None = None
     offre_actuelle: str | None = None
     cout_mensuel_actuel: float | None = None
     satisfaction_reseau: str | None = None
@@ -32,6 +34,16 @@ class ClientBase(BaseModel):
     notes: str | None = None
     date_relance: str | None = None
     statut_relance: str | None = None
+    age: int | None = None
+    tranche_age: str | None = None
+    consentement_rgpd: bool | None = None
+    consentement_demarchage: bool | None = None
+    date_consentement: str | None = None
+    # Requis par la page "informations personnelles" du tunnel de souscription
+    # Free Mobile (voir backend/services/souscription_engine.py).
+    date_naissance: str | None = None
+    departement_naissance: str | None = None
+    ville_naissance: str | None = None
 
 
 class ClientCreate(ClientBase):

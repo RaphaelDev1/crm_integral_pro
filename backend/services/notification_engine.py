@@ -671,6 +671,34 @@ async def creer_notification_document(db: AsyncSession, dossier: "Dossier") -> N
     await db.commit()
 
 
+async def creer_notification_prospect(db: AsyncSession, prospect: "Prospect", message: str) -> None:
+    """Variante de `creer_notification_conseiller` pour un prospect pas encore
+    client (pas de `Dossier`) — utilisée quand il agit lui-même depuis son lien
+    personnel (upload de facture, mise à jour de sa situation actuelle) sans que
+    son conseiller ne le sache. `Prospect.cree_par` stocke le nom complet du
+    conseiller qui l'a créé, même convention que `Dossier.conseiller_responsable`
+    (voir backend/routers/prospects.py). Ne fait rien si le prospect n'a pas de
+    créateur identifié ou si son compte est introuvable (ne bloque jamais
+    l'action du prospect)."""
+    from backend.models.notification import Notification
+    from backend.models.user import User
+
+    if not prospect.cree_par:
+        return
+    utilisateur = (
+        await db.execute(select(User).where(User.nom_complet == prospect.cree_par))
+    ).scalars().first()
+    if utilisateur is None:
+        return
+    db.add(Notification(
+        conseiller_username=utilisateur.username,
+        message=message,
+        lien=f"/prospects/{prospect.id}",
+        date_creation=datetime.now().strftime("%d/%m/%Y %H:%M"),
+    ))
+    await db.commit()
+
+
 async def creer_notification_generique(
     db: AsyncSession, conseiller_id: int, message: str, *, lien: str | None = None
 ) -> None:

@@ -93,7 +93,7 @@ export default function DashboardPage() {
           value={kpis?.prospects_chauds}
           loading={summaryQuery.isLoading}
           icon={Flame}
-          iconClass="text-orange-600 bg-orange-50"
+          iconClass="text-orange-600 bg-orange-100 border border-orange-200"
           borderClass="border-l-orange-300"
         />
         <KpiTile
@@ -101,7 +101,7 @@ export default function DashboardPage() {
           value={kpis?.dossiers_en_cours}
           loading={summaryQuery.isLoading}
           icon={FolderKanban}
-          iconClass="text-blue-600 bg-blue-50"
+          iconClass="text-blue-600 bg-blue-100 border border-blue-200"
           borderClass="border-l-blue-300"
         />
         <KpiTile
@@ -109,7 +109,7 @@ export default function DashboardPage() {
           value={kpis?.total_clients}
           loading={summaryQuery.isLoading}
           icon={Users}
-          iconClass="text-emerald-600 bg-emerald-50"
+          iconClass="text-emerald-600 bg-emerald-100 border border-emerald-200"
           borderClass="border-l-emerald-300"
         />
         <KpiTile
@@ -117,7 +117,7 @@ export default function DashboardPage() {
           value={mandatsEnAttente}
           loading={mandatsQuery.isLoading}
           icon={FileSignature}
-          iconClass="text-violet-600 bg-violet-50"
+          iconClass="text-violet-600 bg-violet-100 border border-violet-200"
           borderClass="border-l-violet-300"
         />
       </div>
@@ -253,7 +253,7 @@ function RelanceQueueCard({ groupes, loading }: { groupes: GroupeRelance[]; load
                 <button
                   type="button"
                   onClick={() => toggle(groupe.cle)}
-                  className="flex w-full items-center justify-between px-3 py-2 text-left hover:bg-slate-900/5 dark:hover:bg-white/10"
+                  className="flex w-full items-center justify-between px-3 py-2 text-left transition-colors hover:bg-indigo-50 hover:text-indigo-900 dark:hover:bg-indigo-950/40 dark:hover:text-indigo-100"
                 >
                   <span className="flex items-center gap-2 font-medium text-sm">
                     {estOuvert ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
@@ -271,7 +271,7 @@ function RelanceQueueCard({ groupes, loading }: { groupes: GroupeRelance[]; load
                           <li key={`${item.type}-${item.id}`}>
                             <Link
                               href={item.type === "client" ? `/clients/${item.id}` : `/prospects/${item.id}`}
-                              className="flex flex-wrap items-center gap-3 py-3 text-sm hover:bg-slate-900/5 dark:hover:bg-white/10 rounded-md px-2"
+                              className="flex flex-wrap items-center gap-3 py-3 text-sm rounded-md px-2 transition-colors hover:bg-indigo-50 hover:text-indigo-900 dark:hover:bg-indigo-950/40 dark:hover:text-indigo-100"
                             >
                               <ScorePastille score={item.score} />
                               <Badge variant={item.type === "client" ? "default" : "outline"} className="shrink-0">
@@ -284,7 +284,7 @@ function RelanceQueueCard({ groupes, loading }: { groupes: GroupeRelance[]; load
                                   {item.statutRelance ? ` · ${item.statutRelance}` : ""}
                                 </span>
                               </span>
-                              <span className="hidden sm:flex shrink-0 w-32 items-center justify-center truncate rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">
+                              <span className="hidden sm:flex shrink-0 w-32 items-center justify-center truncate rounded-full border border-slate-200 bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700">
                                 {item.theme || "—"}
                               </span>
                               <span className="shrink-0 w-28 rounded-full bg-emerald-100 px-2.5 py-1 text-center text-xs font-bold text-emerald-800">
@@ -338,12 +338,12 @@ function DossiersStagnantsCard() {
           // création croissante côté backend (dossier_engine.dossiers_stagnants)
           // — les dossiers les plus rentables, et parmi eux les plus anciens,
           // apparaissent en premier.
-          <ul className="space-y-1 max-h-64 overflow-y-auto">
+          <ul className="divide-y max-h-64 overflow-y-auto">
             {(stagnantsQuery.data ?? []).map((dossier) => (
               <li key={dossier.id}>
                 <Link
                   href={`/dossiers/${dossier.id}`}
-                  className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-slate-100"
+                  className="flex items-center justify-between gap-2 px-2 py-2 text-sm transition-colors hover:bg-indigo-50 hover:text-indigo-900 dark:hover:bg-indigo-950/40 dark:hover:text-indigo-100"
                 >
                   <span className="flex items-center gap-2 min-w-0">
                     <span className="font-medium shrink-0">{ref(dossier)}</span>
@@ -398,9 +398,9 @@ function AlertesOffresCard() {
         ) : (alertesQuery.data ?? []).length === 0 ? (
           <p className="text-sm text-muted-foreground">Aucune alerte en attente.</p>
         ) : (
-          <ul className="space-y-2 max-h-64 overflow-y-auto">
+          <ul className="divide-y max-h-64 overflow-y-auto">
             {(alertesQuery.data ?? []).map((alerte) => (
-              <li key={alerte.id} className="flex items-center justify-between rounded-md px-2 py-1.5 text-sm">
+              <li key={alerte.id} className="flex items-center justify-between px-2 py-2 text-sm">
                 <span>
                   {label(alerte)} — économie {alerte.economie_mensuelle ?? 0} €/mois
                 </span>

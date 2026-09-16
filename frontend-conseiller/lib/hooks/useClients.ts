@@ -93,6 +93,41 @@ export function useGenererLienPortail() {
   });
 }
 
+interface LienDocumentsResult {
+  token: string;
+  url: string;
+  expire_le: string;
+  message_sms_suggere: string;
+}
+
+// Équivalent client de useGenererLienDocumentsProspect (useProspects.ts) —
+// lien de collecte facture/test de débit, avant même un nouveau diagnostic.
+export function useGenererLienDocumentsClient() {
+  return useMutation({
+    mutationFn: (clientId: number) =>
+      apiFetch<LienDocumentsResult>(`/clients/${clientId}/token-documents`, { method: "POST" }),
+  });
+}
+
+interface EnvoiLienResult {
+  token: string;
+  url: string;
+  expire_le: string;
+  sms_envoye: boolean;
+  email_envoye: boolean;
+}
+
+export function useEnvoyerLienDocumentsClient() {
+  return useMutation({
+    mutationFn: ({ clientId, canal }: { clientId: number; canal: "sms" | "email" }) =>
+      apiFetch<EnvoiLienResult>(`/clients/${clientId}/envoyer-lien-documents`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ canal }),
+      }),
+  });
+}
+
 export function useEnvoyerRelance() {
   const queryClient = useQueryClient();
   return useMutation({

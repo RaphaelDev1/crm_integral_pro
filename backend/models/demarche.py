@@ -24,7 +24,13 @@ if TYPE_CHECKING:
     from backend.models.mandat import Mandat
 
 
-TYPES_DEMARCHE = ("mandat", "resiliation", "portabilite", "souscription", "changement_fournisseur")
+TYPES_DEMARCHE = (
+    "mandat", "resiliation", "portabilite", "souscription", "changement_fournisseur",
+    # Trame adaptative par secteur (voir document_engine.CHAMPS_REQUIS_PAR_TEMPLATE
+    # et docs/QUESTIONS_PAR_SECTEUR.md) — pas de generateur PDF associe, ces
+    # demarches ne sont jamais generees/envoyees, seulement completees par le client.
+    "audit_mobile", "audit_box", "audit_energie",
+)
 STATUTS_DEMARCHE = ("a_generer", "generee", "envoyee", "accusee", "echouee")
 
 

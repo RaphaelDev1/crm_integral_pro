@@ -94,7 +94,7 @@ TRAME_BOX_V1 = {
                 {
                     "id": "defaut_technique",
                     "label": "Défaut technique potentiel constaté sur le réseau actuel ?",
-                    "type": "select", "options": ["Faible", "Moyen", "Critique"],
+                    "type": "select", "options": ["Aucun signalé", "Faible", "Moyen", "Critique"],
                     "cout_cognitif": 1, "poids_ethique": 1,
                 },
                 {

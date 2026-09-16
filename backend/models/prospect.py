@@ -4,12 +4,16 @@
 #  pour rester compatibles avec le formatage utilisé côté Streamlit (src/app.py).
 # ==============================================================================
 import uuid
+from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean, Float, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.models.base import Base
+
+if TYPE_CHECKING:
+    from backend.models.contrat import Contrat
 
 
 class Prospect(Base):
@@ -42,12 +46,20 @@ class Prospect(Base):
     univers_interesse: Mapped[str | None] = mapped_column(String, nullable=True)
     service_principal: Mapped[str | None] = mapped_column(String, nullable=True)
     operateur_actuel: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Opérateur box, distinct de `operateur_actuel` (mobile) — un prospect peut
+    # avoir deux opérateurs différents. `techno`/`speed_down` juste en dessous
+    # sont réutilisés pour l'offre ADSL/Fibre et le débit box déclarés sur la
+    # landing /economiser. Migration 0044.
+    operateur_box: Mapped[str | None] = mapped_column(String, nullable=True)
     techno: Mapped[str | None] = mapped_column(String, nullable=True)
     data_go: Mapped[str | None] = mapped_column(String, nullable=True)
     # Mêmes questions/valeurs que la trame mobile (roaming_ue / sensibilite_prix,
     # voir backend/scripts/seed_ia_conseil.py) — désormais posées aussi sur la
     # landing publique /economiser. Migration : 0038_landing_roaming_priorite.
     roaming_europe: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Voyage hors UE ("roaming_hors_ue" dans la trame) — posé sur la landing
+    # /economiser en complément de roaming_europe ci-dessus. Migration : 0045.
+    roaming_hors_ue: Mapped[str | None] = mapped_column(String, nullable=True)
     sensibilite_prix: Mapped[str | None] = mapped_column(String, nullable=True)
     cout_mensuel_actuel: Mapped[float | None] = mapped_column(Float, default=0)
     offre_actuelle: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -57,8 +69,12 @@ class Prospect(Base):
     # du prospect ("Faible" | "Moyen" | "Critique"), voir NIVEAUX_DEFAUT_TECHNIQUE
     # côté frontend (lib/diagnosticConstants.ts).
     defaut_technique: Mapped[str | None] = mapped_column(String, nullable=True)
-    speed_down: Mapped[float | None] = mapped_column(Float, default=0)
-    speed_up: Mapped[float | None] = mapped_column(Float, default=0)
+    speed_down: Mapped[float | None] = mapped_column(Float)
+    speed_up: Mapped[float | None] = mapped_column(Float)
+    # Débit auto-déclaré sur la landing publique (champ libre, jamais mesuré) —
+    # distinct de speed_down/speed_up, réservés au test de débit réellement
+    # effectué (voir portail_public.py::speedtest_fait). Migration 0046.
+    debit_declare: Mapped[float | None] = mapped_column(Float, nullable=True)
     cout_elec: Mapped[float | None] = mapped_column(Float, default=0)
     cout_gaz: Mapped[float | None] = mapped_column(Float, default=0)
     fournisseur_energie: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -136,3 +152,27 @@ class Prospect(Base):
     # (voir backend/workers/tasks.py::demander_facture_prospects).
     # Migration : 0031_facture_prospect_auto.
     demande_facture_envoyee: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # ==========================================================================
+    #  SOCLE COMMUN + MOBILE — trame de questions par secteur de la landing
+    #  /economiser (docs/QUESTIONS_PAR_SECTEUR.md), limitée aux questions qui
+    #  décrivent la personne plutôt qu'un contrat précis (cf. Contrat pour les
+    #  questions énergie/box). Migration : 0047_questions_par_secteur.
+    # ==========================================================================
+    # Objectif principal déclaré (S5) : "economiser" | "simplifier" |
+    # "ameliorer_qualite" | "regrouper" — pondère le scoring conseiller.
+    objectif_principal: Mapped[str | None] = mapped_column(String, nullable=True)
+    # "1" ou "2+" (M1) — si "2+", le conseiller demande lui-même le détail des
+    # lignes au téléphone plutôt que d'alourdir la landing.
+    nb_lignes_mobiles: Mapped[str | None] = mapped_column(String, nullable=True)
+    # "Bonne partout" | "Moyenne ou mauvaise à un endroit" (M5) — change la
+    # priorité de la recommandation (couverture avant prix) selon la trame.
+    qualite_reseau_mobile: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Date/lieu de naissance — requis par la page "informations personnelles"
+    # du tunnel de souscription Free Mobile (voir souscription_engine.py).
+    # date_naissance au format "JJ/MM/AAAA", comme les autres dates du projet.
+    # Migration : 0053_date_lieu_naissance.
+    date_naissance: Mapped[str | None] = mapped_column(String, nullable=True)
+    departement_naissance: Mapped[str | None] = mapped_column(String, nullable=True)
+    ville_naissance: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    contrats: Mapped[list["Contrat"]] = relationship(back_populates="prospect")

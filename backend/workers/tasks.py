@@ -36,7 +36,6 @@ from backend.services import (
     ia_conseil_ws,
     kyc_engine,
     lre_engine,
-    mandat_engine,
     notification_engine,
     signature_engine,
     storage_engine,
@@ -157,16 +156,25 @@ async def _telecharger_mandat_signe(mandat_id: int) -> None:
             return
         # Stockage définitif (S3 Scaleway) à brancher une fois le bucket en
         # place (sprint 3) — pour l'instant on marque simplement le mandat
-        # signé ; le contenu téléchargé ci-dessus n'est pas encore persisté.
-        mandat.statut = "signe"
-        mandat.date_signature = _MAINTENANT()
+        # reçu ; le contenu téléchargé ci-dessus n'est pas encore persisté.
+        #
+        # Yousign confirme que le document est signé, mais on ne le considère
+        # pas encore "signe" dans notre système : comme pour les documents
+        # KYC, un conseiller doit vérifier que le mandat reçu est bien rempli
+        # avant de déclencher la suite (avancement du dossier, conversion
+        # prospect→client) — voir backend/routers/mandats.py::valider_mandat.
+        mandat.statut = "recu"
         await db.commit()
 
-        # Fait avancer automatiquement le stepper du dossier correspondant,
-        # finalise la conversion prospect→client si nécessaire et programme
-        # une relance de suivi — voir mandat_engine.traiter_mandat_signe
-        # (même logique que le fallback manuel "Marquer signé").
-        await mandat_engine.traiter_mandat_signe(db, mandat, par="webhook_yousign")
+        dossier = (
+            await db.execute(
+                select(Dossier).where(Dossier.client_id == mandat.client_id, Dossier.statut == "mandat_a_signer")
+            )
+        ).scalars().first()
+        if dossier is not None:
+            await notification_engine.creer_notification_conseiller(
+                db, dossier, f"Mandat de représentation reçu — à valider pour le dossier #{dossier.id}."
+            )
 
 
 @celery_app.task(

@@ -1,13 +1,14 @@
 # ==============================================================================
 #  MANDATS — mandat de représentation (signature Yousign) rattaché au client
 #  d'un dossier. Distinct de `mandat_honoraires` (rémunération du cabinet).
-#  Deux façons de le faire signer :
-#    - POST /dossiers/{id}/mandat : vrai circuit Yousign (asynchrone, Celery).
-#    - POST /mandats/{id}/marquer-signe : fallback manuel, tant que la clé API
-#      Yousign n'est pas configurée (backend/core/config.py::yousign_api_key).
-#  Les deux convergent vers mandat_engine.traiter_mandat_signe (avance le
-#  dossier, finalise la conversion prospect→client si besoin, programme une
-#  relance de suivi).
+#  Cycle : POST /dossiers/{id}/mandat génère le PDF (statut "brouillon", pas
+#  encore envoyé) — le conseiller le relit ("Voir le PDF généré") avant de
+#  cliquer POST /mandats/{id}/envoyer, qui déclenche le vrai circuit Yousign
+#  (asynchrone, Celery). POST /mandats/{id}/marquer-signe reste le fallback
+#  manuel tant que la clé API Yousign n'est pas configurée (backend/core/
+#  config.py::yousign_api_key). Les deux voies de signature convergent vers
+#  mandat_engine.traiter_mandat_signe (avance le dossier, finalise la
+#  conversion prospect→client si besoin, programme une relance de suivi).
 # ==============================================================================
 from datetime import datetime
 
@@ -58,15 +59,58 @@ async def obtenir_mandat(dossier_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/{dossier_id}/mandat", response_model=MandatOut, status_code=status.HTTP_201_CREATED)
-async def envoyer_mandat(dossier_id: int, db: AsyncSession = Depends(get_db)):
+async def generer_mandat(
+    dossier_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Génère le PDF du mandat (statut "brouillon") sans l'envoyer en
+    signature — voir POST /mandats/{id}/envoyer pour l'étape suivante."""
     dossier = await db.get(Dossier, dossier_id)
     if dossier is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Dossier introuvable.")
     try:
-        mandat = await mandat_engine.creer_et_envoyer_mandat(db, dossier)
+        mandat = await mandat_engine.generer_mandat(db, dossier, user)
         return _vers_mandat_out(mandat)
     except mandat_engine.MandatEngineError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
+
+
+@router_mandats.post("/{mandat_id}/envoyer", response_model=MandatOut)
+async def envoyer_mandat(mandat_id: int, db: AsyncSession = Depends(get_db)):
+    """Envoie en signature électronique (Yousign) un mandat déjà généré et
+    relu par le conseiller."""
+    mandat = await db.get(Mandat, mandat_id)
+    if mandat is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Mandat introuvable.")
+    try:
+        mandat = await mandat_engine.envoyer_mandat_en_signature(db, mandat)
+        return _vers_mandat_out(mandat)
+    except mandat_engine.MandatEngineError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
+
+
+@router_mandats.post("/{mandat_id}/valider", response_model=MandatOut)
+async def valider_mandat(
+    mandat_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Confirme un mandat reçu (webhook Yousign) après vérification par le
+    conseiller que le document est bien rempli — même principe que la
+    validation manuelle des documents KYC (voir backend/routers/clients.py::
+    valider_document_client). Déclenche la même suite qu'une signature
+    manuelle : progression du dossier, conversion prospect→client, relance."""
+    mandat = await db.get(Mandat, mandat_id)
+    if mandat is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Mandat introuvable.")
+    if mandat.statut != "recu":
+        raise HTTPException(status.HTTP_409_CONFLICT, "Ce mandat n'est pas en attente de validation.")
+    mandat.statut = "signe"
+    mandat.date_signature = datetime.now().strftime("%d/%m/%Y %H:%M")
+    await mandat_engine.traiter_mandat_signe(db, mandat, par=user.nom_complet)
+    await db.refresh(mandat)
+    return _vers_mandat_out(mandat)
 
 
 @router_mandats.post("/{mandat_id}/marquer-signe", response_model=MandatOut)

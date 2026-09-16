@@ -15,10 +15,20 @@ class ProspectBase(BaseModel):
     effectif: str | None = None
     univers_interesse: str | None = None
     service_principal: str | None = None
+    # Objectif de la demande, posé sur la landing /economiser (socle S5, voir
+    # backend/schemas/lead_public.py::OBJECTIFS_PRINCIPAUX) — permet au
+    # conseiller de savoir d'office si la motivation est financière
+    # ("economiser") ou un gain de temps ("simplifier"), sans avoir à
+    # redemander au téléphone.
+    objectif_principal: str | None = None
+    # "1" ou "2+" (M1) — voir backend/models/prospect.py::nb_lignes_mobiles.
+    nb_lignes_mobiles: str | None = None
+    qualite_reseau_mobile: str | None = None
     operateur_actuel: str | None = None
     techno: str | None = None
     data_go: str | None = None
     roaming_europe: str | None = None
+    roaming_hors_ue: str | None = None
     sensibilite_prix: str | None = None
     cout_mensuel_actuel: float | None = None
     offre_actuelle: str | None = None
@@ -27,6 +37,7 @@ class ProspectBase(BaseModel):
     defaut_technique: str | None = None
     speed_down: float | None = None
     speed_up: float | None = None
+    debit_declare: float | None = None
     cout_elec: float | None = None
     cout_gaz: float | None = None
     fournisseur_energie: str | None = None
@@ -50,6 +61,16 @@ class ProspectBase(BaseModel):
     bonus_malus_auto: str | None = None
     plage_horaire_rappel: str | None = None
     motif_refus: str | None = None
+    age: int | None = None
+    tranche_age: str | None = None
+    consentement_rgpd: bool | None = None
+    consentement_demarchage: bool | None = None
+    date_consentement: str | None = None
+    # Requis par la page "informations personnelles" du tunnel de souscription
+    # Free Mobile (voir backend/services/souscription_engine.py).
+    date_naissance: str | None = None
+    departement_naissance: str | None = None
+    ville_naissance: str | None = None
 
 
 class ProspectCreate(ProspectBase):

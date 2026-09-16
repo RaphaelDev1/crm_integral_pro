@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.models.client import Client
 from backend.models.dossier import Dossier
 from backend.models.mandat import Mandat
+from backend.models.parametre import Parametre
 from backend.models.prospect import Prospect
 from backend.models.user import User
 from backend.services import document_engine, dossier_engine, dossier_notifications, notification_engine, storage_engine
@@ -32,20 +33,54 @@ class MandatEngineError(Exception):
     """Échec métier lors de la création/envoi du mandat."""
 
 
-async def creer_et_envoyer_mandat(db: AsyncSession, dossier: Dossier) -> Mandat:
-    """Crée le mandat de représentation du client rattaché au dossier, génère
-    son PDF et déclenche l'envoi en signature électronique (Yousign, tâche
-    Celery asynchrone — voir backend/workers/tasks.py::envoyer_mandat_signature).
-    L'import de la tâche est différé pour éviter un cycle (tasks.py importe déjà
-    ce module pour traiter_mandat_signe)."""
-    from backend.workers.tasks import envoyer_mandat_signature
+async def charger_branding(db: AsyncSession, client: Client, user: User) -> dict:
+    """Charge l'habillage (logo, couleurs, société, conseiller) remis sur les
+    PDF client — factorisation du bloc jusqu'ici dupliqué inline dans
+    backend/routers/dossiers.py::obtenir_pdf_restitution, désormais partagé
+    avec les mandats (représentation et honoraires, voir generer_mandat et
+    backend/routers/honoraires.py)."""
+    async def _parametre(cle: str) -> str | None:
+        p = await db.get(Parametre, cle)
+        return p.valeur if p else None
 
+    logo_bytes = None
+    cle_logo = await _parametre("pdf_logo_cle_stockage")
+    if cle_logo:
+        try:
+            logo_bytes = storage_engine.telecharger_document(cle_logo)
+        except storage_engine.StorageError:
+            logo_bytes = None
+
+    # Conseiller à afficher sur le PDF : le propriétaire de la fiche client
+    # s'il est renseigné (conseiller_id), sinon celui qui génère le PDF.
+    conseiller = user
+    if client.conseiller_id is not None and client.conseiller_id != user.id:
+        conseiller_proprietaire = await db.get(User, client.conseiller_id)
+        if conseiller_proprietaire is not None:
+            conseiller = conseiller_proprietaire
+
+    return {
+        "nom_societe": await _parametre("nom_societe"),
+        "couleur_primaire_hex": await _parametre("pdf_couleur_primaire_hex"),
+        "couleur_accent_hex": await _parametre("pdf_couleur_accent_hex"),
+        "logo_bytes": logo_bytes,
+        "conseiller_nom": conseiller.nom_complet,
+        "conseiller_telephone": conseiller.telephone,
+    }
+
+
+async def generer_mandat(db: AsyncSession, dossier: Dossier, user: User) -> Mandat:
+    """Crée le mandat de représentation du client rattaché au dossier et génère
+    son PDF, sans déclencher l'envoi en signature — le conseiller doit pouvoir
+    relire le PDF ("Voir le PDF généré") avant qu'il ne parte chez le client.
+    L'envoi effectif se fait ensuite via `envoyer_mandat_en_signature`."""
     client = await db.get(Client, dossier.client_id)
     if client is None:
         raise MandatEngineError("Client introuvable pour ce dossier.")
 
     try:
-        pdf = document_engine.generer_pdf_mandat_representation(dossier, client)
+        branding = await charger_branding(db, client, user)
+        pdf = document_engine.generer_pdf_mandat_representation(dossier, client, branding)
         cle_s3 = storage_engine.upload_fichier(
             f"clients/{client.id}/mandat", "mandat", pdf, "mandat_representation.pdf"
         )
@@ -61,6 +96,21 @@ async def creer_et_envoyer_mandat(db: AsyncSession, dossier: Dossier) -> Mandat:
     db.add(mandat)
     await db.commit()
     await db.refresh(mandat)
+    return mandat
+
+
+async def envoyer_mandat_en_signature(db: AsyncSession, mandat: Mandat) -> Mandat:
+    """Déclenche l'envoi en signature électronique (Yousign, tâche Celery
+    asynchrone — voir backend/workers/tasks.py::envoyer_mandat_signature) d'un
+    mandat déjà généré (brouillon relu par le conseiller, ou brouillon en
+    erreur qu'on retente). L'import de la tâche est différé pour éviter un
+    cycle (tasks.py importe déjà ce module pour traiter_mandat_signe)."""
+    from backend.workers.tasks import envoyer_mandat_signature
+
+    if mandat.statut not in ("brouillon", "erreur"):
+        raise MandatEngineError("Ce mandat a déjà été envoyé en signature.")
+    if not mandat.pdf_url:
+        raise MandatEngineError("Le PDF du mandat n'a pas été généré.")
 
     try:
         envoyer_mandat_signature.delay(mandat.id)
@@ -86,6 +136,17 @@ async def traiter_mandat_signe(db: AsyncSession, mandat: Mandat, *, par: str) ->
     if client is None:
         return
 
+    # Filtré sur `Dossier.statut == "mandat_a_signer"` pour ne cibler que le
+    # dossier réellement en attente de cette signature (un client peut avoir
+    # plusieurs dossiers, sur des univers différents à des étapes
+    # différentes) — passer à un statut ultérieur ("mandat_signe") sans être
+    # passé par "mandat_a_signer" violerait la machine à états stricte de
+    # toute façon (voir TRANSITIONS_AUTORISEES). Si le dossier n'a pas encore
+    # été avancé manuellement jusque "mandat_a_signer", cette transition ne
+    # se déclenche pas ici — mais la timeline elle-même n'en dépend plus (voir
+    # dossier_engine.construire_timeline / signaux_timeline, qui lit
+    # directement Mandat.statut) : l'étape "Mandat de représentation signé"
+    # s'affiche donc correctement même sans cette transition.
     dossier = (
         await db.execute(
             select(Dossier).where(Dossier.client_id == mandat.client_id, Dossier.statut == "mandat_a_signer")

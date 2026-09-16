@@ -128,6 +128,41 @@ def test_marquer_signe_honoraires(client, fake_db):
     assert corps["date_signature"] is not None
 
 
+def test_marquer_signe_honoraires_fait_avancer_le_dossier(client, fake_db):
+    # Le mandat honoraires est la dernière étape avant l'envoi au fournisseur
+    # (voir TRANSITIONS_AUTORISEES) — sa signature doit faire avancer le
+    # dossier de "mandat_signe" à "soumis_fournisseur", symétriquement à la
+    # signature du mandat de représentation (mandat_engine.traiter_mandat_signe).
+    mandat = MandatHonoraires(
+        id=5, dossier_id=1, montant=120.0, taux=15.0, statut="envoye",
+        date_creation=datetime.now().strftime("%d/%m/%Y %H:%M"),
+    )
+    fake_db.queue_result(mandat)
+    fake_db.get_map[(Dossier, 1)] = Dossier(id=1, client_id=1, univers="telecom_mobile", statut="mandat_signe", notes_workflow=[])
+
+    reponse = client.post("/dossiers/1/mandat-honoraires/marquer-signe", json={"signataire": "M. Dupont"})
+
+    assert reponse.status_code == 200
+    assert fake_db.get_map[(Dossier, 1)].statut == "soumis_fournisseur"
+
+
+def test_marquer_signe_honoraires_ignore_transition_illegale(client, fake_db):
+    # Le dossier n'est pas encore à "mandat_signe" (ex. statut grossier en
+    # retard) : la transition automatique est simplement ignorée, la
+    # signature du mandat honoraires elle-même reste un succès.
+    mandat = MandatHonoraires(
+        id=5, dossier_id=1, montant=120.0, taux=15.0, statut="envoye",
+        date_creation=datetime.now().strftime("%d/%m/%Y %H:%M"),
+    )
+    fake_db.queue_result(mandat)
+    fake_db.get_map[(Dossier, 1)] = Dossier(id=1, client_id=1, univers="telecom_mobile", statut="docs_recus", notes_workflow=[])
+
+    reponse = client.post("/dossiers/1/mandat-honoraires/marquer-signe", json={"signataire": "M. Dupont"})
+
+    assert reponse.status_code == 200
+    assert fake_db.get_map[(Dossier, 1)].statut == "docs_recus"
+
+
 def test_marquer_signe_honoraires_introuvable(client, fake_db):
     fake_db.queue_result(None)
     reponse = client.post("/dossiers/1/mandat-honoraires/marquer-signe", json={"signataire": "M. Dupont"})

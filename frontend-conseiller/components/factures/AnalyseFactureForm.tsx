@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ApiError } from "@/lib/api";
 import { clientsResource } from "@/lib/hooks/useClients";
 import { useAnalyserFacture } from "@/lib/hooks/useFactures";
 import type { FactureAnalyse } from "@/lib/types";
@@ -33,6 +34,9 @@ export function AnalyseFactureForm() {
         onSuccess: (data) => {
           setResultat(data);
           toast.success("Facture analysée.");
+        },
+        onError: (err) => {
+          toast.error(err instanceof ApiError ? err.detail : "Échec de l'analyse de la facture.");
         },
         onSettled: () => {
           if (fileInputRef.current) fileInputRef.current.value = "";
@@ -65,8 +69,13 @@ export function AnalyseFactureForm() {
             </Select>
           </div>
           <div className="space-y-2">
-            <Label>Facture (PDF)</Label>
-            <Input ref={fileInputRef} type="file" accept="application/pdf" onChange={handleFichierChoisi} />
+            <Label>Facture (PDF, JPG, PNG ou WEBP)</Label>
+            <Input
+              ref={fileInputRef}
+              type="file"
+              accept="application/pdf,image/jpeg,image/png,image/webp"
+              onChange={handleFichierChoisi}
+            />
           </div>
           {analyserMutation.isPending && <p className="text-sm text-muted-foreground">Analyse en cours…</p>}
         </CardContent>

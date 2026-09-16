@@ -4,7 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Script from "next/script";
 import {
+  ContratTelecom,
   getContexte,
+  getContratsTelecom,
   soumettreSpeedtest,
   soumettreSpeedtestFichier,
   TokenContexte,
@@ -13,7 +15,22 @@ import { AlertTriangle, ArrowLeft, CheckCircle2, Loader2, Upload, Wifi } from "l
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+// Mêmes catégories que backend/routers/portail_public.py::CATEGORIES_CONTRAT_TELECOM
+// — sert à distinguer les lignes mobile des lignes box parmi les contrats du
+// prospect, pour proposer le second test (voir `phase` ci-dessous).
+const CATEGORIES_MOBILE = ["Forfait mobile", "Mobile"];
+const CATEGORIES_BOX = ["Forfait box", "Box / Fibre", "Pack Box + Mobile"];
+
+type Phase = "mobile" | "box";
 type EtatTest = "idle" | "running" | "submitting" | "done" | "error";
+
+// Libellé lisible par un client — même logique que situation/page.tsx::libelleLigne.
+function libelleLigne(ligne: ContratTelecom): string {
+  const operateur = ligne.fournisseur ? ` - ${ligne.fournisseur}` : "";
+  if (ligne.categorie === "Mobile") return `Votre forfait mobile${operateur}`;
+  if (ligne.categorie === "Box / Fibre") return `Votre box internet${operateur}`;
+  return [ligne.categorie, ligne.fournisseur, ligne.nom_offre].filter(Boolean).join(" — ");
+}
 
 interface DonneesTest {
   dlStatus: string;
@@ -33,14 +50,61 @@ export default function SpeedtestPage({ params }: { params: { token: string } })
   const [resultatMessage, setResultatMessage] = useState<string | null>(null);
   const [uploadingFichier, setUploadingFichier] = useState(false);
   const [wifiConfirme, setWifiConfirme] = useState(false);
+  const [contrats, setContrats] = useState<ContratTelecom[]>([]);
+  const [contratId, setContratId] = useState<number | undefined>(undefined);
+  // Ligne actuellement testée, et lignes déjà testées dans cette visite —
+  // permet d'enchaîner mobile puis box (ou l'inverse) quand le prospect a
+  // les deux, chaque résultat étant rattaché au contrat correspondant (voir
+  // `contratsPhase`/`autrePhaseDisponible` plus bas).
+  const [phase, setPhase] = useState<Phase | null>(null);
+  const [phasesFaites, setPhasesFaites] = useState<Set<Phase>>(new Set());
   const donneesRef = useRef<DonneesTest | null>(null);
 
   useEffect(() => {
     getContexte(params.token)
-      .then(setCtx)
+      .then((c) => {
+        setCtx(c);
+        if (c.univers === "telecom_mobile") setPhase("mobile");
+        else if (c.univers === "telecom_box") setPhase("box");
+      })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
+    // Best-effort : si le lien ne permet pas de lister les contrats (ou s'il
+    // n'y en a aucun), le test reste utilisable sans sélecteur.
+    getContratsTelecom(params.token)
+      .then((liste) => {
+        setContrats(liste);
+        setPhase((prev) => prev ?? (liste.some((c) => CATEGORIES_MOBILE.includes(c.categorie ?? "")) ? "mobile" : "box"));
+      })
+      .catch(() => {});
   }, [params.token]);
+
+  const contratsPhase = contrats.filter((c) =>
+    (phase === "box" ? CATEGORIES_BOX : CATEGORIES_MOBILE).includes(c.categorie ?? "")
+  );
+  const autrePhase: Phase | null = phase === "mobile" ? "box" : phase === "box" ? "mobile" : null;
+  const autrePhaseDisponible =
+    autrePhase !== null &&
+    !phasesFaites.has(autrePhase) &&
+    contrats.some((c) => (autrePhase === "box" ? CATEGORIES_BOX : CATEGORIES_MOBILE).includes(c.categorie ?? ""));
+
+  useEffect(() => {
+    setContratId(contratsPhase.length === 1 ? contratsPhase[0].id : undefined);
+    // contratsPhase est recalculé à chaque rendu à partir de `contrats`/`phase` ;
+    // on ne le met pas dans les deps (nouvelle référence de tableau à chaque
+    // rendu) mais on veut bien redéclencher quand l'un ou l'autre change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, contrats]);
+
+  function testerAutreLigne() {
+    if (!autrePhase) return;
+    setPhase(autrePhase);
+    setPhasesFaites((prev) => new Set(prev).add(phase!));
+    setEtat("idle");
+    setWifiConfirme(false);
+    setDonnees(null);
+    setResultatMessage(null);
+  }
 
   function lancerTest() {
     const w = window as any;
@@ -87,6 +151,7 @@ export default function SpeedtestPage({ params }: { params: { token: string } })
           download_mbps: download,
           upload_mbps: upload,
           ping_ms: Number.isFinite(ping) ? ping : undefined,
+          contrat_id: contratId,
         });
         setResultatMessage(resultat.message);
         setEtat("done");
@@ -134,8 +199,8 @@ export default function SpeedtestPage({ params }: { params: { token: string } })
     );
   }
 
-  const estMobile = ctx.univers === "telecom_mobile";
-  const estBox = ctx.univers === "telecom_box";
+  const estMobile = phase === "mobile";
+  const estBox = phase === "box";
   // Sur une offre mobile, le Wi-Fi fausse le test (il faudrait tester le
   // réseau mobile, pas la box) ; sur une offre box testée depuis un
   // téléphone, c'est l'inverse. On bloque le lancement tant que le client
@@ -174,10 +239,27 @@ export default function SpeedtestPage({ params }: { params: { token: string } })
           <div className="text-accent">
             <CheckCircle2 className="w-10 h-10 mx-auto mb-3" />
             <p className="font-semibold">{resultatMessage}</p>
-            <p className="text-sm text-slate-600 mt-2">
-              C'est tout bon, vous n'avez plus rien à faire. Votre conseiller retrouvera cette
-              information et reviendra vers vous avec la suite.
-            </p>
+            {autrePhaseDisponible ? (
+              <>
+                <p className="text-sm text-slate-600 mt-2">
+                  Vous avez aussi {autrePhase === "box" ? "une box" : "un forfait mobile"} — si vous
+                  pouvez, testez-la aussi : on aura ainsi le débit de chacune de vos lignes.
+                </p>
+                <button
+                  onClick={testerAutreLigne}
+                  className="mt-4 w-full bg-primary text-white py-3 rounded-lg font-semibold hover:bg-primary/90 transition"
+                >
+                  Tester aussi {autrePhase === "box" ? "ma box" : "mon forfait mobile"} →
+                </button>
+              </>
+            ) : (
+              <p className="text-sm text-slate-600 mt-2">
+                Si vous avez un doute sur le résultat (Wi-Fi mal coupé, box loin de la pièce...),
+                vous pouvez rouvrir ce lien et relancer le test dans de meilleures conditions.
+                Sinon, c'est tout bon, vous n'avez plus rien à faire. Votre conseiller retrouvera cette
+                information et reviendra vers vous avec la suite.
+              </p>
+            )}
           </div>
         ) : (
           <>
@@ -185,10 +267,11 @@ export default function SpeedtestPage({ params }: { params: { token: string } })
               <div className="flex items-start gap-3 text-left bg-orange-50 border border-orange-200 rounded-lg p-4 mb-4">
                 <AlertTriangle className="w-5 h-5 text-orange-600 shrink-0 mt-0.5" />
                 <div>
-                  <p className="font-medium text-orange-900">Désactivez votre Wi-Fi avant de lancer le test</p>
+                  <p className="font-medium text-orange-900">Important : coupez le Wi-Fi avant de lancer ce test</p>
                   <p className="text-sm text-orange-800 mt-1">
-                    Ce test concerne votre forfait mobile : s'il passe par votre Wi-Fi, le résultat ne
-                    reflètera pas votre réseau mobile.
+                    Vous testez ici votre forfait <strong>mobile</strong> (4G/5G) : si votre téléphone
+                    reste connecté au Wi-Fi pendant le test, le résultat mesurera votre box et pas votre
+                    ligne mobile — désactivez le Wi-Fi (pas seulement la box) avant de continuer.
                   </p>
                   <label className="flex items-center gap-2 mt-3 text-sm text-orange-900">
                     <input
@@ -196,7 +279,7 @@ export default function SpeedtestPage({ params }: { params: { token: string } })
                       checked={wifiConfirme}
                       onChange={(e) => setWifiConfirme(e.target.checked)}
                     />
-                    J&apos;ai désactivé mon Wi-Fi
+                    J&apos;ai désactivé mon Wi-Fi, je suis bien en 4G/5G
                   </label>
                 </div>
               </div>
@@ -206,10 +289,11 @@ export default function SpeedtestPage({ params }: { params: { token: string } })
               <div className="flex items-start gap-3 text-left bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
                 <Wifi className="w-5 h-5 text-primary shrink-0 mt-0.5" />
                 <div>
-                  <p className="font-medium text-blue-900">Connectez-vous au Wi-Fi de votre box avant de lancer le test</p>
+                  <p className="font-medium text-blue-900">Important : restez connecté au Wi-Fi de votre box</p>
                   <p className="text-sm text-blue-800 mt-1">
-                    Ce test concerne votre box internet : si votre téléphone est en 4G/5G, le résultat ne
-                    reflètera pas votre box.
+                    Vous testez ici votre <strong>box internet</strong> : à l'inverse d'un test mobile, il
+                    faut ici rester connecté au Wi-Fi de votre box (pas en 4G/5G), sinon le résultat
+                    mesurera votre réseau mobile et pas votre box.
                   </p>
                   <label className="flex items-center gap-2 mt-3 text-sm text-blue-900">
                     <input
@@ -220,6 +304,26 @@ export default function SpeedtestPage({ params }: { params: { token: string } })
                     Je suis connecté au Wi-Fi de ma box
                   </label>
                 </div>
+              </div>
+            )}
+
+            {contratsPhase.length > 1 && (
+              <div className="text-left mb-4">
+                <label className="block text-sm font-medium text-slate-700 mb-1">
+                  Ce test concerne :
+                </label>
+                <select
+                  value={contratId ?? ""}
+                  onChange={(e) => setContratId(e.target.value ? Number(e.target.value) : undefined)}
+                  className="w-full border border-slate-300 rounded-lg p-2 text-sm"
+                >
+                  <option value="">Sélectionner un forfait…</option>
+                  {contratsPhase.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {libelleLigne(c)}
+                    </option>
+                  ))}
+                </select>
               </div>
             )}
 
@@ -238,6 +342,14 @@ export default function SpeedtestPage({ params }: { params: { token: string } })
               {etat === "submitting" && "Envoi du résultat..."}
               {(etat === "idle" || etat === "error") && "Lancer le test"}
             </button>
+            {(etat === "idle" || etat === "error") && (
+              <button
+                onClick={() => router.push(`/dossier/${params.token}`)}
+                className="w-full text-center text-sm text-slate-500 hover:text-slate-700 hover:underline mt-3"
+              >
+                Pas maintenant, j&apos;y reviendrai plus tard
+              </button>
+            )}
           </>
         )}
       </div>

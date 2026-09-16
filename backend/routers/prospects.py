@@ -2,7 +2,7 @@
 #  PROSPECTS — CRUD, protégé par JWT (get_current_user).
 # ==============================================================================
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -27,9 +27,14 @@ from backend.schemas.prospect import (
     ProspectUpdate,
     ScoreProspectOut,
 )
-from backend.services import audit_engine, notification_engine, prospect_scoring, reference_engine, token_engine
+from backend.services import audit_engine, notification_engine, prospect_scoring, reference_engine, relance_engine, token_engine
 from backend.services.ia_conseil_bridge import obtenir_ou_creer_client_conseil
-from backend.services.prospect_conversion import ProspectDejaConverti, convertir_prospect, obtenir_ou_creer_client_miroir
+from backend.services.prospect_conversion import (
+    ProspectDejaConverti,
+    convertir_prospect,
+    obtenir_ou_creer_client_miroir,
+    supprimer_prospect as supprimer_prospect_cascade,
+)
 from backend.services.storage_engine import StorageError, supprimer_document, url_signee
 
 logger = logging.getLogger(__name__)
@@ -131,17 +136,22 @@ async def obtenir_ia_conseil_client(
 @router.post("/{prospect_id}/token-documents", response_model=dict)
 async def generer_lien_documents_prospect(
     prospect_id: int,
+    remplissage_autonome: bool = True,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """Génère un lien à envoyer au prospect (SMS/email) pour qu'il transmette
-    lui-même sa facture/son test de débit, avant même sa conversion en client."""
+    lui-même sa facture/son test de débit, avant même sa conversion en client.
+
+    `remplissage_autonome` : True (défaut) = le prospect répond seul
+    (formulaire allégé) ; False = le conseiller ouvre lui-même ce lien pour
+    répondre avec le client au téléphone (formulaire complet)."""
     prospect = await db.get(Prospect, prospect_id)
     if prospect is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Prospect introuvable.")
 
     token = await token_engine.generer_token_prospect_documents(
-        db, prospect_id, cree_par=user.username,
+        db, prospect_id, cree_par=user.username, remplissage_autonome=remplissage_autonome,
     )
 
     url = token_engine.construire_url_client(token.token, base_url=settings.portail_client_base_url)
@@ -236,7 +246,9 @@ async def envoyer_lien_documents_prospect(
     if prospect is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Prospect introuvable.")
 
-    token = await token_engine.generer_token_prospect_documents(db, prospect_id, cree_par=user.username)
+    token = await token_engine.generer_token_prospect_documents(
+        db, prospect_id, cree_par=user.username, remplissage_autonome=payload.remplissage_autonome,
+    )
     url = token_engine.construire_url_client(token.token, base_url=settings.portail_client_base_url)
     prenom = prospect.prenom or ""
 
@@ -318,7 +330,8 @@ async def relance_effectuee(
 ):
     """Marque une relance comme faite aujourd'hui : journalise l'action (source
     du `dernier_contact` calculé, voir prospect_scoring.dernier_contact) et
-    programme la prochaine relance à +7 jours."""
+    programme la prochaine relance à +7 jours (ajustée au jour de rappel
+    préféré du prospect si renseigné, voir relance_engine.prochaine_date_relance)."""
     prospect = await db.get(Prospect, prospect_id)
     if prospect is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Prospect introuvable.")
@@ -327,7 +340,9 @@ async def relance_effectuee(
         db, entite_type="prospect", entite_id=prospect_id,
         action="Relance effectuée", auteur=user.nom_complet,
     )
-    prospect.date_relance = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+    prospect.date_relance = relance_engine.prochaine_date_relance(
+        prospect.plage_horaire_rappel
+    ).strftime("%Y-%m-%d")
     await db.commit()
     await db.refresh(prospect)
 
@@ -356,7 +371,9 @@ async def contacter_telephone(
     await audit_engine.enregistrer_action(
         db, entite_type="prospect", entite_id=prospect_id, action=action, auteur=user.nom_complet,
     )
-    prospect.date_relance = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+    prospect.date_relance = relance_engine.prochaine_date_relance(
+        prospect.plage_horaire_rappel
+    ).strftime("%Y-%m-%d")
     await db.commit()
     await db.refresh(prospect)
 
@@ -386,5 +403,4 @@ async def supprimer_prospect(prospect_id: int, db: AsyncSession = Depends(get_db
     prospect = await db.get(Prospect, prospect_id)
     if prospect is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Prospect introuvable.")
-    await db.delete(prospect)
-    await db.commit()
+    await supprimer_prospect_cascade(db, prospect)

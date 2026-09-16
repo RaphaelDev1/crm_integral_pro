@@ -15,6 +15,7 @@ export const prospectBaseSchema = z.object({
   effectif: z.string().optional(),
   univers_interesse: z.string().optional(),
   service_principal: z.string().optional(),
+  objectif_principal: z.string().optional(),
   operateur_actuel: z.string().optional(),
   techno: z.string().optional(),
   data_go: z.string().optional(),
@@ -38,6 +39,11 @@ export const prospectBaseSchema = z.object({
   offres_interet: z.string().optional(),
   score: z.coerce.number().optional(),
   origine: z.string().optional(),
+  plage_horaire_rappel: z.string().optional(),
+  age: z.coerce.number().optional(),
+  tranche_age: z.string().optional(),
+  consentement_rgpd: z.boolean().optional(),
+  consentement_demarchage: z.boolean().optional(),
 });
 
 export const prospectCreateSchema = prospectBaseSchema.extend({

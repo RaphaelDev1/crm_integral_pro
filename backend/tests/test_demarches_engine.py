@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from backend.models.client import Client
+from backend.models.contrat import Contrat
 from backend.models.demarche import Demarche
 from backend.models.dossier import Dossier
 from backend.models.mandat import Mandat
@@ -70,15 +71,21 @@ def _dossier(**kwargs):
 #  demarches_requises()
 # ------------------------------------------------------------------------------
 def test_demarches_requises_telecom_mobile():
-    assert demarches_engine.demarches_requises(_dossier(univers="telecom_mobile")) == ["mandat", "portabilite"]
+    assert demarches_engine.demarches_requises(_dossier(univers="telecom_mobile")) == [
+        "audit_mobile", "mandat", "portabilite",
+    ]
 
 
 def test_demarches_requises_telecom_box():
-    assert demarches_engine.demarches_requises(_dossier(univers="telecom_box")) == ["mandat", "resiliation"]
+    assert demarches_engine.demarches_requises(_dossier(univers="telecom_box")) == [
+        "audit_box", "mandat", "resiliation",
+    ]
 
 
 def test_demarches_requises_energie():
-    assert demarches_engine.demarches_requises(_dossier(univers="energie")) == ["mandat", "changement_fournisseur"]
+    assert demarches_engine.demarches_requises(_dossier(univers="energie")) == [
+        "audit_energie", "mandat", "changement_fournisseur",
+    ]
 
 
 def test_demarches_requises_univers_inconnu_repli_par_defaut():
@@ -97,7 +104,7 @@ def test_creer_demarche_initialise_les_donnees_requises():
     assert demarche.dossier_id == 1
     assert demarche.univers == "telecom_mobile"
     assert demarche.statut == "a_generer"
-    assert set(demarche.donnees_requises.keys()) == {"rio", "numero_ligne"}
+    assert set(demarche.donnees_requises.keys()) == {"conserver_numero", "rio", "numero_ligne", "type_sim"}
     assert demarche.donnees_requises["rio"]["requis"] is True
     assert demarche.donnees_requises["rio"]["valeur"] is None
     assert db.committed
@@ -148,6 +155,30 @@ def test_champs_manquants_ignore_les_champs_facultatifs():
     assert demarches_engine.champs_manquants(demarche) == {}
 
 
+def test_champs_manquants_ignore_un_champ_requis_si_condition_non_remplie():
+    # Le RIO n'est demande que si le prospect a choisi de conserver son
+    # numero (voir document_engine.CHAMPS_REQUIS_PAR_TEMPLATE["portabilite"]).
+    demarche = Demarche(
+        id=1, dossier_id=1, type_demarche="portabilite",
+        donnees_requises={
+            "conserver_numero": {"valeur": "non", "requis": True, "label": "Conserver ?"},
+            "rio": {"valeur": None, "requis": True, "label": "RIO", "requis_si": {"champ": "conserver_numero", "egal": "oui"}},
+        },
+    )
+    assert demarches_engine.champs_manquants(demarche) == {}
+
+
+def test_champs_manquants_exige_un_champ_requis_si_condition_remplie():
+    demarche = Demarche(
+        id=1, dossier_id=1, type_demarche="portabilite",
+        donnees_requises={
+            "conserver_numero": {"valeur": "oui", "requis": True, "label": "Conserver ?"},
+            "rio": {"valeur": None, "requis": True, "label": "RIO", "requis_si": {"champ": "conserver_numero", "egal": "oui"}},
+        },
+    )
+    assert list(demarches_engine.champs_manquants(demarche).keys()) == ["rio"]
+
+
 # ------------------------------------------------------------------------------
 #  marquer_champs()
 # ------------------------------------------------------------------------------
@@ -165,6 +196,48 @@ def test_marquer_champs_fusionne_sans_ecraser_les_autres_cles():
 
     assert demarche.donnees_requises["rib"]["valeur"] == "FR7612345"
     assert demarche.donnees_requises["pdl"]["valeur"] is None
+    assert db.committed
+
+
+def test_marquer_champs_portabilite_synchronise_la_ligne_mobile_de_reference():
+    """Régression : l'aide-mémoire souscription (frontend-conseiller/app/
+    souscription-reference/page.tsx) lit type_sim/conserver_numero/rio/
+    numero_ligne depuis Contrat, jamais depuis Demarche.donnees_requises —
+    sans cette synchronisation les réponses saisies via le questionnaire de
+    démarche restaient invisibles de l'aide-mémoire."""
+    dossier = _dossier()
+    ligne_principale = Contrat(id=5, client_id=1, categorie="Forfait mobile", ligne_principale=True)
+    demarche = Demarche(
+        id=1, dossier_id=1, type_demarche="portabilite",
+        donnees_requises={
+            "conserver_numero": {"valeur": None, "requis": True, "label": "x"},
+            "rio": {"valeur": None, "requis": True, "label": "x"},
+            "numero_ligne": {"valeur": None, "requis": True, "label": "x"},
+            "type_sim": {"valeur": None, "requis": True, "label": "x"},
+        },
+    )
+    db = FakeSession(get_map={(Dossier, 1): dossier}, execute_results=[[ligne_principale]])
+
+    _run(demarches_engine.marquer_champs(
+        db, demarche, {"conserver_numero": "oui", "rio": "ABC123", "type_sim": "esim"}
+    ))
+
+    assert ligne_principale.conserver_numero == "oui"
+    assert ligne_principale.rio == "ABC123"
+    assert ligne_principale.type_sim == "esim"
+    assert ligne_principale.numero_ligne is None  # pas soumis, ne doit pas être écrasé
+
+
+def test_marquer_champs_ignore_les_types_de_demarche_hors_portabilite():
+    demarche = Demarche(
+        id=1, dossier_id=1, type_demarche="resiliation",
+        donnees_requises={"numero_contrat": {"valeur": None, "requis": True, "label": "x"}},
+    )
+    db = FakeSession()
+
+    _run(demarches_engine.marquer_champs(db, demarche, {"numero_contrat": "CT-1"}))
+
+    assert demarche.donnees_requises["numero_contrat"]["valeur"] == "CT-1"
     assert db.committed
 
 
@@ -246,3 +319,62 @@ def test_generer_document_type_mandat_lie_le_mandat_signe():
         _run(demarches_engine.generer_document(db, demarche))
 
     assert demarche.mandat_id == 9
+
+
+# ------------------------------------------------------------------------------
+#  creer_demarches_manquantes()
+# ------------------------------------------------------------------------------
+def test_creer_demarches_manquantes_cree_uniquement_les_types_absents():
+    dossier = _dossier(univers="telecom_mobile")
+    demarche_existante = Demarche(id=1, dossier_id=1, type_demarche="mandat", donnees_requises={})
+    db = FakeSession(execute_results=[[demarche_existante]])
+
+    creees = _run(demarches_engine.creer_demarches_manquantes(db, dossier))
+
+    assert {d.type_demarche for d in creees} == {"audit_mobile", "portabilite"}
+
+
+def test_creer_demarches_manquantes_ne_recree_rien_si_tout_existe():
+    dossier = _dossier(univers="telecom_box")
+    existantes = [
+        Demarche(id=1, dossier_id=1, type_demarche="audit_box", donnees_requises={}),
+        Demarche(id=2, dossier_id=1, type_demarche="mandat", donnees_requises={}),
+        Demarche(id=3, dossier_id=1, type_demarche="resiliation", donnees_requises={}),
+    ]
+    db = FakeSession(execute_results=[existantes])
+
+    assert _run(demarches_engine.creer_demarches_manquantes(db, dossier)) == []
+
+
+# ------------------------------------------------------------------------------
+#  audit_secteur_complet()
+# ------------------------------------------------------------------------------
+def test_audit_secteur_complet_vrai_si_aucune_demarche_de_trame():
+    demarche = Demarche(
+        id=1, dossier_id=1, type_demarche="mandat", statut="a_generer", donnees_requises={},
+    )
+    assert demarches_engine.audit_secteur_complet([demarche]) is True
+
+
+def test_audit_secteur_complet_faux_si_champ_manquant():
+    demarche = Demarche(
+        id=1, dossier_id=1, type_demarche="audit_mobile", statut="a_generer",
+        donnees_requises={"nb_lignes_mobiles": {"valeur": None, "requis": True, "label": "x"}},
+    )
+    assert demarches_engine.audit_secteur_complet([demarche]) is False
+
+
+def test_audit_secteur_complet_vrai_une_fois_tous_les_champs_remplis():
+    demarche = Demarche(
+        id=1, dossier_id=1, type_demarche="portabilite", statut="a_generer",
+        donnees_requises={"conserver_numero": {"valeur": "non", "requis": True, "label": "x"}},
+    )
+    assert demarches_engine.audit_secteur_complet([demarche]) is True
+
+
+def test_audit_secteur_complet_ignore_une_demarche_deja_generee():
+    demarche = Demarche(
+        id=1, dossier_id=1, type_demarche="audit_mobile", statut="generee",
+        donnees_requises={"nb_lignes_mobiles": {"valeur": None, "requis": True, "label": "x"}},
+    )
+    assert demarches_engine.audit_secteur_complet([demarche]) is True

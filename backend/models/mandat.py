@@ -1,6 +1,11 @@
 # ==============================================================================
 #  MANDAT — mandat de représentation envoyé en signature électronique (Yousign)
-#  pour un client. `statut` : brouillon | envoye | signe | refuse | erreur.
+#  pour un client. `statut` : brouillon | envoye | recu | signe | refuse | erreur.
+#  "recu" = document signé reçu (webhook Yousign) mais pas encore validé par le
+#  conseiller — même logique que la vérification manuelle des documents KYC :
+#  la réception ne suffit pas, il faut le clic "Valider" (voir
+#  backend/routers/mandats.py::valider_mandat) pour passer à "signe" et
+#  déclencher la suite (conversion prospect→client, relance).
 # ==============================================================================
 from typing import TYPE_CHECKING
 

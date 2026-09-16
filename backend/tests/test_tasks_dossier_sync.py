@@ -1,9 +1,10 @@
 # ==============================================================================
 #  TESTS — backend/workers/tasks.py::_telecharger_mandat_signe : vérifie que la
-#  réception du mandat signé (webhook Yousign) fait automatiquement avancer le
-#  stepper du dossier correspondant vers "mandat_signe", sans action manuelle
-#  du conseiller. AsyncSessionLocal est remplacée par une session factice —
-#  aucune connexion Postgres réelle.
+#  réception du mandat signé (webhook Yousign) le fait passer au statut "recu"
+#  (en attente de validation manuelle par le conseiller — voir
+#  backend/routers/mandats.py::valider_mandat) SANS faire avancer le dossier
+#  ni déclencher la conversion prospect→client tout seul. AsyncSessionLocal
+#  est remplacée par une session factice — aucune connexion Postgres réelle.
 # ==============================================================================
 import asyncio
 from unittest.mock import AsyncMock, patch
@@ -60,9 +61,11 @@ class _FakeSessionCM:
         return False
 
 
-def test_mandat_signe_fait_avancer_le_dossier_correspondant():
+def test_mandat_recu_ne_fait_pas_avancer_le_dossier_tout_seul():
     mandat = Mandat(id=1, client_id=1, statut="envoye",
                      yousign_signature_request_id="req1", yousign_document_id="doc1")
+    # Pas de conseiller_responsable : creer_notification_conseiller ressort
+    # sans rien faire, une seule requête (recherche du dossier) est attendue.
     dossier = Dossier(id=1, client_id=1, univers="telecom_mobile", statut="mandat_a_signer", notes_workflow=[])
     client_obj = Client(id=1, prenom="Alice", nom="Martin", email="alice@example.com", telephone="0600000000")
 
@@ -73,18 +76,18 @@ def test_mandat_signe_fait_avancer_le_dossier_correspondant():
 
     with patch("backend.workers.tasks.AsyncSessionLocal", lambda: _FakeSessionCM(fake_db)), \
          patch("backend.services.signature_engine.telecharger_document_signe",
-               new=AsyncMock(return_value=b"pdf-bytes")), \
-         patch("backend.services.notification_engine.envoyer_email", return_value=True), \
-         patch("backend.services.notification_engine.envoyer_sms", return_value=True):
+               new=AsyncMock(return_value=b"pdf-bytes")):
         _run(tasks._telecharger_mandat_signe(1))
 
-    assert mandat.statut == "signe"
-    assert dossier.statut == "mandat_signe"
-    assert dossier.notes_workflow[-1]["par"] == "webhook_yousign"
-    assert dossier.notes_workflow[-1]["vers"] == "mandat_signe"
+    assert mandat.statut == "recu"
+    assert mandat.date_signature is None
+    # Le dossier n'a pas bougé : seul un clic "Valider" du conseiller
+    # (POST /mandats/{id}/valider) déclenche la transition mandat_signe.
+    assert dossier.statut == "mandat_a_signer"
+    assert dossier.notes_workflow == []
 
 
-def test_mandat_signe_sans_dossier_correspondant_ne_leve_pas():
+def test_mandat_recu_sans_dossier_correspondant_ne_leve_pas():
     mandat = Mandat(id=1, client_id=1, statut="envoye",
                      yousign_signature_request_id="req1", yousign_document_id="doc1")
 
@@ -95,4 +98,4 @@ def test_mandat_signe_sans_dossier_correspondant_ne_leve_pas():
                new=AsyncMock(return_value=b"pdf-bytes")):
         _run(tasks._telecharger_mandat_signe(1))
 
-    assert mandat.statut == "signe"
+    assert mandat.statut == "recu"

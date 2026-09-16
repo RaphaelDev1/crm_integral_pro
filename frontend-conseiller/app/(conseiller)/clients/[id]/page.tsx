@@ -20,6 +20,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/contexts/AuthContext";
 import { ApiError } from "@/lib/api";
 import { formatDateRelance } from "@/lib/dateRelance";
+import { labelObjectifPrincipal } from "@/lib/diagnosticConstants";
+import { LABELS_STATUT_KYC, statutKycBadgeClass } from "@/lib/dossierStatuts";
 import {
   clientsResource,
   useClientDocuments,
@@ -28,7 +30,7 @@ import {
   useGenererLienPortail,
   useValiderDocumentClient,
 } from "@/lib/hooks/useClients";
-import { useContratsClient } from "@/lib/hooks/useContrats";
+import { useContrats } from "@/lib/hooks/useContrats";
 import { useCreerDossier, useDossiersClient } from "@/lib/hooks/useDossiers";
 import type { ClientUpdateInput } from "@/lib/schemas/client";
 import type { Dossier } from "@/lib/types";
@@ -92,9 +94,9 @@ export default function ClientDetailPage() {
               <TabsTrigger value="historique">Historique</TabsTrigger>
             </TabsList>
             <TabsContent value="infos">
-              <InfosTab clientId={clientId} defaultValues={clientToFormValues(client)} />
+              <InfosTab client={client} defaultValues={clientToFormValues(client)} />
             </TabsContent>
-            <TabsContent value="contrats">
+            <TabsContent value="contrats" className="space-y-4">
               <ContratsTab clientId={clientId} />
             </TabsContent>
             <TabsContent value="dossiers">
@@ -109,7 +111,7 @@ export default function ClientDetailPage() {
           </Tabs>
         </div>
         <div className="lg:col-span-1">
-          <ActionsCard clientId={clientId} onSuppression={() => router.push("/clients")} />
+          <ActionsCard clientId={clientId} client={client} onSuppression={() => router.push("/clients")} />
         </div>
       </div>
     </div>
@@ -131,7 +133,7 @@ function TableauBordClient({ clientId, client }: { clientId: number; client: imp
   // contrats "Actuel" (situation d'avant, capturée au diagnostic) et celui
   // des contrats "Actif" (nouveaux contrats souscrits), annualisée — plus
   // fiable qu'une estimation figée, ça bouge avec les contrats du client.
-  const contratsQuery = useContratsClient(clientId);
+  const contratsQuery = useContrats({ clientId });
   const contrats = contratsQuery.data ?? [];
   const contratsActifs = contrats.filter((c) => c.statut_contrat === "Actif");
   const totalActuelMensuel = contrats
@@ -148,6 +150,7 @@ function TableauBordClient({ clientId, client }: { clientId: number; client: imp
     { label: "Prochaine relance", valeur: client.date_relance ? formatDateRelance(client.date_relance) : "Non planifiée" },
     { label: "Statut de relance", valeur: client.statut_relance || "Aucune" },
     { label: "Dossiers en cours", valeur: String(dossiersEnCours) },
+    { label: "Objectif de la demande", valeur: labelObjectifPrincipal(client.objectif_principal) || "—" },
     {
       label: "Opérateur actuel",
       valeur: client.operateur_actuel || "—",
@@ -162,7 +165,7 @@ function TableauBordClient({ clientId, client }: { clientId: number; client: imp
   ];
 
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-6">
       {tuiles.map((tuile) => (
         <Card key={tuile.label}>
           <CardContent className="pt-4 pb-3">
@@ -176,7 +179,14 @@ function TableauBordClient({ clientId, client }: { clientId: number; client: imp
   );
 }
 
-function InfosTab({ clientId, defaultValues }: { clientId: number; defaultValues: ClientUpdateInput }) {
+function InfosTab({
+  client,
+  defaultValues,
+}: {
+  client: import("@/lib/types").Client;
+  defaultValues: ClientUpdateInput;
+}) {
+  const clientId = client.id;
   const { estAdmin } = useAuth();
   const verrouille = !estAdmin();
   const updateMutation = clientsResource.useUpdate({
@@ -184,25 +194,27 @@ function InfosTab({ clientId, defaultValues }: { clientId: number; defaultValues
   });
 
   return (
-    <Card>
-      <CardContent className="pt-6 space-y-3">
-        {verrouille && (
-          <p className="rounded-md border bg-muted px-3 py-2 text-sm text-muted-foreground">
-            Fiche verrouillée — une fois enregistrée, seule un responsable peut modifier les informations du client.
-          </p>
-        )}
-        <fieldset disabled={verrouille} className={cn(verrouille && "opacity-60")}>
-          <ClientForm
-            mode="edit"
-            defaultValues={defaultValues}
-            onSubmit={(values) => updateMutation.mutate({ id: clientId, values: values as ClientUpdateInput })}
-            submitError={updateMutation.error}
-            submitLabel="Enregistrer"
-            isSubmitting={updateMutation.isPending}
-          />
-        </fieldset>
-      </CardContent>
-    </Card>
+    <div className="space-y-4">
+      <Card>
+        <CardContent className="pt-6 space-y-3">
+          {verrouille && (
+            <p className="rounded-md border bg-muted px-3 py-2 text-sm text-muted-foreground">
+              Fiche verrouillée — une fois enregistrée, seule un responsable peut modifier les informations du client.
+            </p>
+          )}
+          <fieldset disabled={verrouille} className={cn(verrouille && "opacity-60")}>
+            <ClientForm
+              mode="edit"
+              defaultValues={defaultValues}
+              onSubmit={(values) => updateMutation.mutate({ id: clientId, values: values as ClientUpdateInput })}
+              submitError={updateMutation.error}
+              submitLabel="Enregistrer"
+              isSubmitting={updateMutation.isPending}
+            />
+          </fieldset>
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 
@@ -291,7 +303,9 @@ function DocumentsTab({ clientId }: { clientId: number }) {
                   <p className="text-muted-foreground">{doc.date_upload}</p>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Badge variant={doc.statut_kyc === "valide" ? "default" : "secondary"}>{doc.statut_kyc}</Badge>
+                  <Badge variant="outline" className={statutKycBadgeClass(doc.statut_kyc)}>
+                    {LABELS_STATUT_KYC[doc.statut_kyc] ?? doc.statut_kyc}
+                  </Badge>
                   <a href={doc.url} target="_blank" rel="noreferrer" className="text-primary underline">
                     Voir
                   </a>
@@ -370,8 +384,31 @@ function HistoriqueTab({ clientId }: { clientId: number }) {
   );
 }
 
-function ActionsCard({ clientId, onSuppression }: { clientId: number; onSuppression: () => void }) {
+// Champs sans lesquels un nouveau diagnostic ne doit pas être lancé (identité
+// minimale requise dès l'étape 2 du wizard, voir etapeIdentiteSchema côté
+// /diagnostic) — vérifiés ici en amont pour bloquer le bouton plutôt que de
+// laisser le conseiller découvrir le blocage une fois dans le wizard.
+function champsObligatoiresDiagnosticManquants(client: import("@/lib/types").Client): string[] {
+  const manquants: string[] = [];
+  if (!client.prenom) manquants.push("Prénom");
+  if (!client.nom) manquants.push("Nom");
+  if (!client.telephone) manquants.push("Téléphone");
+  if (!client.code_postal) manquants.push("Code postal");
+  if (!client.ville) manquants.push("Ville");
+  return manquants;
+}
+
+function ActionsCard({
+  clientId,
+  client,
+  onSuppression,
+}: {
+  clientId: number;
+  client: import("@/lib/types").Client;
+  onSuppression: () => void;
+}) {
   const router = useRouter();
+  const manquantsDiagnostic = champsObligatoiresDiagnosticManquants(client);
   const [lienOpen, setLienOpen] = useState(false);
   const [lienUrl, setLienUrl] = useState<string | null>(null);
   const [devisOpen, setDevisOpen] = useState(false);
@@ -420,7 +457,18 @@ function ActionsCard({ clientId, onSuppression }: { clientId: number; onSuppress
 
   const handleSupprimer = () => {
     if (!window.confirm("Supprimer définitivement ce client ?")) return;
-    deleteMutation.mutate(clientId, { onSuccess: onSuppression });
+    deleteMutation.mutate(clientId, {
+      onSuccess: onSuppression,
+      onError: (err) => {
+        if (err instanceof ApiError && err.status === 409) {
+          toast.error(err.message || "Ce client a encore des données liées — suppression bloquée.");
+        } else if (err instanceof ApiError && err.status === 403) {
+          toast.error("Cette fiche appartient à un autre conseiller — seul un Admin peut la supprimer.");
+        } else {
+          toast.error("Échec de la suppression du client.");
+        }
+      },
+    });
   };
 
   const handleCopier = async () => {
@@ -447,6 +495,12 @@ function ActionsCard({ clientId, onSuppression }: { clientId: number; onSuppress
         <Button
           variant="outline"
           className="w-full"
+          disabled={manquantsDiagnostic.length > 0}
+          title={
+            manquantsDiagnostic.length > 0
+              ? `Complétez d'abord la fiche (${manquantsDiagnostic.join(", ")}) avant de lancer un diagnostic.`
+              : undefined
+          }
           onClick={() => router.push(`/diagnostic?entiteType=client&entiteId=${clientId}`)}
         >
           Nouveau diagnostic

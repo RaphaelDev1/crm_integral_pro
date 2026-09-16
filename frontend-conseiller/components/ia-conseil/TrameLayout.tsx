@@ -17,10 +17,9 @@ interface TrameLayoutProps {
 // courante. La colonne recommandations live a été retirée de cette vue
 // conseiller (elle prenait trop de place et gênait la lecture des
 // questions) — les recommandations restent visibles à la clôture de chaque
-// onglet (voir CategorieClotureCard dans EtapeTrame.tsx) et sur la vue
-// partagée client (ia-conseil-partage/[sessionId]/page.tsx), qui garde
-// LiveRecommandations. Seuls les éléments backoffice (commission, notes
-// internes) sont masqués dans les enfants en mode présentation.
+// onglet et sur la vue partagée client (ia-conseil-partage/[sessionId]/page.tsx),
+// qui garde LiveRecommandations. Seuls les éléments backoffice (commission,
+// notes internes) sont masqués dans les enfants en mode présentation.
 export function TrameLayout({ presentation, onTogglePresentation, left, center }: TrameLayoutProps) {
   return (
     <div className="space-y-4">

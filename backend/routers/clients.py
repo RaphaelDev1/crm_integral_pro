@@ -21,8 +21,12 @@ from backend.models.prospect import Prospect
 from backend.models.user import User
 from backend.schemas.briefing import ClientBriefingOut, DocumentOut, DocumentStatutUpdate
 from backend.schemas.client import ClientCreate, ClientOut, ClientUpdate, RelanceUpdate
+from backend.schemas.dossier import EnvoiLienClient
+from backend.schemas.facture import FactureClientOut
 from backend.schemas.historique_action import HistoriqueActionOut
-from backend.services import audit_engine, notification_engine, reference_engine, token_engine
+from backend.services import audit_engine, dossier_engine, notification_engine, reference_engine, token_engine
+from backend.services.client_suppression import ClientSuppressionBloquee
+from backend.services.client_suppression import supprimer_client as supprimer_client_cascade
 from backend.services.ia_conseil_bridge import obtenir_ou_creer_client_conseil
 from backend.services.storage_engine import StorageError, supprimer_document, url_signee
 
@@ -162,6 +166,21 @@ async def valider_document_client(
 
     await db.commit()
 
+    if payload.statut_kyc == "valide":
+        # Si ce document validé complète la liste des pièces requises, le
+        # dossier passe automatiquement à "docs_recus" ("Documents vérifiés",
+        # vert dans la timeline) — sans ça, le conseiller devait cliquer
+        # manuellement la transition même quand tout était déjà bon.
+        complet, _ = await dossier_engine.documents_valides_pour_client(db, client_id)
+        if complet:
+            dossiers_en_attente = (
+                await db.execute(
+                    select(Dossier).where(Dossier.client_id == client_id, Dossier.statut == "docs_demandes")
+                )
+            ).scalars().all()
+            for dossier_en_attente in dossiers_en_attente:
+                await dossier_engine.transiter(db, dossier_en_attente, "docs_recus", par="systeme")
+
     url = url_signee(document.url_stockage)
     return DocumentOut(
         id=document.id, type_document=document.type_document, statut_kyc=document.statut_kyc,
@@ -234,6 +253,97 @@ async def generer_lien_portail(
             f"Bonjour, voici votre lien personnel pour accéder à votre espace : "
             f"{url} (valable 30 jours). Votre conseiller."
         ),
+    }
+
+
+@router.post("/{client_id}/token-documents", response_model=dict)
+async def generer_lien_documents_client(
+    client_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Génère un lien à envoyer au client (SMS/email) pour qu'il transmette
+    lui-même sa facture/son test de débit — équivalent de
+    prospects.py::generer_lien_documents_prospect, pour redemander cette
+    information à jour avant un nouveau diagnostic."""
+    client = await db.get(Client, client_id)
+    if client is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Client introuvable.")
+    _verifier_acces(client, user)
+
+    token = await token_engine.generer_token_client_documents(db, client_id, cree_par=user.username)
+
+    url = token_engine.construire_url_client(token.token, base_url=settings.portail_client_base_url)
+    return {
+        "token": token.token,
+        "url": url,
+        "expire_le": token.date_expiration,
+        "message_sms_suggere": (
+            f"Bonjour, voici votre lien personnel pour nous transmettre votre facture "
+            f"et/ou votre test de débit : {url} (valable 14 jours). Votre conseiller."
+        ),
+    }
+
+
+@router.get("/{client_id}/factures-analysees", response_model=list[FactureClientOut])
+async def factures_analysees_client(
+    client_id: int, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)
+):
+    client = await db.get(Client, client_id)
+    if client is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Client introuvable.")
+    _verifier_acces(client, user)
+    result = await db.execute(
+        select(FactureAnalyse).where(FactureAnalyse.client_id == client_id).order_by(FactureAnalyse.id.desc())
+    )
+    return result.scalars().all()
+
+
+@router.post("/{client_id}/envoyer-lien-documents", response_model=dict)
+async def envoyer_lien_documents_client(
+    client_id: int,
+    payload: EnvoiLienClient,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Génère le lien de collecte documents (comme /token-documents) et l'envoie
+    immédiatement au client par le canal choisi (SMS ou email) — équivalent de
+    prospects.py::envoyer_lien_documents_prospect."""
+    client = await db.get(Client, client_id)
+    if client is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Client introuvable.")
+    _verifier_acces(client, user)
+
+    token = await token_engine.generer_token_client_documents(db, client_id, cree_par=user.username)
+    url = token_engine.construire_url_client(token.token, base_url=settings.portail_client_base_url)
+    prenom = client.prenom or ""
+
+    sms_envoye = False
+    email_envoye = False
+    if payload.canal == "sms":
+        message_sms = (
+            f"Bonjour {prenom}, voici votre lien personnel pour nous transmettre votre facture "
+            f"et/ou votre test de débit : {url} (valable 14 jours). Votre conseiller."
+        ).strip()
+        sms_envoye = notification_engine.envoyer_sms(client.telephone or "", message_sms)
+    else:
+        corps_email = (
+            f"<p>Bonjour {prenom},</p>"
+            f"<p>Voici votre lien personnel pour nous transmettre votre facture et/ou votre test de débit :</p>"
+            f'<p><a href="{url}">{url}</a></p>'
+            f"<p>Ce lien est valable 14 jours.</p>"
+            f"<p>Votre conseiller.</p>"
+        )
+        email_envoye = notification_engine.envoyer_email(
+            client.email or "", "Votre lien personnel — transmission de documents", corps_email
+        )
+
+    return {
+        "token": token.token,
+        "url": url,
+        "expire_le": token.date_expiration,
+        "sms_envoye": sms_envoye,
+        "email_envoye": email_envoye,
     }
 
 
@@ -391,10 +501,14 @@ async def supprimer_client(
     if client is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Client introuvable.")
     _verifier_acces(client, user)
+    nom_complet = f"{client.prenom or ''} {client.nom or ''}".strip()
+    try:
+        await supprimer_client_cascade(db, client, forcer=user.role == "Admin")
+    except ClientSuppressionBloquee as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
+    # Journalisé après coup (entite_id n'est pas une FK, voir
+    # backend/models/historique_action.py) — le client n'existe déjà plus.
     await audit_engine.enregistrer_action(
         db, entite_type="client", entite_id=client_id,
-        action="Suppression", details=f"{client.prenom or ''} {client.nom or ''}".strip(),
-        auteur=user.nom_complet,
+        action="Suppression", details=nom_complet, auteur=user.nom_complet,
     )
-    await db.delete(client)
-    await db.commit()

@@ -93,29 +93,33 @@ async def construire_recommandations(
         return resultats[:3]
 
     if service_principal == "Mobile uniquement":
+        # Le mobile est un service à part entière, distinct de la box : on ne
+        # propose plus de cross-sell Box/Pack ici (cf. retour terrain — mobile
+        # et box ne sont pas comparables, mélanger les deux dans le diagnostic
+        # d'une situation "Mobile uniquement" prêtait à confusion).
         principal = ("📱 Vos meilleures offres Mobile", "Mobile", await top("Mobile"))
-        cross = [
-            ("🏠 Et si vous regardiez aussi la Box / Fibre ?", "Box / Fibre", await top("Box / Fibre")),
-            ("📦 Nos packs Box + Mobile (pour aller plus loin)", "Pack Box + Mobile", await top("Pack Box + Mobile")),
-        ]
+        cross = []
     elif service_principal == "Box / Fibre uniquement":
-        principal = ("🏠 Vos meilleures offres Box / Fibre", "Box / Fibre", await top("Box / Fibre"))
+        # Titre affiché en "Box internet" (vocabulaire client) — le 2e élément
+        # du tuple reste "Box / Fibre" (categorie interne, jamais affichée
+        # telle quelle, comparée littéralement au catalogue).
+        principal = ("🏠 Vos meilleures offres Box internet", "Box / Fibre", await top("Box / Fibre"))
         cross = [
-            ("📦 Top 3 de nos packs Box + Mobile", "Pack Box + Mobile", await top("Pack Box + Mobile")),
+            ("📦 Top 3 de nos packs Box internet + Mobile", "Pack Box + Mobile", await top("Pack Box + Mobile")),
             ("📱 Nos 3 meilleurs forfaits Mobile", "Mobile", await top("Mobile")),
         ]
     elif service_principal == "Pack Box + Mobile":
         # Un pack combine box + mobile : le comparer à une offre Mobile seule ou Box seule
         # n'a pas de sens (le client perdrait l'autre service). On ne compare donc les packs
         # qu'entre eux, sans cross-sell vers du Mobile ou du Box / Fibre isolé.
-        principal = ("📦 Vos meilleurs packs Box + Mobile", "Pack Box + Mobile", await top("Pack Box + Mobile"))
+        principal = ("📦 Vos meilleurs packs Box internet + Mobile", "Pack Box + Mobile", await top("Pack Box + Mobile"))
         cross = []
     else:
         ml = await top("Multi-lignes") or await top("Mobile")
         principal = ("📲 Vos meilleures offres Multi-lignes", "Multi-lignes", ml)
         cross = [
-            ("📦 Top 3 de nos packs Box + Mobile", "Pack Box + Mobile", await top("Pack Box + Mobile")),
-            ("🏠 Nos 3 meilleures offres Box / Fibre", "Box / Fibre", await top("Box / Fibre")),
+            ("📦 Top 3 de nos packs Box internet + Mobile", "Pack Box + Mobile", await top("Pack Box + Mobile")),
+            ("🏠 Nos 3 meilleures offres Box internet", "Box / Fibre", await top("Box / Fibre")),
         ]
 
     return {"principal": principal, "cross_sell": cross}

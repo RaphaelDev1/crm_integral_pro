@@ -29,9 +29,23 @@ def _pg_engine():
     return create_engine(url)
 
 
+# URL placeholder par défaut — ne résout jamais (domaine .invalid, RFC 2606),
+# volontaire pour la plupart des fournisseurs tant qu'on n'a pas de vraie page
+# de souscription + sélecteurs dédiés pour eux (voir OPERATEURS_SUPPORTES et
+# SELECTEURS_PAR_OPERATEUR dans backend/services/souscription_engine.py — seul
+# Free y a une automatisation fiable ; Bouygues y figure mais sans sélecteurs
+# dédiés, donc repli sur les sélecteurs génériques uniquement, best-effort).
+# Utiliser `url_souscription=` pour les offres où on a la vraie URL (ex. Free
+# ci-dessous) : sans ça, "Pré-remplir la souscription" ouvre cette URL bidon
+# et échoue toujours dès la navigation, avant même d'essayer de remplir quoi
+# que ce soit.
+URL_SOUSCRIPTION_DEFAUT = "https://exemple-test.invalid/souscription"
+
+
 def _offre(univers, categorie, fournisseur, nom_offre, prix_mensuel, *,
            frais_activation=0.0, engagement_mois=0, data_go=0.0,
-           commission_affiliation=0.0, caracteristiques="", code_affiliation="TEST"):
+           commission_affiliation=0.0, caracteristiques="", code_affiliation="TEST",
+           url_souscription=URL_SOUSCRIPTION_DEFAUT):
     return Offre(
         univers=univers,
         categorie=categorie,
@@ -44,7 +58,7 @@ def _offre(univers, categorie, fournisseur, nom_offre, prix_mensuel, *,
         commission_affiliation=commission_affiliation,
         data_go=data_go,
         actif=True,
-        url_souscription="https://exemple-test.invalid/souscription",
+        url_souscription=url_souscription,
         code_affiliation=code_affiliation,
         date_maj=DATE_MAJ,
     )
@@ -57,8 +71,17 @@ def offres_catalogue_test() -> list[Offre]:
     offres += [
         _offre("Télécom", "Mobile", "Orange", "Forfait 100 Go", 19.99, data_go=100,
                commission_affiliation=25, caracteristiques="Appels/SMS illimités, 5G incluse"),
+        # Free est le seul fournisseur avec une automatisation Playwright fiable
+        # (voir OPERATEURS_SUPPORTES dans souscription_engine.py) — vraie URL de
+        # souscription mobile (forfait seul, pas de vente de téléphone). Pour une
+        # future offre mobile+téléphone, utiliser plutôt
+        # "https://mobile.free.fr/shop?from=subscribe".
         _offre("Télécom", "Mobile", "Free", "Forfait 5G 150 Go", 19.99, data_go=150,
-               commission_affiliation=20, caracteristiques="Appels/SMS illimités, 5G, roaming Europe/DOM"),
+               commission_affiliation=20, caracteristiques="Appels/SMS illimités, 5G, roaming Europe/DOM",
+               url_souscription="https://mobile.free.fr/souscription/options"),
+        _offre("Télécom", "Mobile", "Free", "Série Free 110 Go", 12.99, data_go=110,
+               commission_affiliation=15, caracteristiques="Appels/SMS illimités, sans engagement",
+               url_souscription="https://mobile.free.fr/souscription/options"),
         _offre("Télécom", "Mobile", "SFR", "Forfait 130 Go", 17.99, data_go=130,
                commission_affiliation=22, caracteristiques="Appels/SMS illimités, 5G incluse"),
         _offre("Télécom", "Mobile", "Bouygues", "B&You 100 Go", 15.99, data_go=100,
@@ -74,7 +97,8 @@ def offres_catalogue_test() -> list[Offre]:
                caracteristiques="Fibre jusqu'à 2 Gb/s, TV incluse"),
         _offre("Télécom", "Box / Fibre", "Free", "Freebox Pop", 29.99,
                frais_activation=0, engagement_mois=0, commission_affiliation=35,
-               caracteristiques="Fibre jusqu'à 1 Gb/s, sans engagement"),
+               caracteristiques="Fibre jusqu'à 1 Gb/s, sans engagement",
+               url_souscription="https://signup.free.fr/subscribe_promo/00_choose_offre.pl?pre_box=pop#pop"),
         _offre("Télécom", "Box / Fibre", "SFR", "Box Fibre", 35.99,
                frais_activation=49, engagement_mois=12, commission_affiliation=38,
                caracteristiques="Fibre jusqu'à 1 Gb/s, TV incluse"),

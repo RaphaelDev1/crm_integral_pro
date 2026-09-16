@@ -52,6 +52,7 @@ async def generer_token(
     peut_voir_suivi: bool = True,
     peut_transmettre_speedtest: bool = True,
     peut_renseigner_demarches: bool = True,
+    remplissage_autonome: bool = True,
 ) -> TokenPublic:
     """Génère un nouveau token public pour un client OU un prospect (exactement
     l'un des deux — cf. contrainte XOR, migration 0019)."""
@@ -69,6 +70,7 @@ async def generer_token(
         peut_voir_suivi=peut_voir_suivi,
         peut_transmettre_speedtest=peut_transmettre_speedtest,
         peut_renseigner_demarches=peut_renseigner_demarches,
+        remplissage_autonome=remplissage_autonome,
         date_creation=now.strftime(FORMAT_DATE),
         date_expiration=(now + duree).strftime(FORMAT_DATE),
         cree_par=cree_par,
@@ -85,16 +87,47 @@ async def generer_token_prospect_documents(
     *,
     cree_par: str | None = None,
     duree: timedelta = DUREE_VALIDITE_DOCUMENTS_PROSPECT,
+    remplissage_autonome: bool = True,
 ) -> TokenPublic:
     """Génère un token pour qu'un prospect (pas encore client) transmette lui-même
     sa facture/son test de débit — équivalent de
     src/prospects_engine.py::creer_token_documents. Aucun dossier n'existe encore :
     upload de documents ET test de débit en direct (widget LibreSpeed self-hosted,
     voir /portail/{token}/speedtest) sont autorisés ; les autres permissions
-    restent désactivées (pas de suivi/mandat/démarches sans dossier)."""
+    restent désactivées (pas de suivi/mandat/démarches sans dossier).
+
+    `remplissage_autonome` distingue le lien envoyé au prospect pour qu'il
+    réponde seul (formulaire allégé sur /dossier/{token}/situation) du lien
+    ouvert par le conseiller pour répondre avec lui au téléphone (formulaire
+    complet) — voir backend/routers/portail_public.py::_contexte_token_prospect."""
     return await generer_token(
         db,
         prospect_id=prospect_id,
+        dossier_id=None,
+        cree_par=cree_par,
+        duree=duree,
+        peut_uploader_docs=True,
+        peut_signer_mandat=False,
+        peut_voir_suivi=False,
+        peut_transmettre_speedtest=True,
+        peut_renseigner_demarches=False,
+        remplissage_autonome=remplissage_autonome,
+    )
+
+
+async def generer_token_client_documents(
+    db: AsyncSession,
+    client_id: int,
+    *,
+    cree_par: str | None = None,
+    duree: timedelta = DUREE_VALIDITE_DOCUMENTS_PROSPECT,
+) -> TokenPublic:
+    """Équivalent de `generer_token_prospect_documents` pour un client déjà
+    converti — permet de redemander une facture/un test de débit à jour sans
+    passer par un nouveau dossier (ex. avant un nouveau diagnostic)."""
+    return await generer_token(
+        db,
+        client_id=client_id,
         dossier_id=None,
         cree_par=cree_par,
         duree=duree,

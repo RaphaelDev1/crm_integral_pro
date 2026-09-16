@@ -17,13 +17,20 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Champ, ChampSelect } from "@/components/diagnostic/champs";
 import { EFFECTIF_OPTIONS } from "@/lib/diagnosticConstants";
-import { clientsResource } from "@/lib/hooks/useClients";
+import {
+  clientsResource,
+  useClientDocuments,
+  useEnvoyerLienDocumentsClient,
+  useGenererLienDocumentsClient,
+} from "@/lib/hooks/useClients";
 import type { DiagnosticDispatch, DiagnosticState, IdentiteState } from "@/lib/hooks/useDiagnosticWizard";
+import { useClientFacturesAnalysees, useProspectFacturesAnalysees } from "@/lib/hooks/useFactures";
 import { useCommunesParCodePostal } from "@/lib/hooks/useGeo";
 import {
   prospectsResource,
   useEnvoyerLienDocumentsProspect,
   useGenererLienDocumentsProspect,
+  useProspectDocuments,
 } from "@/lib/hooks/useProspects";
 import type { Client, Prospect } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -146,30 +153,63 @@ export function EtapeIdentite({ state, dispatch }: EtapeIdentiteProps) {
 
   const [lienOpen, setLienOpen] = useState(false);
   const [lienUrl, setLienUrl] = useState<string | null>(null);
-  const lienMutation = useGenererLienDocumentsProspect();
-  const envoyerLienMutation = useEnvoyerLienDocumentsProspect();
-  const peutEnvoyerLien = state.identite.mode === "existant" && state.identite.entiteType === "prospect";
+  const estProspectExistant = state.identite.mode === "existant" && state.identite.entiteType === "prospect";
+  const estClientExistant = state.identite.mode === "existant" && state.identite.entiteType === "client";
+  const peutEnvoyerLien = estProspectExistant || estClientExistant;
+  const entiteId = state.identite.entiteId ?? undefined;
+
+  const lienMutationProspect = useGenererLienDocumentsProspect();
+  const lienMutationClient = useGenererLienDocumentsClient();
+  const envoyerLienMutationProspect = useEnvoyerLienDocumentsProspect();
+  const envoyerLienMutationClient = useEnvoyerLienDocumentsClient();
+  const lienEnCours = lienMutationProspect.isPending || lienMutationClient.isPending;
+  const envoiEnCours = envoyerLienMutationProspect.isPending || envoyerLienMutationClient.isPending;
+
+  // Détecte si la facture/le test de débit ont déjà été transmis (par le
+  // client lui-même via un précédent lien de collecte, ou par upload manuel)
+  // pour griser le bouton d'envoi plutôt que de redemander inutilement.
+  const documentsProspectQuery = useProspectDocuments(estProspectExistant ? entiteId : undefined);
+  const documentsClientQuery = useClientDocuments(estClientExistant ? entiteId : undefined);
+  const facturesProspectQuery = useProspectFacturesAnalysees(estProspectExistant ? entiteId : undefined);
+  const facturesClientQuery = useClientFacturesAnalysees(estClientExistant ? entiteId : undefined);
+  const dejaCollecte =
+    (documentsProspectQuery.data?.length ?? 0) > 0 ||
+    (documentsClientQuery.data?.length ?? 0) > 0 ||
+    (facturesProspectQuery.data?.length ?? 0) > 0 ||
+    (facturesClientQuery.data?.length ?? 0) > 0;
 
   function handleEnvoyerLien() {
     if (!state.identite.entiteId) return;
-    lienMutation.mutate(state.identite.entiteId, {
-      onSuccess: (data) => {
-        setLienUrl(data.url);
-        setLienOpen(true);
-      },
-    });
+    const onSuccess = (data: { url: string }) => {
+      setLienUrl(data.url);
+      setLienOpen(true);
+    };
+    if (estClientExistant) {
+      lienMutationClient.mutate(state.identite.entiteId, { onSuccess });
+    } else {
+      // Formulaire complet (comportement historique de cet écran, pas de
+      // choix "client seul/au téléphone" ici — voir prospects/[id]/page.tsx
+      // pour ce choix, propre à la fiche prospect).
+      lienMutationProspect.mutate(
+        { prospectId: state.identite.entiteId, remplissageAutonome: false },
+        { onSuccess }
+      );
+    }
   }
 
   function handleEnvoyerParEmail() {
     if (!state.identite.entiteId) return;
-    envoyerLienMutation.mutate(
-      { prospectId: state.identite.entiteId, canal: "email" },
-      {
-        onSuccess: (data) => {
-          toast.success(data.email_envoye ? "Lien envoyé par email." : "Échec de l'envoi de l'email.");
-        },
-      }
-    );
+    const onSuccess = (data: { email_envoye: boolean }) => {
+      toast.success(data.email_envoye ? "Lien envoyé par email." : "Échec de l'envoi de l'email.");
+    };
+    if (estClientExistant) {
+      envoyerLienMutationClient.mutate({ clientId: state.identite.entiteId, canal: "email" }, { onSuccess });
+    } else {
+      envoyerLienMutationProspect.mutate(
+        { prospectId: state.identite.entiteId, canal: "email", remplissageAutonome: false },
+        { onSuccess }
+      );
+    }
   }
 
   async function handleCopierLien() {
@@ -363,13 +403,22 @@ export function EtapeIdentite({ state, dispatch }: EtapeIdentiteProps) {
       {peutEnvoyerLien && (
         <div className="rounded-md border p-4 space-y-2">
           <p className="text-sm font-medium">Collecte facture / test de débit</p>
-          <p className="text-xs text-muted-foreground">
-            Envoyez un lien personnel au prospect pour qu&apos;il transmette lui-même sa facture actuelle et/ou son
-            test de débit, avant même la fin du diagnostic.
-          </p>
-          <Button type="button" variant="outline" onClick={handleEnvoyerLien} disabled={lienMutation.isPending}>
-            Envoyer lien collecte docs / facture
-          </Button>
+          {dejaCollecte ? (
+            <p className="flex items-center gap-2 text-sm text-emerald-700">
+              <input type="checkbox" checked readOnly className="accent-emerald-600" />
+              Facture et/ou test de débit déjà transmis — pas besoin de renvoyer le lien.
+            </p>
+          ) : (
+            <>
+              <p className="text-xs text-muted-foreground">
+                Envoyez un lien personnel pour que le client transmette lui-même sa facture actuelle et/ou son test de
+                débit, avant même la fin du diagnostic.
+              </p>
+              <Button type="button" variant="outline" onClick={handleEnvoyerLien} disabled={lienEnCours}>
+                Envoyer lien collecte docs / facture
+              </Button>
+            </>
+          )}
         </div>
       )}
 
@@ -384,8 +433,8 @@ export function EtapeIdentite({ state, dispatch }: EtapeIdentiteProps) {
               Copier
             </Button>
           </div>
-          <Button type="button" variant="outline" onClick={handleEnvoyerParEmail} disabled={envoyerLienMutation.isPending}>
-            {envoyerLienMutation.isPending ? "Envoi…" : "Envoyer par email"}
+          <Button type="button" variant="outline" onClick={handleEnvoyerParEmail} disabled={envoiEnCours}>
+            {envoiEnCours ? "Envoi…" : "Envoyer par email"}
           </Button>
         </DialogContent>
       </Dialog>

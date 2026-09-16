@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.models.ia_conseil import SessionFacture, SessionTrame
 from backend.services import ia_conseil_engine as engine
 from backend.services import storage_engine
-from backend.services.facture_analyzer import FactureAnalyzerError, analyser_facture
+from backend.services.facture_analyzer import FactureAnalyzerError, MIME_AUTORISES_FACTURE, analyser_facture
 
 # Mappe chaque id de question de trame vers le champ extrait de la facture
 # (backend/services/facture_analyzer.py::CHAMPS_FACTURE) qui peut l'auto-
@@ -62,8 +62,11 @@ def mapper_extraction_vers_reponses(categorie_slug: str, extraction: dict[str, A
 async def televerser(db: AsyncSession, session: SessionTrame, contenu: bytes, nom_fichier: str) -> SessionFacture:
     if not contenu:
         raise ValueError("Fichier vide.")
-    if not (nom_fichier or "").lower().endswith(".pdf"):
-        raise ValueError("Format non supporté (PDF attendu).")
+    # Détection par contenu réel (magic bytes), pas par l'extension du nom de
+    # fichier — accepte aussi les photos de facture (JPG/PNG), comme le
+    # portail client le propose déjà.
+    if storage_engine.deviner_mime_reel(contenu) not in MIME_AUTORISES_FACTURE:
+        raise ValueError("Format non supporté (PDF, JPG, PNG ou WEBP attendu).")
 
     cle = storage_engine.upload_fichier(
         f"ia-conseil/sessions/{session.id}/factures", "facture", contenu, nom_fichier
@@ -95,10 +98,10 @@ async def analyser(db: AsyncSession, facture: SessionFacture) -> SessionFacture:
 
     # Nom de fichier fixe pour l'écriture temporaire : `nom_fichier` vient
     # d'un upload utilisateur et ne doit jamais être utilisé comme segment de
-    # chemin (traversal via "../"). Seule l'extension .pdf est garantie par
-    # televerser().
+    # chemin (traversal via "../"). L'extension n'a pas d'incidence sur
+    # l'analyse : analyser_facture() détecte le format par le contenu réel.
     with tempfile.TemporaryDirectory() as tmp:
-        chemin = Path(tmp) / "facture.pdf"
+        chemin = Path(tmp) / "facture.bin"
         chemin.write_bytes(contenu)
         try:
             extraction = analyser_facture(chemin)

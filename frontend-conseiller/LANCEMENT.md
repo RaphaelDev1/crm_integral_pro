@@ -35,6 +35,9 @@ Copy-Item backend/.env.example backend/.env
 
 # 1b. Dépendances (une seule fois)
 pip install -r backend/requirements-dev.txt
+playwright install chromium   # requis pour "Pré-remplir la souscription" (backend/services/souscription_engine.py) —
+                               # sans ça, le bouton ouvre un navigateur introuvable et échoue silencieusement
+                               # (même symptôme qu'une URL de souscription invalide, voir §souscription ci-dessous)
 
 # 1c. Migrations Alembic (obligatoire avant tout)
 python -m alembic upgrade head

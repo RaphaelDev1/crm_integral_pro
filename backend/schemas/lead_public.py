@@ -12,6 +12,8 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from backend.services.estimation_publique import LIBELLES_TRANCHES_AGE
+
 TELEPHONE_FR_RE = re.compile(r"^(?:(?:\+|00)33|0)\s*[1-9](?:[\s.-]*\d{2}){4}$")
 
 
@@ -44,6 +46,29 @@ class DepensesActuelles(BaseModel):
         }
 
 
+OBJECTIFS_PRINCIPAUX = {"economiser", "simplifier", "ameliorer_qualite", "regrouper"}
+NB_LIGNES_MOBILES = {"1", "2+"}
+QUALITES_RESEAU = {"Bonne partout", "Moyenne ou mauvaise à un endroit"}
+CHAUFFAGES_PRINCIPAUX = {"Électrique", "Gaz", "Bois / fioul / PAC", "Chauffage collectif inclus"}
+PUISSANCES_KVA = {"3", "6", "9", "12+"}
+OPTIONS_TARIFAIRES = {"Base", "Heures Pleines-Creuses", "Tempo"}
+USAGES_TV = {"Jamais, uniquement streaming", "Quelques chaînes", "Bouquet premium"}
+
+
+class AdresseIn(BaseModel):
+    """Adresse sélectionnée via l'autocomplétion (Base Adresse Nationale) —
+    posée uniquement si un secteur box ou énergie est sélectionné (socle S1,
+    utilisée pour la vraie éligibilité fibre au niveau commune et donnée de
+    contexte au conseiller). Reste facultative : un visiteur qui ne trouve pas
+    son adresse dans les suggestions ne doit jamais être bloqué."""
+    label: Optional[str] = Field(None, max_length=256)
+    code_postal: Optional[str] = Field(None, max_length=10)
+    ville: Optional[str] = Field(None, max_length=128)
+    code_insee: Optional[str] = Field(None, max_length=8)
+    latitude: Optional[float] = Field(None, ge=-90, le=90)
+    longitude: Optional[float] = Field(None, ge=-180, le=180)
+
+
 class UTM(BaseModel):
     """Paramètres UTM récupérés depuis la query string de la landing —
     persistés côté prospect pour l'attribution des campagnes."""
@@ -64,24 +89,19 @@ class TouchpointIn(BaseModel):
     horodatage: Optional[str] = Field(None, max_length=32)
 
 
-class AdresseSelection(BaseModel):
-    """Adresse choisie dans l'autocomplétion BAN (étape 3) — sert à interroger
-    l'éligibilité fibre par commune (P2.1). Facultatif : le prospect peut
-    ignorer l'autocomplétion et ne saisir que le code postal."""
-    label: Optional[str] = Field(None, max_length=256)
-    code_insee: Optional[str] = Field(None, min_length=5, max_length=5)
-    latitude: Optional[float] = Field(None, ge=-90, le=90)
-    longitude: Optional[float] = Field(None, ge=-180, le=180)
-
-
 class LeadEstimationRequest(BaseModel):
     prenom: str = Field(..., min_length=1, max_length=64)
     telephone: str = Field(..., min_length=10, max_length=20)
     email: Optional[str] = Field(None, max_length=254)
-    code_postal: Optional[str] = Field(None, min_length=5, max_length=5)
-    ville: Optional[str] = Field(None, max_length=128)
-    adresse: Optional[str] = Field(None, max_length=256)
-    operateur_actuel: Optional[str] = Field(None, max_length=64)
+    # Un même prospect peut avoir un opérateur mobile différent de son
+    # opérateur box — deux champs distincts, chacun alimenté par un menu
+    # déroulant (liste connue + "Autre") côté formulaire.
+    operateur_mobile: Optional[str] = Field(None, max_length=64)
+    operateur_box: Optional[str] = Field(None, max_length=64)
+    # "ADSL" ou "Fibre" — reprend Prospect.techno / Contrat.categorie, laissé
+    # en texte libre pour rester tolérant si de nouvelles valeurs apparaissent.
+    offre_box: Optional[str] = Field(None, max_length=32)
+    debit_box: Optional[float] = Field(None, ge=0, le=10000)
     # Mêmes questions/valeurs que la trame mobile conseiller (conso_data_go /
     # roaming_ue / sensibilite_prix, voir backend/scripts/seed_ia_conseil.py) —
     # posées ici pour que le conseiller n'ait plus à les redemander au
@@ -89,9 +109,35 @@ class LeadEstimationRequest(BaseModel):
     # migration 0038_landing_roaming_priorite).
     conso_data_go: Optional[float] = Field(None, ge=0, le=1000)
     roaming_europe: Optional[str] = Field(None, max_length=32)
+    # Voyage hors UE — complément de roaming_europe, mêmes valeurs (Jamais /
+    # Occasionnellement / Souvent). Migration 0045_roaming_hors_ue.
+    roaming_hors_ue: Optional[str] = Field(None, max_length=32)
     sensibilite_prix: Optional[str] = Field(None, max_length=32)
+    # `age` reste accepté pour compat mais le formulaire n'envoie plus qu'une
+    # tranche choisie dans un menu déroulant (voir estimation_publique.TRANCHES_AGE).
     age: Optional[int] = Field(None, ge=18, le=120)
+    tranche_age: Optional[str] = Field(None, max_length=8)
+    # Fournisseur d'énergie actuel — capturé au même titre que operateur_actuel
+    # pour le télécom, pour pouvoir créer un Contrat "Actuel" exploitable.
+    fournisseur_energie: Optional[str] = Field(None, max_length=64)
     depenses: DepensesActuelles
+    # Adresse (socle S1) — posée si box ou énergie sélectionné, cf. AdresseIn.
+    adresse: Optional[AdresseIn] = None
+    # Socle commun S5 — pondère le scoring conseiller, posé quel que soit le
+    # secteur choisi (question unique, à faible friction).
+    objectif_principal: Optional[str] = Field(None, max_length=32)
+    # Trame mobile (M1, M5) — voir docs/QUESTIONS_PAR_SECTEUR.md.
+    nb_lignes_mobiles: Optional[str] = Field(None, max_length=8)
+    qualite_reseau_mobile: Optional[str] = Field(None, max_length=64)
+    # Trame énergie (E1, E5, E5a, E6) — posées uniquement si le secteur
+    # énergie est sélectionné côté formulaire.
+    chauffage_principal: Optional[str] = Field(None, max_length=32)
+    puissance_kva: Optional[str] = Field(None, max_length=8)
+    gros_equipement_electrique: Optional[bool] = None
+    option_tarifaire: Optional[str] = Field(None, max_length=32)
+    # Trame box (B3, B3b) — posées uniquement si une dépense box/fibre > 0.
+    usage_tv: Optional[str] = Field(None, max_length=32)
+    abonnements_payants: Optional[str] = Field(None, max_length=256)
     # Coefficient bonus/malus assurance auto (0.50 à 3.50 en France) — texte
     # libre pour rester tolérant à la saisie ("0.85", "1", "1,20"…).
     bonus_malus_auto: Optional[str] = Field(None, max_length=16)
@@ -100,7 +146,6 @@ class LeadEstimationRequest(BaseModel):
     consentement_rgpd: bool
     consentement_demarchage: bool = False
     utm: UTM = Field(default_factory=UTM)
-    adresse_selection: Optional[AdresseSelection] = None
     # Historique des points de contact avant conversion (attribution multi-touch,
     # P4.3) — plafonné pour éviter tout payload abusif, le premier et le dernier
     # élément suffisent à l'analyse (voir backend/routers/dashboard_utm.py).
@@ -136,6 +181,62 @@ class LeadEstimationRequest(BaseModel):
     def rgpd_obligatoire(cls, v: bool) -> bool:
         if not v:
             raise ValueError("Le consentement RGPD est obligatoire.")
+        return v
+
+    @field_validator("tranche_age")
+    @classmethod
+    def valider_tranche_age(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in LIBELLES_TRANCHES_AGE:
+            raise ValueError("Tranche d'âge invalide.")
+        return v
+
+    @field_validator("objectif_principal")
+    @classmethod
+    def valider_objectif_principal(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in OBJECTIFS_PRINCIPAUX:
+            raise ValueError("Objectif principal invalide.")
+        return v
+
+    @field_validator("nb_lignes_mobiles")
+    @classmethod
+    def valider_nb_lignes_mobiles(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in NB_LIGNES_MOBILES:
+            raise ValueError("Nombre de lignes mobiles invalide.")
+        return v
+
+    @field_validator("qualite_reseau_mobile")
+    @classmethod
+    def valider_qualite_reseau_mobile(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in QUALITES_RESEAU:
+            raise ValueError("Qualité réseau invalide.")
+        return v
+
+    @field_validator("chauffage_principal")
+    @classmethod
+    def valider_chauffage_principal(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in CHAUFFAGES_PRINCIPAUX:
+            raise ValueError("Chauffage principal invalide.")
+        return v
+
+    @field_validator("puissance_kva")
+    @classmethod
+    def valider_puissance_kva(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in PUISSANCES_KVA:
+            raise ValueError("Puissance souscrite invalide.")
+        return v
+
+    @field_validator("option_tarifaire")
+    @classmethod
+    def valider_option_tarifaire(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in OPTIONS_TARIFAIRES:
+            raise ValueError("Option tarifaire invalide.")
+        return v
+
+    @field_validator("usage_tv")
+    @classmethod
+    def valider_usage_tv(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in USAGES_TV:
+            raise ValueError("Usage TV invalide.")
         return v
 
 

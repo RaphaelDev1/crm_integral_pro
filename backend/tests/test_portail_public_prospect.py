@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from backend.core.database import get_db
 from backend.main import app
+from backend.models.contrat import Contrat
 from backend.models.document_prospect import DocumentProspect
 from backend.models.prospect import Prospect
 from backend.models.token_public import TokenPublic
@@ -26,6 +27,9 @@ class _FakeResult:
 
     def all(self):
         return self._value
+
+    def first(self):
+        return self._value[0] if self._value else None
 
 
 class FakeSession:
@@ -76,7 +80,7 @@ def _token_prospect(**kwargs):
     base = dict(id=1, token="p" * 32, client_id=None, prospect_id=1,
                 peut_uploader_docs=True, peut_signer_mandat=False,
                 peut_voir_suivi=False, peut_renseigner_demarches=False,
-                peut_transmettre_speedtest=False)
+                peut_transmettre_speedtest=False, remplissage_autonome=True)
     base.update(kwargs)
     return TokenPublic(**base)
 
@@ -134,6 +138,28 @@ def test_upload_document_prospect_cree_un_document_prospect(api_client, fake_db)
     assert documents[0].type_document == "facture"
 
 
+def test_upload_document_prospect_notifie_le_conseiller_createur(api_client, fake_db):
+    utilisateur_fake = type("U", (), {"username": "alice", "nom_complet": "Alice Martin"})()
+    fake_db.get_map[(Prospect, 1)] = Prospect(id=1, prenom="Jean", nom="Dupont", cree_par="Alice Martin")
+    fake_db.queue_result([utilisateur_fake])  # creer_notification_prospect : User.nom_complet
+
+    with patch("backend.routers.portail_public.token_engine.valider_token",
+               new=AsyncMock(return_value=_token_prospect())), \
+         patch("backend.routers.portail_public.storage_engine.upload_fichier",
+               return_value="prospects/1/2026/08/facture_abcd1234_efgh5678.pdf"):
+        reponse = api_client.post(
+            f"/portail/{'p' * 32}/documents",
+            params={"type_document": "facture"},
+            files={"fichier": ("facture.pdf", b"%PDF-1.4 contenu factice", "application/pdf")},
+        )
+
+    assert reponse.status_code == 200
+    from backend.models.notification import Notification
+    notifications = [o for o in fake_db.added if isinstance(o, Notification)]
+    assert len(notifications) == 1
+    assert notifications[0].conseiller_username == "alice"
+
+
 def test_upload_document_prospect_type_non_autorise_rejete(api_client, fake_db):
     with patch("backend.routers.portail_public.token_engine.valider_token",
                new=AsyncMock(return_value=_token_prospect())):
@@ -153,6 +179,139 @@ def test_upload_document_prospect_refuse_si_non_autorise_par_le_token(api_client
             f"/portail/{'p' * 32}/documents",
             params={"type_document": "facture"},
             files={"fichier": ("facture.pdf", b"%PDF-1.4 contenu factice", "application/pdf")},
+        )
+
+    assert reponse.status_code == 403
+
+
+def test_speedtest_fait_vrai_si_debit_mesure_sur_un_contrat_seulement(api_client, fake_db):
+    # Le conseiller a saisi le débit mesuré directement sur la ligne (via
+    # ContratForm.tsx) sans que ça remonte sur Prospect.speed_down — le lien
+    # ne doit pas redemander un test déjà disponible (item #7).
+    contrat_avec_debit = Contrat(
+        id=9, prospect_id=1, categorie="Forfait box", chez_nous=False, speed_down=180.0,
+    )
+    fake_db.get_map[(Prospect, 1)] = Prospect(id=1, prenom="Jean", nom="Dupont")
+    fake_db.queue_result([])  # aucun DocumentProspect déjà transmis
+    fake_db.queue_result([contrat_avec_debit])  # _debit_deja_mesure_sur_un_contrat
+    fake_db.queue_result([])  # contrat_situation
+
+    with patch("backend.routers.portail_public.token_engine.valider_token",
+               new=AsyncMock(return_value=_token_prospect())):
+        reponse = api_client.get(f"/portail/{'p' * 32}")
+
+    assert reponse.json()["speedtest_fait"] is True
+
+
+def test_contexte_token_prospect_expose_peut_renseigner_situation(api_client, fake_db):
+    fake_db.get_map[(Prospect, 1)] = Prospect(id=1, prenom="Jean", nom="Dupont")
+    fake_db.queue_result([])
+
+    with patch("backend.routers.portail_public.token_engine.valider_token",
+               new=AsyncMock(return_value=_token_prospect())):
+        reponse = api_client.get(f"/portail/{'p' * 32}")
+
+    corps = reponse.json()
+    assert corps["peut_renseigner_situation"] is True
+    assert corps["situation_renseignee"] is False
+
+
+def test_renseigner_situation_actuelle_met_a_jour_le_prospect(api_client, fake_db):
+    # Champs rattachés au contrat concurrent (chez_nous=False) du prospect
+    # plutôt qu'aux colonnes Prospect — voir migration 0040. Le contrat
+    # existant est renvoyé deux fois : une fois pour le lookup fait par
+    # _contrat_situation_actuelle_prospect (mis à jour en place), une fois
+    # pour le recalcul de situation_renseignee dans _contexte_token_prospect.
+    contrat_existant = Contrat(id=5, prospect_id=1, categorie="Forfait mobile", chez_nous=False)
+    fake_db.get_map[(Prospect, 1)] = Prospect(id=1, prenom="Jean", nom="Dupont")
+    fake_db.queue_result([contrat_existant])
+    fake_db.queue_result([])  # documents déjà transmis, relus par _contexte_token_prospect
+    fake_db.queue_result([])  # _debit_deja_mesure_sur_un_contrat : aucun débit mesuré sur un contrat
+    fake_db.queue_result([contrat_existant])
+
+    with patch("backend.routers.portail_public.token_engine.valider_token",
+               new=AsyncMock(return_value=_token_prospect())):
+        reponse = api_client.post(
+            f"/portail/{'p' * 32}/situation",
+            json={
+                "operateur_actuel": "Orange",
+                "satisfaction_reseau": "😐 Ça va",
+                "veut_rester": "Non",
+                "defaut_technique": "Moyen",
+            },
+        )
+
+    assert reponse.status_code == 200
+    assert contrat_existant.fournisseur == "Orange"
+    assert contrat_existant.veut_rester == "Non"
+    corps = reponse.json()
+    assert corps["situation_renseignee"] is True
+
+
+def test_renseigner_situation_actuelle_avec_categorie_cree_la_ligne_correspondante(api_client, fake_db):
+    # Ligne "montant exact" par univers (documents/page.tsx) : sans contrat_id,
+    # une categorie inconnue jusque-là doit créer la ligne concurrente
+    # correspondante plutôt que de retomber sur le défaut mobile.
+    fake_db.get_map[(Prospect, 1)] = Prospect(id=1, prenom="Jean", nom="Dupont")
+    fake_db.queue_result([])  # aucune ligne "Énergie électricité" existante -> création
+    fake_db.queue_result([])  # documents déjà transmis, relus par _contexte_token_prospect
+    fake_db.queue_result([])  # _debit_deja_mesure_sur_un_contrat
+    fake_db.queue_result([])  # contrat_situation (categorie énergie hors CATEGORIES_CONTRAT_TELECOM)
+
+    with patch("backend.routers.portail_public.token_engine.valider_token",
+               new=AsyncMock(return_value=_token_prospect())):
+        reponse = api_client.post(
+            f"/portail/{'p' * 32}/situation",
+            json={"categorie": "Énergie électricité", "cout_mensuel": 89.5},
+        )
+
+    assert reponse.status_code == 200
+    nouveaux_contrats = [o for o in fake_db.added if isinstance(o, Contrat)]
+    assert len(nouveaux_contrats) == 1
+    assert nouveaux_contrats[0].categorie == "Énergie électricité"
+    assert nouveaux_contrats[0].cout_mensuel == 89.5
+    assert nouveaux_contrats[0].chez_nous is False
+
+
+def test_renseigner_situation_actuelle_notifie_le_conseiller_createur(api_client, fake_db):
+    contrat_existant = Contrat(id=5, prospect_id=1, categorie="Forfait mobile", chez_nous=False)
+    utilisateur_fake = type("U", (), {"username": "alice", "nom_complet": "Alice Martin"})()
+    fake_db.get_map[(Prospect, 1)] = Prospect(id=1, prenom="Jean", nom="Dupont", cree_par="Alice Martin")
+    fake_db.queue_result([contrat_existant])  # _contrat_situation_actuelle_prospect
+    # creer_notification_prospect (appelé juste après le commit, avant
+    # _contexte_token_prospect) : résolution de l'utilisateur via User.nom_complet
+    fake_db.queue_result([utilisateur_fake])
+    fake_db.queue_result([])  # documents déjà transmis
+    fake_db.queue_result([])  # _debit_deja_mesure_sur_un_contrat
+    fake_db.queue_result([contrat_existant])  # contrat_situation
+
+    with patch("backend.routers.portail_public.token_engine.valider_token",
+               new=AsyncMock(return_value=_token_prospect())):
+        reponse = api_client.post(
+            f"/portail/{'p' * 32}/situation",
+            json={"operateur_actuel": "Orange"},
+        )
+
+    assert reponse.status_code == 200
+    from backend.models.notification import Notification
+    notifications = [o for o in fake_db.added if isinstance(o, Notification)]
+    assert len(notifications) == 1
+    assert notifications[0].conseiller_username == "alice"
+    assert "Jean" in notifications[0].message
+
+
+def test_renseigner_situation_actuelle_refuse_sur_lien_client(api_client, fake_db):
+    token_client = TokenPublic(
+        id=2, token="c" * 32, client_id=1, prospect_id=None,
+        peut_uploader_docs=True, peut_signer_mandat=False,
+        peut_voir_suivi=False, peut_renseigner_demarches=False,
+        peut_transmettre_speedtest=False,
+    )
+    with patch("backend.routers.portail_public.token_engine.valider_token",
+               new=AsyncMock(return_value=token_client)):
+        reponse = api_client.post(
+            f"/portail/{'c' * 32}/situation",
+            json={"operateur_actuel": "Orange"},
         )
 
     assert reponse.status_code == 403

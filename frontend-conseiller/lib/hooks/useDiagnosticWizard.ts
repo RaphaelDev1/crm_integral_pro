@@ -18,17 +18,42 @@ export interface IdentiteState extends EtapeIdentiteValues {
 
 export interface AbonnementDraft {
   id: string;
+  // Id du Contrat existant coché pour pré-remplir cet abonnement — quand
+  // renseigné, la finalisation du diagnostic met à jour ce contrat au lieu
+  // d'en recréer un nouveau (voir EtapeRecommandations.tsx).
+  contratId?: number;
   nom: string;
   categorie: string;
   cout: number;
 }
 
-// Sessions de trame IA Conseil lancées pour ce diagnostic — une par catégorie
-// requise (mobile/box/energie_elec/energie_gaz), voir EtapeTrame.tsx pour le
-// calcul des catégories requises à partir de univers/servicePrincipal.
-export interface TrameState {
-  clientConseilId: string | null;
-  sessions: Record<string, string>;
+export interface SituationTelecomState {
+  // Id du Contrat existant coché comme "ligne principale" à l'étape Situation
+  // (EtapeSituation.tsx::BlocTelecom) — quand renseigné, la finalisation du
+  // diagnostic met à jour ce contrat au lieu d'en recréer un nouveau pour la
+  // situation actuelle (voir EtapeRecommandations.tsx).
+  contratId?: number;
+  operateurActuel: string;
+  techno: string;
+  offreActuelle: string;
+  coutMensuelActuel: number;
+  dataGoMin: string;
+  debitSouhaite: string;
+  satisfactionReseau: string;
+  defautTechnique: string;
+  veutRester: string;
+  speedDown: number;
+  speedUp: number;
+  finEngagement: string;
+}
+
+export interface SituationEnergieState {
+  // Id du Contrat existant coché à l'étape Situation (EtapeSituation.tsx::BlocEnergie)
+  // — mêmes règles que SituationTelecomState.contratId ci-dessus.
+  contratId?: number;
+  fournisseurEnergie: string;
+  coutElec: number;
+  coutGaz: number;
 }
 
 export interface PanierItem {
@@ -49,7 +74,8 @@ export interface DiagnosticState {
   univers: string[];
   servicePrincipal: string;
   identite: IdentiteState;
-  trame: TrameState;
+  telecom: SituationTelecomState;
+  energie: SituationEnergieState;
   abonnements: AbonnementDraft[];
   panier: PanierItem[];
 }
@@ -57,7 +83,8 @@ export interface DiagnosticState {
 export const ETAPES_DIAGNOSTIC = [
   { id: "univers", titre: "Univers" },
   { id: "identite", titre: "Identité" },
-  { id: "trame", titre: "Situation & recommandations" },
+  { id: "situation", titre: "Situation actuelle" },
+  { id: "recommandations", titre: "Recommandations" },
 ] as const;
 
 const ETAT_INITIAL: DiagnosticState = {
@@ -79,7 +106,21 @@ const ETAT_INITIAL: DiagnosticState = {
     raisonSociale: "",
     effectif: "",
   },
-  trame: { clientConseilId: null, sessions: {} },
+  telecom: {
+    operateurActuel: "",
+    techno: "FIBRE",
+    offreActuelle: "",
+    coutMensuelActuel: 0,
+    dataGoMin: "",
+    debitSouhaite: "",
+    satisfactionReseau: "",
+    defautTechnique: "",
+    veutRester: "",
+    speedDown: 0,
+    speedUp: 0,
+    finEngagement: "",
+  },
+  energie: { fournisseurEnergie: "Autre / Aucun", coutElec: 0, coutGaz: 0 },
   abonnements: [],
   panier: [],
 };
@@ -89,8 +130,8 @@ type Action =
   | { type: "SET_UNIVERS"; univers: string[] }
   | { type: "SET_SERVICE_PRINCIPAL"; value: string }
   | { type: "SET_IDENTITE"; values: Partial<IdentiteState> }
-  | { type: "SET_CLIENT_CONSEIL_ID"; id: string }
-  | { type: "SET_SESSION_ID"; categorieSlug: string; sessionId: string }
+  | { type: "SET_TELECOM"; values: Partial<SituationTelecomState> }
+  | { type: "SET_ENERGIE"; values: Partial<SituationEnergieState> }
   | { type: "ADD_ABONNEMENT"; item: AbonnementDraft }
   | { type: "REMOVE_ABONNEMENT"; id: string }
   | { type: "ADD_PANIER"; item: PanierItem }
@@ -108,10 +149,10 @@ function reducer(state: DiagnosticState, action: Action): DiagnosticState {
       return { ...state, servicePrincipal: action.value };
     case "SET_IDENTITE":
       return { ...state, identite: { ...state.identite, ...action.values } };
-    case "SET_CLIENT_CONSEIL_ID":
-      return { ...state, trame: { ...state.trame, clientConseilId: action.id } };
-    case "SET_SESSION_ID":
-      return { ...state, trame: { ...state.trame, sessions: { ...state.trame.sessions, [action.categorieSlug]: action.sessionId } } };
+    case "SET_TELECOM":
+      return { ...state, telecom: { ...state.telecom, ...action.values } };
+    case "SET_ENERGIE":
+      return { ...state, energie: { ...state.energie, ...action.values } };
     case "ADD_ABONNEMENT":
       return { ...state, abonnements: [...state.abonnements, action.item] };
     case "REMOVE_ABONNEMENT":

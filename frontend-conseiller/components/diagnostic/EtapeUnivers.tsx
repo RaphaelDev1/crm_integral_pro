@@ -58,17 +58,17 @@ export function EtapeUnivers({ state, dispatch }: EtapeUniversProps) {
           <div className="flex flex-wrap gap-2">
             {SERVICE_PRINCIPAL_OPTIONS.map((option) => (
               <button
-                key={option}
+                key={option.value}
                 type="button"
-                onClick={() => dispatch({ type: "SET_SERVICE_PRINCIPAL", value: option })}
+                onClick={() => dispatch({ type: "SET_SERVICE_PRINCIPAL", value: option.value })}
                 className={cn(
                   "rounded-full border px-3 py-1.5 text-sm transition-colors",
-                  state.servicePrincipal === option
+                  state.servicePrincipal === option.value
                     ? "border-primary bg-primary text-primary-foreground"
                     : "border-input bg-background hover:bg-accent"
                 )}
               >
-                {option}
+                {option.label}
               </button>
             ))}
           </div>

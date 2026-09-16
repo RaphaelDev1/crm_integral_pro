@@ -17,6 +17,7 @@ from backend.models.client import Client
 from backend.models.dossier import Dossier
 from backend.models.mandat_honoraires import MandatHonoraires
 from backend.models.parametre import Parametre
+from backend.models.user import User
 from backend.schemas.mandat_honoraires import (
     EnvoiMandatHonoraires,
     EnvoiMandatHonorairesResultat,
@@ -24,7 +25,7 @@ from backend.schemas.mandat_honoraires import (
     MandatHonorairesOut,
     MarquerSigneHonoraires,
 )
-from backend.services import document_engine, notification_engine
+from backend.services import document_engine, dossier_engine, dossier_notifications, mandat_engine, notification_engine
 
 router = APIRouter(prefix="/dossiers", tags=["honoraires"], dependencies=[Depends(get_current_user)])
 
@@ -105,10 +106,35 @@ async def marquer_signe_honoraires(
     mandat.date_signature = datetime.now().strftime("%d/%m/%Y %H:%M")
     await db.commit()
     await db.refresh(mandat)
+
+    # Fait avancer le statut grossier du dossier quand c'est légal (mandat
+    # honoraires = dernière étape avant l'envoi au fournisseur) — best-effort,
+    # symétrique au traitement de la signature du mandat de représentation
+    # (voir mandat_engine.traiter_mandat_signe). L'affichage de la timeline
+    # (dossier_engine.construire_timeline) ne dépend déjà plus de cette
+    # transition — voir signaux_timeline, qui lit directement MandatHonoraires.
+    dossier = await db.get(Dossier, dossier_id)
+    if dossier is not None:
+        client = await db.get(Client, dossier.client_id) if dossier.client_id else None
+        try:
+            await dossier_engine.transiter(
+                db, dossier, "soumis_fournisseur",
+                par="systeme",
+                commentaire="Mandat honoraires signé.",
+                on_transition=lambda d, _ancien: dossier_notifications.notifier_transition(d, client),
+            )
+            await notification_engine.creer_notification_conseiller(
+                db, dossier, f"Mandat honoraires signé par {payload.signataire} — dossier #{dossier.id}."
+            )
+        except dossier_engine.TransitionInvalide:
+            pass
+
     return mandat
 
 
-async def _charger_pour_pdf(dossier_id: int, db: AsyncSession) -> tuple[Dossier, Client, MandatHonoraires]:
+async def _charger_pour_pdf(
+    dossier_id: int, db: AsyncSession, user: User
+) -> tuple[Dossier, Client, MandatHonoraires, dict]:
     dossier = await db.get(Dossier, dossier_id)
     if dossier is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Dossier introuvable.")
@@ -120,15 +146,20 @@ async def _charger_pour_pdf(dossier_id: int, db: AsyncSession) -> tuple[Dossier,
     client = await db.get(Client, dossier.client_id)
     if client is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Client introuvable.")
-    return dossier, client, mandat
+    branding = await mandat_engine.charger_branding(db, client, user)
+    return dossier, client, mandat, branding
 
 
 @router.get("/{dossier_id}/mandat-honoraires/pdf")
-async def telecharger_mandat_honoraires(dossier_id: int, db: AsyncSession = Depends(get_db)):
+async def telecharger_mandat_honoraires(
+    dossier_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """Génère à la volée le PDF du mandat d'honoraires (pas de stockage S3,
     comme /pdf-restitution — reste rapide, pas de dépendance Celery)."""
-    dossier, client, mandat = await _charger_pour_pdf(dossier_id, db)
-    pdf_bytes = document_engine.generer_pdf_mandat_honoraires(dossier, client, mandat)
+    dossier, client, mandat, branding = await _charger_pour_pdf(dossier_id, db, user)
+    pdf_bytes = document_engine.generer_pdf_mandat_honoraires(dossier, client, mandat, branding)
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
@@ -138,12 +169,15 @@ async def telecharger_mandat_honoraires(dossier_id: int, db: AsyncSession = Depe
 
 @router.post("/{dossier_id}/mandat-honoraires/envoyer", response_model=EnvoiMandatHonorairesResultat)
 async def envoyer_mandat_honoraires(
-    dossier_id: int, payload: EnvoiMandatHonoraires, db: AsyncSession = Depends(get_db)
+    dossier_id: int,
+    payload: EnvoiMandatHonoraires,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Envoie le mandat d'honoraires au client par email (PDF en pièce
     jointe) ou par SMS (notification texte — pas de pièce jointe possible par
     ce canal)."""
-    dossier, client, mandat = await _charger_pour_pdf(dossier_id, db)
+    dossier, client, mandat, branding = await _charger_pour_pdf(dossier_id, db, user)
     prenom = client.prenom or ""
 
     if payload.canal == "sms":
@@ -154,7 +188,7 @@ async def envoyer_mandat_honoraires(
         sms_envoye = notification_engine.envoyer_sms(client.telephone or "", message)
         return EnvoiMandatHonorairesResultat(sms_envoye=sms_envoye)
 
-    pdf_bytes = document_engine.generer_pdf_mandat_honoraires(dossier, client, mandat)
+    pdf_bytes = document_engine.generer_pdf_mandat_honoraires(dossier, client, mandat, branding)
     corps_html = (
         f"<p>Bonjour {prenom},</p>"
         "<p>Veuillez trouver ci-joint votre mandat d'honoraires.</p>"

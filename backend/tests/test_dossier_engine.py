@@ -73,6 +73,22 @@ def test_transiter_journalise_et_horodate():
     assert db.committed
 
 
+def test_transiter_vers_le_meme_statut_est_un_noop():
+    # Ex. le conseiller confirme manuellement "docs_recus" pile au moment où
+    # la validation du dernier document vient de déclencher la même
+    # transition automatiquement (clients.py::valider_document) — ne doit pas
+    # lever TransitionInvalide, juste ne rien changer.
+    dossier = _dossier(statut="docs_recus", notes_workflow=[{"deja": "present"}])
+    db = FakeSession()
+
+    resultat = _run(dossier_engine.transiter(db, dossier, "docs_recus", par="conseiller1"))
+
+    assert resultat is dossier
+    assert dossier.statut == "docs_recus"
+    assert dossier.notes_workflow == [{"deja": "present"}]
+    assert not db.committed
+
+
 def test_transiter_invalide_leve_exception():
     dossier = _dossier(statut="initie")
     db = FakeSession()
@@ -198,3 +214,92 @@ def test_transiter_ne_declenche_rien_pour_un_statut_sans_template():
 
     mock_email.assert_not_called()
     mock_sms.assert_not_called()
+
+
+# ------------------------------------------------------------------------------
+#  construire_timeline() — statuts dérivés affichés au client/conseiller
+# ------------------------------------------------------------------------------
+def _etape(etapes, cle):
+    return next(e for e in etapes if e["cle"] == cle)
+
+
+def test_docs_demandes_orange_des_la_creation_du_dossier():
+    # Avant toute action du conseiller (dossier encore "initie"), l'étape ne
+    # doit plus rester grise ("a_venir") : c'est la première chose à faire.
+    dossier = _dossier(statut="initie")
+    etapes = dossier_engine.construire_timeline(dossier)
+    assert _etape(etapes, "docs_demandes")["statut"] == "en_cours"
+
+
+def test_docs_demandes_vert_une_fois_la_demande_envoyee():
+    dossier = _dossier(statut="docs_demandes")
+    etapes = dossier_engine.construire_timeline(dossier)
+    assert _etape(etapes, "docs_demandes")["statut"] == "termine"
+
+
+def test_docs_recus_orange_puis_vert_selon_documents_valides():
+    dossier = _dossier(statut="docs_recus")
+
+    avant = dossier_engine.construire_timeline(dossier, documents_valides=False)
+    assert _etape(avant, "docs_recus")["statut"] == "en_cours"
+
+    apres = dossier_engine.construire_timeline(dossier, documents_valides=True)
+    assert _etape(apres, "docs_recus")["statut"] == "termine"
+
+
+def test_mandat_representation_orange_sur_envoi_vert_seulement_sur_signature():
+    # Envoyé mais pas encore signé : orange ("Mandat envoyé"), jamais vert —
+    # avant ce correctif, l'étape passait vert dès l'envoi (voir item #9,
+    # "j'ai signé le mandat, ce n'est pas vert").
+    dossier = _dossier(statut="mandat_a_signer")
+
+    envoye = dossier_engine.construire_timeline(dossier, mandat_envoye=True, mandat_representation_signe=False)
+    assert _etape(envoye, "mandat_a_signer")["statut"] == "en_cours"
+    assert _etape(envoye, "mandat_a_signer")["label"] == "Mandat envoyé"
+
+    signe = dossier_engine.construire_timeline(dossier, mandat_envoye=True, mandat_representation_signe=True)
+    assert _etape(signe, "mandat_a_signer")["statut"] == "termine"
+    assert _etape(signe, "mandat_a_signer")["label"] == "Mandat de représentation signé"
+
+
+def test_mandat_representation_signe_vert_meme_si_statut_dossier_en_retard():
+    # Le conseiller a généré/envoyé et le client a signé, mais le statut
+    # grossier du dossier n'a jamais été avancé manuellement au-delà de
+    # "docs_recus" — l'étape doit quand même passer verte, indépendamment de
+    # la position de dossier.statut (root cause de l'item #9).
+    dossier = _dossier(statut="docs_recus")
+
+    etapes = dossier_engine.construire_timeline(
+        dossier, mandat_envoye=True, mandat_representation_signe=True, documents_valides=True,
+    )
+    assert _etape(etapes, "mandat_a_signer")["statut"] == "termine"
+
+
+def test_mandat_honoraires_orange_sur_envoi_vert_sur_signature():
+    dossier = _dossier(statut="mandat_signe")
+
+    envoye = dossier_engine.construire_timeline(dossier, mandat_honoraires_envoye=True, mandat_honoraires_signe=False)
+    assert _etape(envoye, "mandat_signe")["statut"] == "en_cours"
+
+    signe = dossier_engine.construire_timeline(dossier, mandat_honoraires_envoye=True, mandat_honoraires_signe=True)
+    assert _etape(signe, "mandat_signe")["statut"] == "termine"
+
+
+def test_mandat_honoraires_signe_vert_sans_mandat_representation_envoye():
+    # Les deux mandats sont indépendants : un dossier peut avoir son mandat
+    # honoraires signé (etape "mandat_signe") sans que mandat_envoye (mandat
+    # de représentation) ne soit vrai.
+    dossier = _dossier(statut="docs_recus")
+
+    etapes = dossier_engine.construire_timeline(
+        dossier, mandat_envoye=False, mandat_honoraires_envoye=True, mandat_honoraires_signe=True,
+    )
+    assert _etape(etapes, "mandat_signe")["statut"] == "termine"
+    assert _etape(etapes, "mandat_a_signer")["statut"] != "termine"
+
+
+def test_docs_recus_vert_meme_si_statut_dossier_en_retard():
+    dossier = _dossier(statut="docs_demandes")
+
+    etapes = dossier_engine.construire_timeline(dossier, documents_recus=True, documents_valides=True)
+    assert _etape(etapes, "docs_recus")["statut"] == "termine"

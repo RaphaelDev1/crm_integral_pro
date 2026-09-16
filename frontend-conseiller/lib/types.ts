@@ -35,11 +35,21 @@ export interface Client {
   date_relance: string | null;
   statut_relance: string | null;
   conseiller_id: number | null;
+  objectif_principal: string | null;
+  age: number | null;
+  tranche_age: string | null;
+  consentement_rgpd: boolean | null;
+  consentement_demarchage: boolean | null;
+  date_consentement: string | null;
+  date_naissance: string | null;
+  departement_naissance: string | null;
+  ville_naissance: string | null;
 }
 
 export interface Contrat {
   id: number;
   client_id: number | null;
+  prospect_id: number | null;
   univers: string | null;
   categorie: string | null;
   fournisseur: string | null;
@@ -50,6 +60,32 @@ export interface Contrat {
   statut_contrat: string | null;
   date_souscription: string | null;
   date_fin_engagement: string | null;
+  consommation: string | null;
+  chez_nous: boolean;
+  satisfaction_reseau: string | null;
+  veut_rester: string | null;
+  defaut_technique: string | null;
+  speed_down: number | null;
+  speed_up: number | null;
+  debit_declare: number | null;
+  ligne_principale: boolean;
+  meme_operateur_mobile: boolean | null;
+  conserver_numero: string | null;
+  rio: string | null;
+  numero_ligne: string | null;
+  type_sim: string | null;
+  chauffage_principal: string | null;
+  puissance_kva: string | null;
+  option_tarifaire: string | null;
+  gros_equipement_electrique: boolean | null;
+  usage_tv: string | null;
+  abonnements_payants: string | null;
+  nb_utilisateurs_streaming: string | null;
+  usage_4k: boolean | null;
+  teletravail: string | null;
+  interet_box_4g5g: string | null;
+  telephone_fixe_utilise: string | null;
+  appels_fixe_mensuels: string | null;
   notes: string | null;
   cree_par: string | null;
 }
@@ -223,6 +259,9 @@ export interface Prospect {
   effectif: string | null;
   univers_interesse: string | null;
   service_principal: string | null;
+  objectif_principal: string | null;
+  nb_lignes_mobiles: string | null;
+  qualite_reseau_mobile: string | null;
   operateur_actuel: string | null;
   techno: string | null;
   data_go: string | null;
@@ -261,6 +300,14 @@ export interface Prospect {
   bonus_malus_auto: string | null;
   plage_horaire_rappel: string | null;
   motif_refus: string | null;
+  age: number | null;
+  tranche_age: string | null;
+  consentement_rgpd: boolean | null;
+  consentement_demarchage: boolean | null;
+  date_consentement: string | null;
+  date_naissance: string | null;
+  departement_naissance: string | null;
+  ville_naissance: string | null;
 }
 
 export interface DetailScoreProspect {
@@ -322,10 +369,10 @@ export interface Recommandations {
 
 export interface OffreCompareeItem {
   // number pour une offre issue de l'ancien catalogue (backend/models/offre.py),
-  // string (UUID) pour une offre IA Conseil (backend/models/ia_conseil.py::OffreConseil)
-  // — voir EtapeTrame.tsx, qui alimente offres_comparees depuis une session de
-  // trame. Dossier.offre_cible_id (Integer) n'est renseigné que dans le premier cas,
-  // voir OffreCibleSection dans app/(conseiller)/dossiers/[id]/page.tsx.
+  // string (UUID) pour une offre IA Conseil (backend/models/ia_conseil.py::OffreConseil),
+  // alimentée par une session de trame IA Conseil. Dossier.offre_cible_id (Integer)
+  // n'est renseigné que dans le premier cas, voir OffreCibleSection dans
+  // app/(conseiller)/dossiers/[id]/page.tsx.
   offre_id: number | string;
   nom: string | null;
   fournisseur: string | null;

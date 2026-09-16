@@ -63,6 +63,18 @@ def tranche_age(age: Optional[int]) -> Optional[str]:
     return None
 
 
+LIBELLES_TRANCHES_AGE = frozenset(label for label, _, _ in TRANCHES_AGE)
+
+
+def resoudre_tranche(age: Optional[int], tranche: Optional[str]) -> Optional[str]:
+    """Les formulaires ne capturent plus l'âge exact, seulement la tranche
+    choisie dans un menu déroulant — celle-ci est prioritaire si elle est
+    valide, sinon on retombe sur le calcul depuis l'âge (anciennes fiches)."""
+    if tranche in LIBELLES_TRANCHES_AGE:
+        return tranche
+    return tranche_age(age)
+
+
 # ------------------------------------------------------------------------------
 #  Cache mémoire process-local — TTL REFRESH_INTERVAL_H heures
 # ------------------------------------------------------------------------------
@@ -148,12 +160,11 @@ class Estimation:
 
 
 def _ref_pour_categorie(
-    categorie: str, age: Optional[int], moyennes: dict,
+    categorie: str, tr: Optional[str], moyennes: dict,
 ) -> tuple[float, str, int, Optional[str]]:
     """Renvoie (notre_moyenne_mensuel, source, taille_echantillon, tranche_utilisee).
     Priorité : (1) base client sur la tranche exacte, (2) base client tous âges,
     (3) fallback marché public."""
-    tr = tranche_age(age)
     if categorie in moyennes and tr and tr in moyennes[categorie]:
         m = moyennes[categorie][tr]
         return m["mediane_mensuel"], "base_client", m["n"], tr
@@ -167,17 +178,24 @@ def _ref_pour_categorie(
 
 
 async def estimer(
-    db: AsyncSession, depenses_actuelles: dict[str, float], age: Optional[int] = None,
+    db: AsyncSession,
+    depenses_actuelles: dict[str, float],
+    age: Optional[int] = None,
+    tranche: Optional[str] = None,
 ) -> Estimation:
-    """Point d'entrée principal — appelé par le router leads_public."""
+    """Point d'entrée principal — appelé par le router leads_public.
+    `tranche` (choisie dans le menu déroulant) est prioritaire sur `age`
+    (voir resoudre_tranche) ; `age` reste accepté pour les anciennes fiches
+    qui n'ont qu'un âge numérique en base."""
     moyennes = await moyennes_avec_cache(db)
     est = Estimation(calculee_le=datetime.utcnow().isoformat(timespec="seconds") + "Z")
+    tr_resolue = resoudre_tranche(age, tranche)
 
     for categorie, cout in depenses_actuelles.items():
         cout = float(cout or 0)
         if cout <= 0:
             continue
-        ref, source, n, tr = _ref_pour_categorie(categorie, age, moyennes)
+        ref, source, n, tr = _ref_pour_categorie(categorie, tr_resolue, moyennes)
 
         if ref <= 0 or ref >= cout:
             # Le prospect paie déjà moins que notre moyenne → 0 d'économie plutôt

@@ -96,7 +96,7 @@ def test_lister_demarches_dossier(client, fake_db):
     corps = reponse.json()
     assert corps["existantes"] == []
     types_requis = {d["type_demarche"] for d in corps["requises_non_creees"]}
-    assert types_requis == {"mandat", "portabilite"}
+    assert types_requis == {"audit_mobile", "mandat", "portabilite"}
 
 
 def test_lister_demarches_dossier_introuvable(client, fake_db):
@@ -113,7 +113,7 @@ def test_creer_demarche(client, fake_db):
     corps = reponse.json()
     assert corps["type_demarche"] == "portabilite"
     assert corps["statut"] == "a_generer"
-    assert set(corps["donnees_requises"].keys()) == {"rio", "numero_ligne"}
+    assert set(corps["donnees_requises"].keys()) == {"conserver_numero", "rio", "numero_ligne", "type_sim"}
 
 
 def test_creer_demarche_dossier_introuvable(client, fake_db):

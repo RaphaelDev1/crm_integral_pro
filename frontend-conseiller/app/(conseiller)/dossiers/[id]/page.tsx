@@ -12,6 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ApiError } from "@/lib/api";
 import { useClientDocuments, useSupprimerDocumentClient, useValiderDocumentClient } from "@/lib/hooks/useClients";
 import { clientsResource } from "@/lib/hooks/useClients";
 import {
@@ -26,8 +27,11 @@ import {
   useDossierTimeline,
   useEnvoyerLienClientDossier,
   useGenererLienClientDossier,
+  usePreRemplirSouscription,
   useTransitionDossier,
 } from "@/lib/hooks/useDossiers";
+import { useContrats } from "@/lib/hooks/useContrats";
+import { champsIdentiteManquants, champsTelecomManquants } from "@/lib/diagnosticConstants";
 import { useComparaisonDossier, useOffresComparees } from "@/lib/hooks/useOffres";
 import {
   useCreerMandatHonoraires,
@@ -37,8 +41,16 @@ import {
   useTauxHonorairesDefaut,
   useTelechargerMandatHonoraires,
 } from "@/lib/hooks/useHonoraires";
-import { useEnvoyerMandat, useMandat, useMarquerMandatSigne } from "@/lib/hooks/useMandat";
-import { LABELS_STATUT_DOSSIER, TRANSITIONS_AUTORISEES, statutDossierBadgeClass, type StatutDossier } from "@/lib/dossierStatuts";
+import { useEnvoyerMandatEnSignature, useGenererMandat, useMandat, useMarquerMandatSigne, useValiderMandat } from "@/lib/hooks/useMandat";
+import {
+  LABELS_STATUT_DOSSIER,
+  LABELS_STATUT_KYC,
+  TRANSITIONS_AUTORISEES,
+  statutDossierBadgeClass,
+  statutKycBadgeClass,
+  statutMandatBadgeClass,
+  type StatutDossier,
+} from "@/lib/dossierStatuts";
 import type { Demarche } from "@/lib/types";
 
 export default function DossierDetailPage() {
@@ -110,20 +122,78 @@ export default function DossierDetailPage() {
         </div>
       </div>
 
+      <QuestionsManquantesAlerte clientId={dossier.client_id} client={clientQuery.data} />
+
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <div className="space-y-6">
           <TimelineSection dossierId={dossierId} />
-          <OffreCibleSection dossier={dossier} />
+          <OffreCibleSection dossier={dossier} client={clientQuery.data} />
           <DocumentsSection dossierId={dossierId} clientId={dossier.client_id} documentsRequis={dossier.documents_requis} />
         </div>
         <div className="space-y-6">
-          <MandatRepresentationSection dossierId={dossierId} />
+          <MandatRepresentationSection dossierId={dossierId} clientId={dossier.client_id} />
           <MandatHonorairesSection dossierId={dossierId} />
           <DemarchesSection dossierId={dossierId} />
           <NotesSection dossierId={dossierId} notesWorkflow={dossier.notes_workflow} />
         </div>
       </div>
     </div>
+  );
+}
+
+// Même alerte que EtapeRecommandations.tsx (étape 4 du diagnostic, avant de
+// lancer le dossier) mais affichée ici une fois le dossier déjà ouvert —
+// le conseiller peut avoir lancé le dossier avant que le prospect ait fini de
+// répondre à sa trame, ou avoir besoin de rappeler ce qu'il reste à demander
+// en le consultant plus tard. Voir champsTelecomManquants/champsIdentiteManquants
+// (lib/diagnosticConstants.ts) pour le détail des champs vérifiés.
+function QuestionsManquantesAlerte({
+  clientId,
+  client,
+}: {
+  clientId: number;
+  client: import("@/lib/types").Client | undefined;
+}) {
+  const contratsQuery = useContrats({ clientId });
+  const lignesTelecomIncompletes = (contratsQuery.data ?? [])
+    .filter((c) => /mobile|box|internet/i.test(`${c.categorie ?? ""}`) || c.univers === "Télécom")
+    .map((c) => ({ contrat: c, manquants: champsTelecomManquants(c) }))
+    .filter((l) => l.manquants.length > 0);
+  const identiteManquants = champsIdentiteManquants(client);
+
+  if (lignesTelecomIncompletes.length === 0 && identiteManquants.length === 0) return null;
+
+  return (
+    <Card className="border-red-300 bg-red-50">
+      <CardHeader>
+        <CardTitle className="text-base text-red-900">⚠️ Le client n&apos;a pas répondu à toutes les questions</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2 text-sm text-red-900">
+        <p>Posez-lui les questions suivantes — la réponse peut encore changer la meilleure offre à proposer :</p>
+        {identiteManquants.length > 0 && (
+          <div>
+            <p className="font-medium">Identité</p>
+            <ul className="list-disc space-y-0.5 pl-5">
+              {identiteManquants.map((label) => (
+                <li key={label}>{label}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {lignesTelecomIncompletes.map(({ contrat, manquants }) => (
+          <div key={contrat.id}>
+            <p className="font-medium">
+              {contrat.categorie || "Ligne télécom"} — {contrat.fournisseur || "opérateur non renseigné"}
+            </p>
+            <ul className="list-disc space-y-0.5 pl-5">
+              {manquants.map((label) => (
+                <li key={label}>{label}</li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -179,10 +249,98 @@ interface OffreChoisie {
 // diagnostic (comparaison.offres_comparees), ou d'en chercher une autre dans
 // le catalogue (même univers/catégorie) — PUT /dossiers/{id} accepte déjà
 // offre_cible_id/fournisseur_cible, il manquait juste l'UI pour le déclencher.
-function OffreCibleSection({ dossier }: { dossier: import("@/lib/types").Dossier }) {
+function OffreCibleSection({
+  dossier,
+  client,
+}: {
+  dossier: import("@/lib/types").Dossier;
+  client: import("@/lib/types").Client | undefined;
+}) {
   const comparaisonQuery = useComparaisonDossier(dossier.id);
   const updateMutation = dossiersResource.useUpdate();
+  const preRemplirMutation = usePreRemplirSouscription();
+  const contratsQuery = useContrats({ clientId: client?.id });
   const [rechercheOuverte, setRechercheOuverte] = useState(false);
+
+  const offreCible = comparaisonQuery.data?.offres_comparees?.find((o) => o.offre_id === dossier.offre_cible_id);
+  // Ligne mobile de référence pour la portabilité (conserver_numero/rio/...)
+  // — la ligne principale en priorité (voir Contrat.ligne_principale), sinon
+  // la première ligne mobile trouvée. Chargée en amont (query, pas mutation)
+  // pour rester disponible de façon synchrone dans handlePreRemplir ci-dessous.
+  const lignesMobiles = contratsQuery.data?.filter((c) => c.categorie === "Forfait mobile");
+  const ligneMobile = lignesMobiles?.find((c) => c.ligne_principale) ?? lignesMobiles?.[0];
+
+  // Ouvre la fenêtre de référence (infos client/offre) de façon SYNCHRONE dans
+  // le handler de clic — pas dans onSuccess de la mutation — sinon les
+  // navigateurs bloquent le popup (il n'est plus perçu comme déclenché par un
+  // geste utilisateur une fois qu'un await réseau s'est écoulé). La fenêtre
+  // Playwright (backend) prend l'autre moitié de l'écran, voir souscription_engine.py.
+  const handlePreRemplir = () => {
+    const availWidth = window.screen.availWidth || 1920;
+    const availHeight = window.screen.availHeight || 1080;
+    const largeurMoitie = Math.floor(availWidth / 2);
+
+    const params = new URLSearchParams({
+      prenom: client?.prenom ?? "",
+      nom: client?.nom ?? "",
+      telephone: client?.telephone ?? "",
+      email: client?.email ?? "",
+      adresse: client?.adresse ?? "",
+      code_postal: client?.code_postal ?? "",
+      ville: client?.ville ?? "",
+      date_naissance: client?.date_naissance ?? "",
+      departement_naissance: client?.departement_naissance ?? "",
+      ville_naissance: client?.ville_naissance ?? "",
+      fournisseur: dossier.fournisseur_cible ?? "",
+      offre: dossier.offre_nom ?? "",
+      prix_mensuel: offreCible?.prix_mensuel != null ? String(offreCible.prix_mensuel) : "",
+      economie_annuelle: String(dossier.economie_annuelle_estimee ?? 0),
+      a_ligne_mobile: ligneMobile ? "1" : "",
+      conserver_numero: ligneMobile?.conserver_numero ?? "",
+      rio: ligneMobile?.rio ?? "",
+      numero_ligne: ligneMobile?.numero_ligne ?? "",
+      type_sim: ligneMobile?.type_sim ?? "",
+    });
+    const reference = window.open(
+      `/souscription-reference?${params.toString()}`,
+      "cmr-reference-souscription",
+      `left=0,top=0,width=${largeurMoitie},height=${availHeight}`
+    );
+    if (!reference) {
+      toast.warning("Autorisez les fenêtres popup pour ce site afin d'ouvrir la fenêtre de référence.");
+    }
+
+    preRemplirMutation.mutate(
+      {
+        dossierId: dossier.id,
+        windowPosition: [largeurMoitie, 0],
+        windowSize: [availWidth - largeurMoitie, availHeight],
+      },
+      {
+        onSuccess: (data) => {
+          if (data.ok) {
+            toast.success(data.message);
+            return;
+          }
+          // Échec (fournisseur non pris en charge, URL manquante...) : on
+          // laisse le message affiché assez longtemps pour être lu (pas le
+          // délai par défaut, facilement manqué derrière la fenêtre de
+          // référence qui vient de prendre le focus), avec un lien manuel
+          // quand une URL réelle existe pour l'offre.
+          toast.warning(data.message, {
+            duration: 15000,
+            action: data.url_manuelle
+              ? {
+                  label: "Ouvrir le site manuellement",
+                  onClick: () => window.open(data.url_manuelle!, "_blank"),
+                }
+              : undefined,
+          });
+        },
+        onError: () => toast.error("Échec du pré-remplissage de la souscription."),
+      }
+    );
+  };
 
   const choisirOffre = (offre: OffreChoisie) => {
     if (typeof offre.offre_id !== "number") return;
@@ -211,6 +369,22 @@ function OffreCibleSection({ dossier }: { dossier: import("@/lib/types").Dossier
         <CardTitle>Offre visée</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
+        {ligneMobile?.conserver_numero === "non" && (
+          <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900">
+            📱 Le client souhaite un NOUVEAU numéro — il ne conserve pas son numéro actuel.
+          </div>
+        )}
+        {dossier.offre_cible_id && (
+          <div className="space-y-1">
+            <Button variant="outline" size="sm" onClick={handlePreRemplir} disabled={preRemplirMutation.isPending}>
+              {preRemplirMutation.isPending ? "Ouverture…" : "🖊️ Pré-remplir la souscription"}
+            </Button>
+            <p className="text-xs text-muted-foreground">
+              Ouvre le formulaire de souscription réel (Free/Bouygues) pré-rempli avec les coordonnées du client —
+              vous vérifiez et validez vous-même. Fonctionne uniquement si ce backend tourne en local.
+            </p>
+          </div>
+        )}
         {comparaisonQuery.isLoading ? (
           <Skeleton className="h-24 w-full" />
         ) : !comparaisonQuery.data?.offres_comparees?.length ? (
@@ -322,6 +496,17 @@ const LABELS_TYPE_DOCUMENT: Record<string, string> = {
   cni: "Pièce d'identité",
   rib: "RIB",
   justificatif_domicile: "Justificatif de domicile",
+};
+
+// "recu" = document signé reçu de Yousign, en attente de validation manuelle
+// par le conseiller (voir backend/routers/mandats.py::valider_mandat).
+const LABELS_STATUT_MANDAT: Record<string, string> = {
+  brouillon: "Brouillon",
+  envoye: "Envoyé",
+  recu: "Reçu — à valider",
+  signe: "Signé",
+  refuse: "Refusé",
+  erreur: "Erreur",
 };
 
 function labelTypeDocument(type: string) {
@@ -502,7 +687,7 @@ function DocumentsSection({
       <CardContent className="space-y-2">
         <div className="flex flex-wrap gap-2 pb-2">
           <Button variant="outline" size="sm" onClick={handleCopierLien} disabled={genererLienMutation.isPending}>
-            Copier le lien de collecte
+            Copier le lien du dossier (à envoyer au client)
           </Button>
           <Button
             variant="outline"
@@ -547,7 +732,9 @@ function DocumentsSection({
                       <p className="text-muted-foreground">{doc.date_upload}</p>
                     </div>
                     <div className="flex items-center gap-2">
-                      <Badge variant={doc.statut_kyc === "valide" ? "default" : "secondary"}>{doc.statut_kyc}</Badge>
+                      <Badge variant="outline" className={statutKycBadgeClass(doc.statut_kyc)}>
+                        {LABELS_STATUT_KYC[doc.statut_kyc] ?? doc.statut_kyc}
+                      </Badge>
                       {doc.url ? (
                         <Button variant="outline" size="sm" asChild>
                           <a href={doc.url} target="_blank" rel="noreferrer">
@@ -623,8 +810,12 @@ function DocumentsSection({
       <Dialog open={lienOpen} onOpenChange={setLienOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Lien de collecte de documents</DialogTitle>
+            <DialogTitle>Lien personnel du client</DialogTitle>
           </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Ce lien donne accès à l&apos;espace complet du client : envoi de documents et suivi de l&apos;avancement
+            de son dossier. Copiez-le pour le transmettre vous-même (SMS, email, etc.).
+          </p>
           <div className="flex gap-2">
             <Input readOnly value={lienUrl ?? ""} />
             <Button onClick={handleCopierDansLePresseTexte}>Copier</Button>
@@ -635,20 +826,57 @@ function DocumentsSection({
   );
 }
 
-function MandatRepresentationSection({ dossierId }: { dossierId: number }) {
+// Champs confort B4-B7 (docs/QUESTIONS_PAR_SECTEUR.md) qu'on ne pose plus
+// systématiquement sur le lien personnel quand le prospect a répondu seul
+// (voir remplissage_autonome, frontend-portail/app/dossier/[token]/situation/
+// page.tsx) — rappel purement informatif pour le conseiller avant l'envoi du
+// mandat, pas de blocage.
+const CHAMPS_CONFORT_BOX: { champ: keyof import("@/lib/types").Contrat; label: string }[] = [
+  { champ: "nb_utilisateurs_streaming", label: "utilisateurs simultanés en streaming" },
+  { champ: "usage_4k", label: "usage 4K" },
+  { champ: "teletravail", label: "télétravail" },
+  { champ: "interet_box_4g5g", label: "intérêt box 4G/5G" },
+  { champ: "telephone_fixe_utilise", label: "téléphone fixe" },
+];
+
+function MandatRepresentationSection({ dossierId, clientId }: { dossierId: number; clientId: number }) {
   const [signerOpen, setSignerOpen] = useState(false);
   const [signataire, setSignataire] = useState("");
 
   const mandatQuery = useMandat(dossierId);
-  const envoyerMutation = useEnvoyerMandat();
+  const genererMutation = useGenererMandat();
+  const envoyerMutation = useEnvoyerMandatEnSignature();
   const signerMutation = useMarquerMandatSigne();
+  const validerMutation = useValiderMandat();
+  const contratsQuery = useContrats({ clientId });
 
   const mandat = mandatQuery.data;
 
-  const handleEnvoyer = () => {
-    envoyerMutation.mutate(dossierId, {
-      onSuccess: () => toast.success("Mandat envoyé en signature (Yousign)."),
+  const contratBox = contratsQuery.data?.find((c) => c.categorie === "Box / Fibre" || c.categorie === "Forfait box");
+  const champsConfortManquants = contratBox
+    ? CHAMPS_CONFORT_BOX.filter(({ champ }) => contratBox[champ] == null || contratBox[champ] === "").map((c) => c.label)
+    : [];
+
+  const handleGenerer = () => {
+    genererMutation.mutate(dossierId, {
+      onSuccess: () => toast.success("Mandat généré — relisez le PDF avant de l'envoyer en signature."),
     });
+  };
+
+  const handleEnvoyer = () => {
+    if (!mandat) return;
+    envoyerMutation.mutate(
+      { mandatId: mandat.id, dossierId },
+      { onSuccess: () => toast.success("Mandat envoyé en signature (Yousign).") }
+    );
+  };
+
+  const handleValider = () => {
+    if (!mandat) return;
+    validerMutation.mutate(
+      { mandatId: mandat.id, dossierId },
+      { onSuccess: () => toast.success("Mandat validé — conversion et suivi mis à jour.") }
+    );
   };
 
   const handleSigner = () => {
@@ -664,11 +892,12 @@ function MandatRepresentationSection({ dossierId }: { dossierId: number }) {
     );
   };
 
-  // Raccourci de dev : crée puis signe immédiatement, sans passer par Yousign
-  // ni la boîte de dialogue "signataire" — pour valider rapidement la suite
-  // (progression du dossier, conversion prospect→client, relance programmée).
+  // Raccourci de dev : génère puis signe immédiatement, sans passer par
+  // Yousign ni la boîte de dialogue "signataire" — pour valider rapidement la
+  // suite (progression du dossier, conversion prospect→client, relance
+  // programmée).
   const handleTestCreerEtSigner = () => {
-    envoyerMutation.mutate(dossierId, {
+    genererMutation.mutate(dossierId, {
       onSuccess: (nouveauMandat) => {
         signerMutation.mutate(
           { mandatId: nouveauMandat.id, signataire: "Test développement", dossierId },
@@ -694,11 +923,23 @@ function MandatRepresentationSection({ dossierId }: { dossierId: number }) {
               <p className="text-sm text-muted-foreground">Aucun mandat de représentation envoyé pour ce dossier.</p>
             ) : (
               <div className="flex items-center justify-between text-sm">
-                <Badge variant={mandat.statut === "signe" ? "default" : "secondary"}>{mandat.statut}</Badge>
+                <Badge variant="outline" className={statutMandatBadgeClass(mandat.statut)}>
+                  {LABELS_STATUT_MANDAT[mandat.statut] ?? mandat.statut}
+                </Badge>
                 {mandat.statut === "signe" && mandat.date_signature && (
                   <span className="text-muted-foreground">Signé le {mandat.date_signature}</span>
                 )}
               </div>
+            )}
+            {mandat?.statut === "brouillon" && (
+              <p className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+                Mandat généré, pas encore envoyé — relisez le PDF avant de l&apos;envoyer en signature.
+              </p>
+            )}
+            {mandat?.statut === "recu" && (
+              <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                Mandat reçu de Yousign — vérifiez qu&apos;il est bien rempli avant de le valider.
+              </p>
             )}
             {mandat?.pdf_url && (
               <Button variant="outline" size="sm" asChild>
@@ -709,14 +950,31 @@ function MandatRepresentationSection({ dossierId }: { dossierId: number }) {
             )}
             {mandat?.statut === "erreur" && mandat.notes && (
               <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
-                {mandat.notes} — utilisez « Marquer signé manuellement » en attendant.
+                {mandat.notes} — relisez le PDF puis relancez l&apos;envoi, ou utilisez « Marquer signé manuellement ».
+              </p>
+            )}
+            {!mandat && champsConfortManquants.length > 0 && (
+              <p className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+                Pensez à demander au client, avant l&apos;envoi du mandat : {champsConfortManquants.join(", ")}.
               </p>
             )}
             {mandat?.statut !== "signe" && (
               <div className="flex flex-wrap gap-2">
-                <Button variant="outline" onClick={handleEnvoyer} disabled={envoyerMutation.isPending}>
-                  {envoyerMutation.isPending ? "Envoi…" : mandat ? "Renvoyer pour signature (Yousign)" : "Envoyer pour signature (Yousign)"}
-                </Button>
+                {mandat?.statut === "recu" && (
+                  <Button onClick={handleValider} disabled={validerMutation.isPending}>
+                    {validerMutation.isPending ? "Validation…" : "Valider"}
+                  </Button>
+                )}
+                {!mandat && (
+                  <Button onClick={handleGenerer} disabled={genererMutation.isPending}>
+                    {genererMutation.isPending ? "Génération…" : "Générer le mandat"}
+                  </Button>
+                )}
+                {(mandat?.statut === "brouillon" || mandat?.statut === "erreur") && (
+                  <Button variant="outline" onClick={handleEnvoyer} disabled={envoyerMutation.isPending}>
+                    {envoyerMutation.isPending ? "Envoi…" : "Envoyer pour signature (Yousign)"}
+                  </Button>
+                )}
                 {mandat && (
                   <Button variant="outline" onClick={() => setSignerOpen(true)}>
                     Marquer signé manuellement
@@ -726,7 +984,7 @@ function MandatRepresentationSection({ dossierId }: { dossierId: number }) {
                   <Button
                     variant="outline"
                     onClick={handleTestCreerEtSigner}
-                    disabled={envoyerMutation.isPending || signerMutation.isPending}
+                    disabled={genererMutation.isPending || signerMutation.isPending}
                   >
                     Créer + marquer signé (test)
                   </Button>
@@ -876,8 +1134,8 @@ function MandatHonorairesSection({ dossierId }: { dossierId: number }) {
               <span>
                 {mandatQuery.data.montant} € — {mandatQuery.data.taux} %
               </span>
-              <Badge variant={mandatQuery.data.statut === "signe" ? "default" : "secondary"}>
-                {mandatQuery.data.statut}
+              <Badge variant="outline" className={statutMandatBadgeClass(mandatQuery.data.statut)}>
+                {LABELS_STATUT_MANDAT[mandatQuery.data.statut] ?? mandatQuery.data.statut}
               </Badge>
             </div>
             {mandatQuery.data.date_creation && (
@@ -984,7 +1242,16 @@ function DemarchesSection({ dossierId }: { dossierId: number }) {
       { demarcheId: demarche.id, dossierId },
       {
         onSuccess: () => toast.success("Génération du document lancée."),
-        onError: (err) => toast.error(err instanceof Error ? err.message : "Échec de la génération."),
+        onError: (err) => {
+          if (err instanceof ApiError && err.status === 503) {
+            toast.error(
+              "Service de génération indisponible : Redis/Celery ne semblent pas démarrés. " +
+                "Vérifiez que Docker Desktop tourne, puis relancez l'app (voir lancer-app.ps1)."
+            );
+            return;
+          }
+          toast.error(err instanceof Error ? err.message : "Échec de la génération.");
+        },
       }
     );
   };
@@ -994,7 +1261,16 @@ function DemarchesSection({ dossierId }: { dossierId: number }) {
       { demarcheId: demarche.id, dossierId },
       {
         onSuccess: () => toast.success("Envoi LRE lancé."),
-        onError: (err) => toast.error(err instanceof Error ? err.message : "Échec de l'envoi."),
+        onError: (err) => {
+          if (err instanceof ApiError && err.status === 503) {
+            toast.error(
+              "Service d'envoi indisponible : Redis/Celery ne semblent pas démarrés. " +
+                "Vérifiez que Docker Desktop tourne, puis relancez l'app (voir lancer-app.ps1)."
+            );
+            return;
+          }
+          toast.error(err instanceof Error ? err.message : "Échec de l'envoi.");
+        },
       }
     );
   };

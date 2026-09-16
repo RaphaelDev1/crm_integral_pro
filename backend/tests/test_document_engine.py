@@ -32,7 +32,11 @@ def test_champs_requis_changement_fournisseur_contient_rib():
 
 
 def test_generateurs_par_type_couvre_tous_les_types_demarche():
-    assert set(document_engine.GENERATEURS_PAR_TYPE.keys()) == set(TYPES_DEMARCHE)
+    # Les démarches "audit_*" (trame adaptative par secteur, voir
+    # docs/QUESTIONS_PAR_SECTEUR.md) ne sont jamais générées/envoyées — pas de
+    # générateur PDF pour elles, voir models/demarche.py::TYPES_DEMARCHE.
+    types_generables = set(TYPES_DEMARCHE) - {"audit_mobile", "audit_box", "audit_energie"}
+    assert set(document_engine.GENERATEURS_PAR_TYPE.keys()) == types_generables
 
 
 def test_champs_requis_par_template_couvre_tous_les_types_demarche():
@@ -54,7 +58,15 @@ def test_generer_pdf_resiliation_box_retourne_des_bytes_pdf():
 
 def test_generer_pdf_demande_portabilite_mobile_retourne_des_bytes_pdf():
     pdf = document_engine.generer_pdf_demande_portabilite_mobile(
-        _dossier(), _client(), {"rio": "AB1234", "numero_ligne": "0601020304"}
+        _dossier(), _client(),
+        {"conserver_numero": "oui", "rio": "AB1234", "numero_ligne": "0601020304", "type_sim": "esim"},
+    )
+    assert pdf.startswith(b"%PDF")
+
+
+def test_generer_pdf_demande_portabilite_mobile_sans_conservation_de_numero():
+    pdf = document_engine.generer_pdf_demande_portabilite_mobile(
+        _dossier(), _client(), {"conserver_numero": "non", "type_sim": "carte_sim"}
     )
     assert pdf.startswith(b"%PDF")
 

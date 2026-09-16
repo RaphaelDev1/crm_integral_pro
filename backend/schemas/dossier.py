@@ -61,6 +61,12 @@ class NoteDossierCreate(BaseModel):
 
 class EnvoiLienClient(BaseModel):
     canal: Literal["sms", "email"]
+    # Uniquement pertinent pour le lien personnel d'un prospect (voir
+    # backend/routers/prospects.py::envoyer_lien_documents_prospect) — ignoré
+    # pour les liens client (clients.py/dossiers.py), qui n'ont pas cette
+    # distinction. True = le client répond seul (formulaire allégé),
+    # False = le conseiller répond avec lui au téléphone (formulaire complet).
+    remplissage_autonome: bool = True
 
 
 class EtapeTimeline(BaseModel):
@@ -69,3 +75,23 @@ class EtapeTimeline(BaseModel):
     statut: str
     date: str | None = None
     icone: str
+
+
+class PreRemplirSouscriptionIn(BaseModel):
+    """Position/taille écran (pixels) souhaitées pour la fenêtre Playwright, pour
+    l'afficher à côté de la fenêtre de référence ouverte par le frontend — voir
+    souscription_engine.lancer_souscription. Optionnel : sans valeur, Chromium
+    choisit sa position par défaut."""
+    window_position: tuple[int, int] | None = None
+    window_size: tuple[int, int] | None = None
+
+
+class PreRemplirSouscriptionOut(BaseModel):
+    ok: bool
+    message: str
+    # Renseigné uniquement si ok=False et qu'une URL de souscription réelle
+    # (non ".invalid") existe malgré tout pour l'offre — permet au frontend de
+    # proposer d'ouvrir le site de l'opérateur manuellement (ex. fournisseur
+    # non pris en charge par l'automatisation) plutôt que de laisser le
+    # conseiller sans recours.
+    url_manuelle: str | None = None

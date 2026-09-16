@@ -31,11 +31,9 @@ interface SessionTrameWorkspaceProps {
 }
 
 // Corps de la page /ia-conseil/clients/[id]/trame/[sessionId] (voir ce
-// fichier, désormais un simple wrapper de route), extrait ici pour être
-// réutilisable ailleurs qu'à cette route — notamment par l'étape "Trame" du
-// diagnostic fusionné (components/diagnostic/EtapeTrame.tsx). clientId/sessionId
-// sont passés en props plutôt que lus via useParams() : aucune autre
-// dépendance à la route.
+// fichier, désormais un simple wrapper de route), extrait ici pour rester
+// réutilisable ailleurs qu'à cette route. clientId/sessionId sont passés en
+// props plutôt que lus via useParams() : aucune autre dépendance à la route.
 export function SessionTrameWorkspace({ clientId, sessionId }: SessionTrameWorkspaceProps) {
   const queryClient = useQueryClient();
 

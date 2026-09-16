@@ -83,7 +83,7 @@ def client(fake_db):
 
 
 def test_lister_contrats_filtre_par_client(client, fake_db):
-    fake_db.queue_result([Contrat(id=1, client_id=7, fournisseur="Orange")])
+    fake_db.queue_result([Contrat(id=1, client_id=7, fournisseur="Orange", chez_nous=False, ligne_principale=False)])
 
     reponse = client.get("/contrats", params={"client_id": 7})
 
@@ -104,7 +104,7 @@ def test_creer_contrat(client, fake_db):
 
 
 def test_maj_contrat(client, fake_db):
-    contrat = Contrat(id=1, client_id=7, fournisseur="Orange", cout_mensuel=20)
+    contrat = Contrat(id=1, client_id=7, fournisseur="Orange", cout_mensuel=20, chez_nous=False, ligne_principale=False)
     fake_db.get_map[(Contrat, 1)] = contrat
 
     reponse = client.put("/contrats/1", json={"cout_mensuel": 18.9})
@@ -116,6 +116,37 @@ def test_maj_contrat(client, fake_db):
 def test_maj_contrat_introuvable(client, fake_db):
     reponse = client.put("/contrats/999", json={"cout_mensuel": 18.9})
     assert reponse.status_code == 404
+
+
+def test_creer_contrat_mobile_seul_devient_ligne_principale(client, fake_db):
+    fake_db.queue_result([])  # aucune autre ligne mobile pour ce client
+
+    reponse = client.post("/contrats", json={"client_id": 7, "fournisseur": "SFR", "categorie": "Forfait mobile"})
+
+    assert reponse.status_code == 201
+    assert reponse.json()["ligne_principale"] is True
+
+
+def test_creer_contrat_mobile_avec_ligne_existante_ne_devient_pas_principale(client, fake_db):
+    fake_db.queue_result([Contrat(id=1, client_id=7, categorie="Forfait mobile", ligne_principale=True)])
+
+    reponse = client.post("/contrats", json={"client_id": 7, "fournisseur": "Free", "categorie": "Forfait mobile"})
+
+    assert reponse.status_code == 201
+    assert reponse.json()["ligne_principale"] is False
+
+
+def test_maj_contrat_definir_ligne_principale_desactive_les_autres(client, fake_db):
+    contrat = Contrat(id=2, client_id=7, categorie="Forfait mobile", chez_nous=False, ligne_principale=False)
+    autre = Contrat(id=1, client_id=7, categorie="Forfait mobile", ligne_principale=True)
+    fake_db.get_map[(Contrat, 2)] = contrat
+    fake_db.queue_result([autre])
+
+    reponse = client.put("/contrats/2", json={"ligne_principale": True})
+
+    assert reponse.status_code == 200
+    assert reponse.json()["ligne_principale"] is True
+    assert autre.ligne_principale is False
 
 
 def test_supprimer_contrat(client, fake_db):

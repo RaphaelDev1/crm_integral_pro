@@ -94,8 +94,11 @@ interface LienDocumentsResult {
 
 export function useGenererLienDocumentsProspect() {
   return useMutation({
-    mutationFn: (prospectId: number) =>
-      apiFetch<LienDocumentsResult>(`/prospects/${prospectId}/token-documents`, { method: "POST" }),
+    mutationFn: ({ prospectId, remplissageAutonome }: { prospectId: number; remplissageAutonome?: boolean }) =>
+      apiFetch<LienDocumentsResult>(
+        `/prospects/${prospectId}/token-documents?remplissage_autonome=${remplissageAutonome ?? true}`,
+        { method: "POST" }
+      ),
   });
 }
 
@@ -109,11 +112,19 @@ interface EnvoiLienResult {
 
 export function useEnvoyerLienDocumentsProspect() {
   return useMutation({
-    mutationFn: ({ prospectId, canal }: { prospectId: number; canal: "sms" | "email" }) =>
+    mutationFn: ({
+      prospectId,
+      canal,
+      remplissageAutonome = true,
+    }: {
+      prospectId: number;
+      canal: "sms" | "email";
+      remplissageAutonome?: boolean;
+    }) =>
       apiFetch<EnvoiLienResult>(`/prospects/${prospectId}/envoyer-lien-documents`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ canal }),
+        body: JSON.stringify({ canal, remplissage_autonome: remplissageAutonome }),
       }),
   });
 }

@@ -16,10 +16,17 @@ from pathlib import Path
 import anthropic
 
 from backend.core.config import settings
+from backend.services import storage_engine
 
 logger = logging.getLogger(__name__)
 
 MODEL_FACTURE_DEFAUT = "claude-haiku-4-5-20251001"
+
+# Types réels acceptés (détectés par magic bytes, jamais par l'extension du
+# nom de fichier — voir storage_engine.deviner_mime_reel). Le portail client
+# accepte explicitement les photos de facture (.jpg/.jpeg/.png), donc
+# l'analyse doit les supporter au même titre que le PDF.
+MIME_AUTORISES_FACTURE = {"application/pdf", "image/jpeg", "image/png", "image/webp"}
 
 CHAMPS_FACTURE = (
     "operateur", "prix_ht", "prix_ttc", "data_conso_go", "options",
@@ -53,8 +60,12 @@ vide sinon
 une assurance auto ou si l'information est introuvable
 - bonus_malus : UNIQUEMENT pour une assurance auto — coefficient bonus-malus tel qu'affiché sur le \
 document (ex. "0.85", "1.00", "1.25"), chaîne vide si non applicable ou introuvable
-Si une information est absente ou illisible, utilise la valeur par défaut indiquée ci-dessus. \
-Ne réponds rien d'autre que ce JSON.
+Si une information est totalement absente du document, utilise la valeur par défaut indiquée \
+ci-dessus. Mais si elle est partiellement visible ou d'une lisibilité imparfaite (scan de mauvaise \
+qualité, photo prise de travers, reflet, texte coupé...), donne ta meilleure estimation plutôt que \
+de renvoyer une valeur vide — un résultat approximatif signalé comme tel est bien plus utile qu'une \
+absence totale d'information, un conseiller humain vérifiera et corrigera ensuite. Ne réponds rien \
+d'autre que ce JSON.
 
 Exemples :
 
@@ -148,20 +159,26 @@ def analyser_facture(
     src/secrets_config.py côté Streamlit) de la fournir directement ; à
     défaut, repli sur `settings.anthropic_api_key` (backend/.env).
 
-    Lève FactureAnalyzerError si le fichier est introuvable/vide/non PDF, si
-    la clé API est absente, ou si l'appel/la réponse Claude sont
-    inexploitables — jamais d'exception non gérée en cas d'échec réseau ou de
-    réponse malformée."""
+    Lève FactureAnalyzerError si le fichier est introuvable/vide/dans un
+    format non supporté (PDF, JPG, PNG, WEBP — détecté par contenu réel, pas
+    par l'extension), si la clé API est absente, ou si l'appel/la réponse
+    Claude sont inexploitables — jamais d'exception non gérée en cas d'échec
+    réseau ou de réponse malformée."""
     chemin = Path(chemin_pdf)
-    if chemin.suffix.lower() != ".pdf":
-        raise FactureAnalyzerError(f"Format non supporté (PDF attendu) : {chemin}")
     if not chemin.is_file():
         raise FactureAnalyzerError(f"Fichier introuvable : {chemin}")
-    cle = api_key or settings.anthropic_api_key
 
     contenu = chemin.read_bytes()
     if not contenu:
         raise FactureAnalyzerError(f"Fichier vide : {chemin}")
+
+    mime_reel = storage_engine.deviner_mime_reel(contenu)
+    if mime_reel not in MIME_AUTORISES_FACTURE:
+        raise FactureAnalyzerError(
+            f"Format non supporté (PDF, JPG, PNG ou WEBP attendu) : {chemin} (détecté : {mime_reel})"
+        )
+
+    cle = api_key or settings.anthropic_api_key
 
     if not cle:
         if settings.is_production:
@@ -170,32 +187,49 @@ def analyser_facture(
         return _resultat_vide()
 
     b64 = base64.b64encode(contenu).decode("ascii")
+    type_bloc = "document" if mime_reel == "application/pdf" else "image"
+    bloc_fichier = {"type": type_bloc, "source": {"type": "base64", "media_type": mime_reel, "data": b64}}
 
     try:
         client = anthropic.Anthropic(api_key=cle)
-        msg = client.messages.create(
-            model=model,
-            max_tokens=1024,
-            system=SYSTEM_PROMPT_FACTURE,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": b64}},
-                    {"type": "text", "text": "Analyse cette facture et réponds avec le JSON attendu."},
-                ],
-            }],
-        )
+        messages = [{
+            "role": "user",
+            "content": [bloc_fichier, {"type": "text", "text": "Analyse cette facture et réponds avec le JSON attendu."}],
+        }]
+        msg = client.messages.create(model=model, max_tokens=1024, system=SYSTEM_PROMPT_FACTURE, messages=messages)
+        texte = _extraire_texte(msg)
+        try:
+            brut = json.loads(texte)
+        except json.JSONDecodeError:
+            # Une seule relance en cas de JSON légèrement malformé (prose
+            # résiduelle, virgule en trop...) avant d'abandonner — évite de
+            # perdre une extraction par ailleurs correcte pour un simple souci
+            # de formatage de la réponse.
+            messages += [
+                {"role": "assistant", "content": texte},
+                {"role": "user", "content": "Ta réponse n'est pas un JSON valide. Réponds UNIQUEMENT avec le JSON corrigé."},
+            ]
+            msg = client.messages.create(model=model, max_tokens=1024, system=SYSTEM_PROMPT_FACTURE, messages=messages)
+            texte = _extraire_texte(msg)
+            brut = json.loads(texte)
     except anthropic.APIError as exc:
-        if settings.is_production:
-            raise FactureAnalyzerError(f"Appel Claude échoué : {exc}") from exc
-        logger.warning("Appel Claude échoué (%s) — analyse facture simulée (dev) pour %s.", exc, chemin)
-        return _resultat_vide()
-
-    texte = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
-    texte = re.sub(r"^```(?:json)?|```$", "", texte.strip(), flags=re.MULTILINE).strip()
-    try:
-        brut = json.loads(texte)
+        # Contrairement à la clé API absente (repli volontaire ci-dessus), un
+        # échec d'appel Claude est une vraie anomalie (modèle invalide, requête
+        # malformée, quota...) — l'avaler silencieusement en dev revenait à
+        # renvoyer un résultat vide sans aucune trace exploitable, d'où
+        # l'impression que l'analyse "ne détecte jamais rien" sans moyen de
+        # savoir pourquoi. On la laisse toujours remonter.
+        logger.exception("Appel Claude échoué pour %s.", chemin)
+        raise FactureAnalyzerError(f"Appel Claude échoué : {exc}") from exc
     except json.JSONDecodeError as exc:
         raise FactureAnalyzerError(f"Réponse Claude inexploitable : {exc}") from exc
 
-    return _normaliser(brut)
+    resultat = _normaliser(brut)
+    if resultat == _resultat_vide():
+        logger.warning("Analyse facture : aucun champ détecté pour %s (document illisible ou hors périmètre).", chemin)
+    return resultat
+
+
+def _extraire_texte(msg) -> str:
+    texte = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+    return re.sub(r"^```(?:json)?|```$", "", texte.strip(), flags=re.MULTILINE).strip()

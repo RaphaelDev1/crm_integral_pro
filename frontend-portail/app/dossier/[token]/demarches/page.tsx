@@ -2,16 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { getContexte, soumettreChampsDemarche, TokenContexte, DemarcheAFournir } from "@/lib/api";
-import { ArrowLeft, Loader2, Send, CheckCircle2 } from "lucide-react";
-
-const LABELS_TYPE_DEMARCHE: Record<string, string> = {
-  mandat: "Mandat de représentation",
-  resiliation: "Résiliation",
-  portabilite: "Portabilité mobile",
-  souscription: "Souscription",
-  changement_fournisseur: "Changement de fournisseur",
-};
+import { getContexte, soumettreChampsDemarche, TokenContexte } from "@/lib/api";
+import { ArrowLeft, Loader2, CheckCircle2 } from "lucide-react";
+import { DemarcheCard } from "@/components/dossier/DemarcheCard";
+import { TYPES_QUESTIONNAIRE_SECTEUR } from "@/lib/demarches";
 
 export default function DemarchesPage({ params }: { params: { token: string } }) {
   const router = useRouter();
@@ -40,6 +34,11 @@ export default function DemarchesPage({ params }: { params: { token: string } })
   if (loading) return <div className="text-center py-16"><Loader2 className="w-8 h-8 animate-spin mx-auto text-primary" /></div>;
   if (!ctx) return <div className="text-center py-16 text-danger">Erreur : {error}</div>;
 
+  // La trame de questions par secteur (audit_*/portabilite) a sa propre page
+  // — voir /dossier/[token]/questionnaire — pour ne pas la faire apparaître
+  // deux fois.
+  const demarches = ctx.demarches_a_completer.filter((d) => !TYPES_QUESTIONNAIRE_SECTEUR.has(d.type_demarche));
+
   return (
     <main>
       <button
@@ -63,73 +62,18 @@ export default function DemarchesPage({ params }: { params: { token: string } })
         </div>
       )}
 
-      {ctx.demarches_a_completer.length === 0 ? (
+      {demarches.length === 0 ? (
         <div className="bg-white rounded-2xl border border-emerald-200 bg-emerald-50/30 p-6 flex items-center gap-3">
           <CheckCircle2 className="w-6 h-6 text-accent" />
           <p className="text-slate-700">Rien à compléter pour le moment.</p>
         </div>
       ) : (
         <div className="space-y-4">
-          {ctx.demarches_a_completer.map((demarche) => (
+          {demarches.map((demarche) => (
             <DemarcheCard key={demarche.demarche_id} demarche={demarche} onSubmit={handleSubmit} />
           ))}
         </div>
       )}
     </main>
-  );
-}
-
-function DemarcheCard({
-  demarche,
-  onSubmit,
-}: {
-  demarche: DemarcheAFournir;
-  onSubmit: (demarcheId: number, valeurs: Record<string, string>) => Promise<void>;
-}) {
-  const [valeurs, setValeurs] = useState<Record<string, string>>(
-    Object.fromEntries(demarche.champs.map((c) => [c.cle, c.valeur || ""]))
-  );
-  const [submitting, setSubmitting] = useState(false);
-
-  const champsRequisRemplis = demarche.champs
-    .filter((c) => c.requis)
-    .every((c) => (valeurs[c.cle] || "").trim().length > 0);
-
-  async function handleSubmit() {
-    setSubmitting(true);
-    try {
-      await onSubmit(demarche.demarche_id, valeurs);
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  return (
-    <div className="bg-white rounded-2xl border border-slate-200 p-5">
-      <h3 className="font-semibold mb-4">{LABELS_TYPE_DEMARCHE[demarche.type_demarche] || demarche.type_demarche}</h3>
-      <div className="space-y-3">
-        {demarche.champs.map((champ) => (
-          <div key={champ.cle}>
-            <label className="block text-sm font-medium text-slate-700 mb-1">
-              {champ.label} {champ.requis && <span className="text-danger">*</span>}
-            </label>
-            <input
-              type="text"
-              value={valeurs[champ.cle] || ""}
-              onChange={(e) => setValeurs({ ...valeurs, [champ.cle]: e.target.value })}
-              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
-            />
-          </div>
-        ))}
-      </div>
-      <button
-        onClick={handleSubmit}
-        disabled={!champsRequisRemplis || submitting}
-        className="mt-4 w-full flex items-center justify-center gap-2 bg-primary text-white py-2.5 rounded-lg font-semibold hover:bg-primary/90 transition disabled:opacity-40 disabled:cursor-not-allowed"
-      >
-        {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-        Envoyer
-      </button>
-    </div>
   );
 }

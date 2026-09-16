@@ -23,7 +23,8 @@ from backend.models.facture_analyse import FactureAnalyse
 from backend.models.prospect import Prospect
 from backend.models.user import User
 from backend.schemas.facture import FactureAnalyseOut
-from backend.services.facture_analyzer import FactureAnalyzerError, analyser_facture
+from backend.services import storage_engine
+from backend.services.facture_analyzer import FactureAnalyzerError, MIME_AUTORISES_FACTURE, analyser_facture
 
 router = APIRouter(prefix="/factures", tags=["factures"], dependencies=[Depends(get_current_user)])
 
@@ -36,19 +37,25 @@ async def analyser(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    if Path(fichier.filename or "").suffix.lower() != ".pdf":
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Seuls les fichiers PDF sont acceptés.")
+    contenu = await fichier.read()
+    if not contenu:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Fichier vide.")
+    # Détection par contenu réel (magic bytes), jamais par l'extension du nom
+    # de fichier — un JPG/PNG (photo de facture) est aussi accepté ici.
+    if storage_engine.deviner_mime_reel(contenu) not in MIME_AUTORISES_FACTURE:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Seuls les fichiers PDF, JPG, PNG ou WEBP sont acceptés.")
 
     if client_id is not None and await db.get(Client, client_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Client introuvable.")
     if prospect_id is not None and await db.get(Prospect, prospect_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Prospect introuvable.")
 
-    contenu = await fichier.read()
     # delete=False + suppression manuelle : sous Windows, un NamedTemporaryFile
     # ouvert (delete=True) ne peut pas être rouvert par chemin par un second
     # appel (PermissionError) — analyser_facture() a besoin de le rouvrir.
-    fd, chemin_tmp = tempfile.mkstemp(suffix=".pdf")
+    # Le suffixe n'a plus d'incidence sur l'analyse (analyser_facture sniffe
+    # le contenu réel), seul le nom du fichier temporaire s'en sert.
+    fd, chemin_tmp = tempfile.mkstemp(suffix=Path(fichier.filename or "").suffix or ".pdf")
     try:
         with os.fdopen(fd, "wb") as tmp:
             tmp.write(contenu)

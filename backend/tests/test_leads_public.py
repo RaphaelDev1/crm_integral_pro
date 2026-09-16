@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from backend.core.database import get_db
 from backend.core.rate_limit import limiter
 from backend.main import app
+from backend.models.contrat import Contrat
 from backend.models.prospect import Prospect
 from backend.services.estimation_publique import Estimation, LigneEstimation
 from backend.services.eligibilite_fibre import ResultatFibre
@@ -191,27 +192,150 @@ def test_capture_lead_turnstile_invalide_est_rejete(api_client, fake_db):
     assert fake_db.added == []
 
 
-def test_capture_lead_avec_adresse_interroge_la_fibre(api_client, fake_db):
+def test_capture_lead_sans_adresse_fournie_ne_verifie_pas_la_fibre(api_client, fake_db):
+    # L'adresse (socle S1) reste facultative — posée seulement si le prospect
+    # sélectionne un secteur box ou énergie (cf. AdresseIn côté schéma) — un
+    # payload qui ne la fournit pas ne doit jamais planter ni forcer un code
+    # INSEE bidon pour interroger l'éligibilité fibre.
     with patch("backend.routers.leads_public.estimation_publique.estimer", new=AsyncMock(return_value=_estimation_factice())), \
          patch("backend.routers.leads_public.eligibilite_fibre.verifier", new=AsyncMock(
-             return_value=ResultatFibre(disponible=True, taux_couverture=0.82))) as mock_fibre, \
+             return_value=ResultatFibre())) as mock_fibre, \
+         patch("backend.routers.leads_public.audit_engine.enregistrer_action", new=AsyncMock()), \
+         patch("backend.routers.leads_public.captcha.verifier", new=AsyncMock(return_value=True)), \
+         patch("backend.routers.leads_public._enrichir_lead_arriere_plan", new=AsyncMock()), \
+         patch("backend.routers.leads_public._declencher_sequence_relance"):
+        reponse = api_client.post("/public/leads/capture", json=_payload_valide())
+
+    assert reponse.status_code == 200
+    corps = reponse.json()
+    assert corps["fibre"] == {"disponible": None, "taux_couverture": None}
+    mock_fibre.assert_awaited_once_with(None)
+
+    prospects = [o for o in fake_db.added if isinstance(o, Prospect)]
+    assert prospects[0].code_insee is None
+
+
+def test_capture_lead_avec_operateurs_mobile_et_box_distincts(api_client, fake_db):
+    # Un même prospect peut avoir un opérateur mobile différent de son
+    # opérateur box — chacun doit finir sur le bon Contrat (fournisseur), pas
+    # sur un seul champ partagé.
+    patches = _patches_defaut()
+    for p in patches:
+        p.start()
+    try:
+        reponse = api_client.post(
+            "/public/leads/capture",
+            json=_payload_valide(
+                depenses={"mobile": 20, "box_fibre": 35},
+                operateur_mobile="Free Mobile",
+                operateur_box="Orange",
+                offre_box="Fibre",
+                debit_box=500,
+            ),
+        )
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert reponse.status_code == 200
+
+    prospects = [o for o in fake_db.added if isinstance(o, Prospect)]
+    assert prospects[0].operateur_actuel == "Free Mobile"
+    assert prospects[0].operateur_box == "Orange"
+    assert prospects[0].techno == "Fibre"
+    # Débit auto-déclaré sur la landing (jamais mesuré) : va dans
+    # `debit_declare`, jamais dans `speed_down` — réservé au vrai test de
+    # débit mesuré (sinon /portail/{token} considère à tort le speedtest
+    # comme déjà fait dès l'ouverture du lien, voir portail_public.py).
+    assert prospects[0].debit_declare == 500
+    assert prospects[0].speed_down is None
+
+    contrats = {c.categorie: c for c in fake_db.added if isinstance(c, Contrat)}
+    assert contrats["Mobile"].fournisseur == "Free Mobile"
+    assert contrats["Box / Fibre"].fournisseur == "Orange"
+    assert contrats["Box / Fibre"].nom_offre == "Fibre"
+    assert contrats["Box / Fibre"].debit_declare == 500
+    assert contrats["Box / Fibre"].speed_down is None
+
+
+def test_capture_lead_avec_adresse_verifie_la_fibre_et_persiste_le_code_insee(api_client, fake_db):
+    with patch("backend.routers.leads_public.estimation_publique.estimer", new=AsyncMock(return_value=_estimation_factice())), \
+         patch("backend.routers.leads_public.eligibilite_fibre.verifier", new=AsyncMock(
+             return_value=ResultatFibre(disponible=True, taux_couverture=0.87))) as mock_fibre, \
          patch("backend.routers.leads_public.audit_engine.enregistrer_action", new=AsyncMock()), \
          patch("backend.routers.leads_public.captcha.verifier", new=AsyncMock(return_value=True)), \
          patch("backend.routers.leads_public._enrichir_lead_arriere_plan", new=AsyncMock()), \
          patch("backend.routers.leads_public._declencher_sequence_relance"):
         reponse = api_client.post(
             "/public/leads/capture",
-            json=_payload_valide(adresse_selection={"code_insee": "75056", "label": "Paris"}),
+            json=_payload_valide(
+                depenses={"box_fibre": 35},
+                adresse={
+                    "label": "1 Rue de Paris 75001 Paris",
+                    "code_postal": "75001",
+                    "ville": "Paris",
+                    "code_insee": "75101",
+                    "latitude": 48.86,
+                    "longitude": 2.34,
+                },
+            ),
         )
 
     assert reponse.status_code == 200
     corps = reponse.json()
-    assert corps["fibre"] == {"disponible": True, "taux_couverture": 0.82}
-    mock_fibre.assert_awaited_once_with("75056")
+    assert corps["fibre"] == {"disponible": True, "taux_couverture": 0.87}
+    mock_fibre.assert_awaited_once_with("75101")
 
     prospects = [o for o in fake_db.added if isinstance(o, Prospect)]
-    assert prospects[0].code_insee == "75056"
-    assert prospects[0].fibre_disponible is True
+    assert prospects[0].code_insee == "75101"
+    assert prospects[0].code_postal == "75001"
+    assert prospects[0].ville == "Paris"
+
+
+def test_capture_lead_questions_par_secteur_atterrissent_sur_prospect_et_contrat(api_client, fake_db):
+    # Socle (objectif) + mobile (nb lignes/qualité réseau) sur Prospect ;
+    # énergie (chauffage/kVA/option tarifaire) sur le contrat Électricité
+    # seulement, chauffage aussi sur Gaz ; TV sur le contrat box.
+    patches = _patches_defaut()
+    for p in patches:
+        p.start()
+    try:
+        reponse = api_client.post(
+            "/public/leads/capture",
+            json=_payload_valide(
+                depenses={"mobile": 20, "box_fibre": 35, "electricite": 80, "gaz": 40},
+                objectif_principal="economiser",
+                nb_lignes_mobiles="2+",
+                qualite_reseau_mobile="Moyenne ou mauvaise à un endroit",
+                chauffage_principal="Électrique",
+                puissance_kva="9",
+                gros_equipement_electrique=False,
+                option_tarifaire="Heures Pleines-Creuses",
+                usage_tv="Bouquet premium",
+                abonnements_payants="Canal+, beIN Sports",
+            ),
+        )
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert reponse.status_code == 200
+
+    prospects = [o for o in fake_db.added if isinstance(o, Prospect)]
+    assert prospects[0].objectif_principal == "economiser"
+    assert prospects[0].nb_lignes_mobiles == "2+"
+    assert prospects[0].qualite_reseau_mobile == "Moyenne ou mauvaise à un endroit"
+
+    contrats = {c.categorie: c for c in fake_db.added if isinstance(c, Contrat)}
+    assert contrats["Électricité"].chauffage_principal == "Électrique"
+    assert contrats["Électricité"].puissance_kva == "9"
+    assert contrats["Électricité"].gros_equipement_electrique is False
+    assert contrats["Électricité"].option_tarifaire == "Heures Pleines-Creuses"
+    assert contrats["Gaz"].chauffage_principal == "Électrique"
+    assert contrats["Gaz"].puissance_kva is None
+    assert contrats["Box / Fibre"].usage_tv == "Bouquet premium"
+    assert contrats["Box / Fibre"].abonnements_payants == "Canal+, beIN Sports"
+    assert contrats["Mobile"].usage_tv is None
 
 
 def test_methodologie_reste_accessible(api_client, fake_db):
